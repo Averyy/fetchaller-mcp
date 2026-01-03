@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>How to Let Claude Code Fetch Any Website Automatically | fetchaller MCP</title>
+    <meta name="description" content="Make research easier in Claude Code. Stop Claude from asking permission to fetch for every single domain including Reddit.">
+    <meta name="keywords" content="Claude Code fetch websites automatically, Claude Code permission prompts, Claude Code MCP server, allow Claude Code to fetch, WebFetch alternative, Claude Code web research, Claude AI fetch URL, Anthropic Claude fetch, Claude Code Reddit, fetch Reddit posts">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://fetchaller.dev/">
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://fetchaller.dev/">
+    <meta property="og:title" content="How to Let Claude Code Fetch Any Website Automatically">
+    <meta property="og:description" content="Make research easier. Stop Claude Code from asking permission to fetch for every single domain including Reddit.">
+    <meta property="og:site_name" content="fetchaller">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="How to Let Claude Code Fetch Any Website Automatically">
+    <meta name="twitter:description" content="Make research easier. Stop Claude Code from asking permission to fetch for every single domain including Reddit.">
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/png" href="favicon-96x96.png" sizes="96x96">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="shortcut icon" href="favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="Fetchaller">
+    <link rel="manifest" href="site.webmanifest">
+
+    <meta name="theme-color" content="#62007f">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #000000;
+            --bg-secondary: #0a0a0a;
+            --bg-tertiary: #141414;
+            --bg-card: rgba(255, 255, 255, 0.03);
+            --bg-card-hover: rgba(255, 255, 255, 0.06);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --border-color-hover: rgba(255, 255, 255, 0.15);
+            --text-primary: #f5f5f7;
+            --text-secondary: #a1a1a6;
+            --text-tertiary: #6e6e73;
+            --accent: #ff2300;
+            --accent-hover: #cc1c00;
+            --accent-glow: rgba(255, 35, 0, 0.2);
+            --purple: #62007f;
+            --purple-glow: rgba(98, 0, 127, 0.2);
+            --green: #30d158;
+            --red: #ff453a;
+            --code-bg: #1a1a1a;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        .gradient-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 100vh;
+            background:
+                radial-gradient(ellipse 60% 40% at 25% -10%, rgba(98, 0, 127, 0.15), transparent),
+                radial-gradient(ellipse 50% 35% at 75% 20%, rgba(255, 35, 0, 0.12), transparent),
+                radial-gradient(ellipse 40% 30% at 85% 70%, rgba(98, 0, 127, 0.08), transparent);
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* Navigation */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 16px 0;
+            background: rgba(0, 0, 0, 0.72);
+            backdrop-filter: saturate(180%) blur(20px);
+            -webkit-backdrop-filter: saturate(180%) blur(20px);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        nav .container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-logo {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 32px;
+            align-items: center;
+        }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: color 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .nav-links a:hover {
+            color: var(--text-primary);
+        }
+
+        /* Hero */
+        .hero {
+            padding: 140px 0 60px;
+            text-align: center;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 100px;
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+        }
+
+        .hero h1 {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: clamp(1.75rem, 4.5vw, 2.5rem);
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            line-height: 1.2;
+            margin-bottom: 16px;
+            color: var(--text-primary);
+        }
+
+        .hero h1 .highlight {
+            background: linear-gradient(135deg, var(--purple) 0%, var(--accent) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero p {
+            font-size: 1.125rem;
+            color: var(--text-secondary);
+            max-width: 580px;
+            margin: 0 auto 32px;
+            line-height: 1.6;
+        }
+
+        .hero-cta {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 500;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--border-color-hover);
+        }
+
+        /* Problem/Solution */
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin: 48px 0;
+        }
+
+        .comparison-card {
+            padding: 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+        }
+
+        .comparison-card.problem {
+            border-color: rgba(255, 69, 58, 0.3);
+        }
+
+        .comparison-card.solution {
+            border-color: rgba(255, 35, 0, 0.3);
+        }
+
+        .comparison-card h3 {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .comparison-card.problem h3 {
+            color: var(--red);
+        }
+
+        .comparison-card.solution h3 {
+            color: var(--accent);
+        }
+
+        .comparison-card ul {
+            list-style: none;
+            color: var(--text-secondary);
+            font-size: 0.9375rem;
+        }
+
+        .comparison-card li {
+            padding: 6px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+
+        .comparison-card.problem li::before {
+            content: "✕";
+            position: absolute;
+            left: 0;
+            color: var(--red);
+            font-size: 0.75rem;
+        }
+
+        .comparison-card.solution li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: var(--accent);
+        }
+
+        /* Section */
+        section {
+            padding: 48px 0;
+        }
+
+        .section-title {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.5rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            margin-bottom: 24px;
+        }
+
+        /* Code block */
+        .code-window {
+            background: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            overflow: hidden;
+            margin: 24px 0;
+        }
+
+        .code-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 20px;
+            background: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid var(--border-color);
+            position: relative;
+        }
+
+        .copy-btn {
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 6px 12px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-family: 'Space Grotesk', sans-serif;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+        }
+
+        .copy-btn.copied {
+            background: rgba(255, 35, 0, 0.15);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .code-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .code-dot.red { background: #ff5f57; }
+        .code-dot.yellow { background: #febc2e; }
+        .code-dot.green { background: #28c840; }
+
+        .code-title {
+            margin-left: 12px;
+            font-size: 0.8125rem;
+            color: var(--text-tertiary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .code-body {
+            padding: 24px;
+            overflow-x: auto;
+        }
+
+        pre {
+            margin: 0;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            line-height: 1.7;
+        }
+
+        .code-comment { color: #6e6e73; }
+        .code-string { color: #86efac; }
+        .code-key { color: #7dd3fc; }
+
+        /* How it works */
+        .workflow {
+            display: flex;
+            gap: 16px;
+            margin: 32px 0;
+            flex-wrap: wrap;
+        }
+
+        .workflow-step {
+            flex: 1;
+            min-width: 200px;
+            padding: 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            text-align: center;
+        }
+
+        .workflow-step .number {
+            width: 32px;
+            height: 32px;
+            background: var(--accent-glow);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        .workflow-step h4 {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            margin-bottom: 6px;
+        }
+
+        .workflow-step p {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+        }
+
+        .workflow-step code {
+            background: var(--code-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+
+        /* Features */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-top: 24px;
+        }
+
+        .feature-card {
+            padding: 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+        }
+
+        .feature-card h4 {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            margin-bottom: 6px;
+        }
+
+        .feature-card p {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+        }
+
+        /* FAQ */
+        .faq-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .faq-item {
+            padding: 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+        }
+
+        .faq-item h4 {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9375rem;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .faq-item p {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .faq-item code {
+            background: var(--code-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8125rem;
+        }
+
+        /* Footer */
+        footer {
+            padding: 48px 0;
+            border-top: 1px solid var(--border-color);
+            text-align: center;
+        }
+
+        .footer-content {
+            color: var(--text-tertiary);
+            font-size: 0.875rem;
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 24px;
+            justify-content: center;
+            margin-bottom: 16px;
+        }
+
+        .footer-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: color 0.2s;
+        }
+
+        .footer-links a:hover {
+            color: var(--text-primary);
+        }
+
+        /* Mobile */
+        @media (max-width: 768px) {
+            .hero {
+                padding: 120px 0 40px;
+            }
+
+            .hero h1 {
+                font-size: 1.5rem;
+            }
+
+            .comparison {
+                grid-template-columns: 1fr;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .nav-links {
+                display: none;
+            }
+
+            .workflow {
+                flex-direction: column;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .hero-cta {
+                flex-direction: column;
+            }
+
+            .btn {
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="gradient-bg"></div>
+
+    <nav>
+        <div class="container">
+            <a href="./" class="nav-logo">
+                <img src="icon.svg" alt="fetchaller" width="28" height="28" style="border-radius: 6px;">
+                fetchaller
+            </a>
+            <div class="nav-links">
+                <a href="#setup">Setup</a>
+                <a href="#faq">FAQ</a>
+                <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener">
+                    <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+                    GitHub
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <main>
+        <section class="hero">
+            <div class="container">
+                <div class="hero-badge">MCP Server for Claude Code</div>
+                <h1>Let Claude Code <span class="highlight">fetch any website automatically</span></h1>
+                <p>Make research easier. Stop Claude Code from asking permission to fetch for every single domain including Reddit.</p>
+                <div class="hero-cta">
+                    <a href="#setup" class="btn btn-primary">Get Started</a>
+                    <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener" class="btn btn-secondary">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+                        View on GitHub
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <section id="setup">
+            <div class="container">
+                <h2 class="section-title">Quick Setup (2 minutes)</h2>
+
+                <div class="code-window">
+                    <div class="code-header">
+                        <div class="code-dot red"></div>
+                        <div class="code-dot yellow"></div>
+                        <div class="code-dot green"></div>
+                        <span class="code-title">Terminal</span>
+                        <button class="copy-btn" onclick="copyCode(this, 'install-code')">Copy</button>
+                    </div>
+                    <div class="code-body">
+<pre id="install-code"><span class="code-comment"># Clone and install</span>
+git clone https://github.com/Averyy/fetchaller-mcp.git
+cd fetchaller-mcp
+npm install
+
+<span class="code-comment"># Add to Claude Code</span>
+claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js</pre>
+                    </div>
+                </div>
+
+                <div class="code-window">
+                    <div class="code-header">
+                        <div class="code-dot red"></div>
+                        <div class="code-dot yellow"></div>
+                        <div class="code-dot green"></div>
+                        <span class="code-title">~/.claude/settings.json</span>
+                        <button class="copy-btn" onclick="copyCode(this, 'settings-code')">Copy</button>
+                    </div>
+                    <div class="code-body">
+<pre id="settings-code">{
+  <span class="code-key">"permissions"</span>: {
+    <span class="code-key">"allow"</span>: [<span class="code-string">"mcp__fetchaller__fetch"</span>]
+  }
+}</pre>
+                    </div>
+                </div>
+
+                <div class="code-window">
+                    <div class="code-header">
+                        <div class="code-dot red"></div>
+                        <div class="code-dot yellow"></div>
+                        <div class="code-dot green"></div>
+                        <span class="code-title">CLAUDE.md (recommended)</span>
+                        <button class="copy-btn" onclick="copyCode(this, 'claude-md-code')">Copy</button>
+                    </div>
+                    <div class="code-body">
+<pre id="claude-md-code"><span class="code-comment">## Web Research Workflow</span>
+
+When you need to read/fetch content from URLs:
+
+<span class="code-key">**DO use:**</span> `mcp__fetchaller__fetch` - no domain restrictions
+<span class="code-key">**DO NOT use:**</span> `WebFetch` - requires per-domain prompts, Reddit blocked
+
+<span class="code-key">**Always use fetchaller for:**</span>
+- Any reddit.com URLs (posts, subreddits, user profiles)
+- Any URL from WebSearch results
+- Any web research task</pre>
+                    </div>
+                </div>
+
+                <p style="color: var(--text-secondary); margin-top: 16px;">Restart Claude Code after setup. That's it!</p>
+            </div>
+        </section>
+
+        <section id="why">
+            <div class="container">
+                <h2 class="section-title">Why fetchaller?</h2>
+                <div class="comparison">
+                <div class="comparison-card problem">
+                    <h3>
+                        <span>😤</span>
+                        The Problem with WebFetch
+                    </h3>
+                    <ul>
+                        <li>Permission prompt for every new domain</li>
+                        <li>No wildcard domain support</li>
+                        <li>Reddit is completely blocked</li>
+                        <li>Interrupts research workflows constantly</li>
+                    </ul>
+                </div>
+                <div class="comparison-card solution">
+                    <h3>
+                        <span>✨</span>
+                        The fetchaller Solution
+                    </h3>
+                    <ul>
+                        <li>One permission rule, all domains work</li>
+                        <li>Reddit works with full comments</li>
+                        <li>Clean markdown output</li>
+                        <li>Seamless research workflows</li>
+                    </ul>
+                </div>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <div class="container">
+                <h2 class="section-title">Features</h2>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <h4>🌐 Any Domain</h4>
+                        <p>HTTP/HTTPS URLs from any website, no restrictions</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>📄 Clean Markdown</h4>
+                        <p>HTML converted to readable markdown, junk removed</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>📱 Reddit Support</h4>
+                        <p>Fetches posts with full comment threads automatically</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>🏠 100% Local</h4>
+                        <p>Runs on your machine, no data sent to third parties</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>🔒 Safe</h4>
+                        <p>Read-only, no cookies, no state</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>📏 Token Limit</h4>
+                        <p>Configurable max tokens (default 25k)</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="faq">
+            <div class="container">
+                <h2 class="section-title">FAQ</h2>
+                <div class="faq-list">
+                    <div class="faq-item">
+                        <h4>Why not just use WebFetch?</h4>
+                        <p>WebFetch requires you to approve each domain individually, and Reddit is completely blocked. fetchaller removes these limitations with a single permission rule.</p>
+                    </div>
+                    <div class="faq-item">
+                        <h4>Does Reddit work?</h4>
+                        <p>Yes! fetchaller automatically fetches Reddit posts as JSON to include full comment threads. Subreddits and user profiles work too.</p>
+                    </div>
+                    <div class="faq-item">
+                        <h4>Is this safe?</h4>
+                        <p>Yes. fetchaller only does GET requests (read-only). It doesn't store cookies, maintain sessions, or write anything. It's the same as opening a URL in your browser.</p>
+                    </div>
+                    <div class="faq-item">
+                        <h4>What about curl?</h4>
+                        <p>Use <code>curl</code> for POST/PUT/DELETE requests, debugging headers, or when you need raw HTTP details. Use fetchaller for reading web pages and APIs during research.</p>
+                    </div>
+                    <div class="faq-item">
+                        <h4>Does it work with other MCP clients?</h4>
+                        <p>Yes! fetchaller is a standard MCP server. It works with Claude Desktop, Cursor, or any MCP-compatible client.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <div class="footer-links">
+                <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank">GitHub</a>
+                <a href="https://github.com/Averyy/fetchaller-mcp/issues" target="_blank">Issues</a>
+            </div>
+            <div class="footer-content">
+                MIT License
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        function copyCode(btn, elementId) {
+            const code = document.getElementById(elementId).textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                btn.textContent = 'Copied!';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                    btn.textContent = 'Copy';
+                    btn.classList.remove('copied');
+                }, 2000);
+            });
+        }
+    </script>
+</body>
+</html>

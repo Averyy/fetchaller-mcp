@@ -1,10 +1,10 @@
 # fetchaller-mcp
 
-MCP server that fetches any URL and returns clean markdown. No domain restrictions, no permission prompts.
+MCP server that fetches any URL and returns clean markdown. No domain restrictions, no permission prompts. Full Reddit support with comments.
 
 ## The Problem
 
-Claude Code's built-in `WebFetch` requires per-domain permissions with no wildcard support. Every new domain triggers a permission prompt. This is tedious for research tasks.
+Claude Code's built-in `WebFetch` requires per-domain permissions with no wildcard support. Every new domain triggers a permission prompt. Reddit is completely blocked. This is tedious for research tasks.
 
 ## The Solution
 
@@ -47,7 +47,12 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 When you need to read/fetch content from URLs:
 
 **DO use:** `mcp__fetchaller__fetch` - no domain restrictions, no permission prompts
-**DO NOT use:** `WebFetch` - requires per-domain permission prompts
+**DO NOT use:** `WebFetch` - requires per-domain permission prompts, Reddit is blocked
+
+Always use fetchaller for:
+- Any reddit.com URLs (posts, subreddits, user profiles)
+- Any URL from WebSearch results
+- Any web research task
 
 1. **Search**: Use `WebSearch` to find relevant URLs
 2. **Fetch**: Use `mcp__fetchaller__fetch` to read the content
@@ -101,6 +106,18 @@ Clean markdown with:
 | PDF/binary | Error message |
 | Timeout | Error after 10s |
 | Huge page | Truncated at maxTokens |
+
+## Reddit Support
+
+fetchaller automatically handles Reddit URLs:
+
+| URL Type | Behavior |
+|----------|----------|
+| Post (`/r/sub/comments/...`) | Fetches as JSON to include full comment threads |
+| Subreddit (`/r/sub/`) | Fetches as HTML (more compact) |
+| User profile (`/user/name/`) | Fetches as HTML (more compact) |
+
+No special syntax needed - just pass the Reddit URL and fetchaller does the right thing.
 
 ## How It Works
 

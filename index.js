@@ -9,12 +9,43 @@ import TurndownService from "turndown";
 const DEFAULT_MAX_TOKENS = 25000;
 const CHARS_PER_TOKEN = 4;
 
+// Reddit URL handling: use JSON for posts (to get comments), HTML for subreddits/users
+function transformRedditUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.hostname.includes("reddit.com")) {
+      return { url, isRedditJson: false };
+    }
+
+    const path = parsed.pathname;
+
+    // Already a JSON URL - leave it alone
+    if (path.endsWith(".json")) {
+      return { url, isRedditJson: true };
+    }
+
+    // Individual post: /r/{sub}/comments/{id}/* → add .json to get comments
+    if (/^\/r\/[^/]+\/comments\/[^/]+/.test(path)) {
+      // Remove trailing slash if present, then add .json
+      const cleanPath = path.replace(/\/$/, "");
+      parsed.pathname = cleanPath + ".json";
+      return { url: parsed.toString(), isRedditJson: true };
+    }
+
+    // Subreddit or user pages - keep as HTML (more compact)
+    // /r/{sub}/, /user/{name}/, /u/{name}/
+    return { url, isRedditJson: false };
+  } catch {
+    return { url, isRedditJson: false };
+  }
+}
+
 const turndown = new TurndownService({
   headingStyle: "atx",
   codeBlockStyle: "fenced",
 });
 
-async function fetchUrl(url, maxTokens = DEFAULT_MAX_TOKENS) {
+async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS) {
   // Validate URL
   let parsedUrl;
   try {
@@ -129,7 +160,9 @@ server.tool(
     maxTokens: z.number().optional().describe("Maximum tokens to return (default: 25000)"),
   },
   async ({ url, maxTokens }) => {
-    const result = await fetchUrl(url, maxTokens);
+    // Transform Reddit URLs (use JSON for posts to get comments)
+    const { url: fetchUrl, isRedditJson } = transformRedditUrl(url);
+    const result = await fetchUrlContent(fetchUrl, maxTokens);
 
     if (result.error) {
       return {
@@ -146,7 +179,11 @@ server.tool(
     }
 
     let text = result.content;
-    if (result.url && result.url !== url) {
+
+    // Note if we transformed to JSON for Reddit
+    if (isRedditJson && fetchUrl !== url) {
+      text = `[Fetched as JSON for full comments: ${fetchUrl}]\n\n${text}`;
+    } else if (result.url && result.url !== fetchUrl) {
       text = `[Redirected to: ${result.url}]\n\n${text}`;
     }
 
