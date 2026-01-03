@@ -658,17 +658,11 @@ claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js</pre>
                         <button class="copy-btn" onclick="copyCode(this, 'claude-md-code')">Copy</button>
                     </div>
                     <div class="code-body">
-<pre id="claude-md-code"><span class="code-comment">## Web Research Workflow</span>
+<pre id="claude-md-code"><span class="code-comment">## Tool Selection</span>
 
-When you need to read/fetch content from URLs:
+<span class="code-key">**DO NOT use `WebFetch`**</span> - use fetchaller instead (no domain restrictions, no permission prompts).
 
-<span class="code-key">**DO use:**</span> `mcp__fetchaller__fetch` - no domain restrictions
-<span class="code-key">**DO NOT use:**</span> `WebFetch` - requires per-domain prompts, Reddit blocked
-
-<span class="code-key">**Always use fetchaller for:**</span>
-- Any reddit.com URLs (posts, subreddits, user profiles)
-- Any URL from WebSearch results
-- Any web research task</pre>
+<span class="code-key">**fetchaller replaces `WebFetch`, not dedicated MCPs.**</span> If a dedicated MCP exists for a service (GitHub, Slack, etc.), use that MCP instead. Use fetchaller for general web fetching.</pre>
                     </div>
                 </div>
 

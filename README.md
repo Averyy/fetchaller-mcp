@@ -42,20 +42,11 @@ Restart Claude Code.
 Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to instruct Claude to prefer fetchaller:
 
 ```markdown
-## Web Research Workflow
+## Tool Selection
 
-When you need to read/fetch content from URLs:
+**DO NOT use `WebFetch`** - use fetchaller instead (no domain restrictions, no permission prompts).
 
-**DO use:** `mcp__fetchaller__fetch` - no domain restrictions, no permission prompts
-**DO NOT use:** `WebFetch` - requires per-domain permission prompts, Reddit is blocked
-
-Always use fetchaller for:
-- Any reddit.com URLs (posts, subreddits, user profiles)
-- Any URL from WebSearch results
-- Any web research task
-
-1. **Search**: Use `WebSearch` to find relevant URLs
-2. **Fetch**: Use `mcp__fetchaller__fetch` to read the content
+**fetchaller replaces `WebFetch`, not dedicated MCPs.** If a dedicated MCP exists for a service (GitHub, Slack, etc.), use that MCP instead. Use fetchaller for general web fetching.
 ```
 
 ## Usage
