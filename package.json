@@ -1,0 +1,29 @@
+{
+  "name": "fetchaller-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MCP server that fetches any URL and returns clean markdown - no domain restrictions",
+  "main": "index.js",
+  "bin": {
+    "fetchaller-mcp": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "fetch",
+    "web",
+    "markdown"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "cheerio": "^1.0.0",
+    "turndown": "^7.2.0"
+  }
+}
