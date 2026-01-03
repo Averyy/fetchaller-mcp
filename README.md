@@ -17,7 +17,7 @@ One MCP server with one permission rule = all domains work without prompts.
 
 ```bash
 # Clone and install
-git clone https://github.com/YOURNAME/fetchaller-mcp.git
+git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
 npm install
 
@@ -36,6 +36,22 @@ Add permission to `~/.claude/settings.json`:
 ```
 
 Restart Claude Code.
+
+## Recommended CLAUDE.md Addition
+
+Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to instruct Claude to prefer fetchaller:
+
+```markdown
+## Web Research Workflow
+
+When you need to read/fetch content from URLs:
+
+**DO use:** `mcp__fetchaller__fetch` - no domain restrictions, no permission prompts
+**DO NOT use:** `WebFetch` - requires per-domain permission prompts
+
+1. **Search**: Use `WebSearch` to find relevant URLs
+2. **Fetch**: Use `mcp__fetchaller__fetch` to read the content
+```
 
 ## Usage
 
@@ -123,20 +139,6 @@ node -e "import('./index.js')"
 # In Claude Code after setup
 "fetch https://example.com and show me the content"
 ```
-
-## Troubleshooting
-
-**"Tool not found"**
-- Restart Claude Code after adding MCP server
-- Check `claude mcp list` shows fetchaller
-
-**Permission prompts still appearing**
-- Ensure `mcp__fetchaller__fetch` is in your allow list
-- Check you're using fetchaller, not WebFetch
-
-**Timeouts**
-- Some sites block automated requests
-- Try a different URL to verify the server works
 
 ## License
 
