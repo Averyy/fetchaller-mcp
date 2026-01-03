@@ -7,36 +7,33 @@ import * as cheerio from "cheerio";
 import TurndownService from "turndown";
 
 const DEFAULT_MAX_TOKENS = 25000;
+const DEFAULT_TIMEOUT_SECONDS = 30;
 const CHARS_PER_TOKEN = 4;
 
-// Reddit URL handling: use JSON for posts (to get comments), HTML for subreddits/users
+// Reddit URL handling: use old.reddit.com HTML (65-70% more compact than JSON/new Reddit)
 function transformRedditUrl(url) {
   try {
     const parsed = new URL(url);
     if (!parsed.hostname.includes("reddit.com")) {
-      return { url, isRedditJson: false };
+      return { url, isReddit: false };
     }
 
-    const path = parsed.pathname;
-
-    // Already a JSON URL - leave it alone
-    if (path.endsWith(".json")) {
-      return { url, isRedditJson: true };
+    // Already a JSON URL - leave it alone (user explicitly requested JSON)
+    if (parsed.pathname.endsWith(".json")) {
+      return { url, isReddit: true };
     }
 
-    // Individual post: /r/{sub}/comments/{id}/* → add .json to get comments
-    if (/^\/r\/[^/]+\/comments\/[^/]+/.test(path)) {
-      // Remove trailing slash if present, then add .json
-      const cleanPath = path.replace(/\/$/, "");
-      parsed.pathname = cleanPath + ".json";
-      return { url: parsed.toString(), isRedditJson: true };
+    // Transform www.reddit.com or reddit.com → old.reddit.com
+    // old.reddit.com HTML converts to ~65-70% smaller markdown than JSON or new Reddit
+    if (parsed.hostname === "www.reddit.com" || parsed.hostname === "reddit.com") {
+      parsed.hostname = "old.reddit.com";
+      return { url: parsed.toString(), isReddit: true };
     }
 
-    // Subreddit or user pages - keep as HTML (more compact)
-    // /r/{sub}/, /user/{name}/, /u/{name}/
-    return { url, isRedditJson: false };
+    // Already old.reddit.com or other subdomain (i.reddit.com, etc.) - keep as-is
+    return { url, isReddit: true };
   } catch {
-    return { url, isRedditJson: false };
+    return { url, isReddit: false };
   }
 }
 
@@ -45,7 +42,7 @@ const turndown = new TurndownService({
   codeBlockStyle: "fenced",
 });
 
-async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS) {
+async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSeconds = DEFAULT_TIMEOUT_SECONDS) {
   // Validate URL
   let parsedUrl;
   try {
@@ -59,7 +56,8 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS) {
 
   // Fetch with timeout
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeoutMs = timeoutSeconds * 1000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(url, {
@@ -131,7 +129,7 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS) {
   } catch (err) {
     clearTimeout(timeout);
     if (err.name === "AbortError") {
-      return { error: "Request timed out (10s limit)" };
+      return { error: `Request timed out (${timeoutSeconds}s limit)` };
     }
     return { error: `Fetch failed: ${err.message}` };
   }
@@ -158,11 +156,12 @@ server.tool(
   {
     url: z.string().describe("The URL to fetch"),
     maxTokens: z.number().optional().describe("Maximum tokens to return (default: 25000)"),
+    timeout: z.number().optional().describe("Request timeout in seconds (default: 30)"),
   },
-  async ({ url, maxTokens }) => {
-    // Transform Reddit URLs (use JSON for posts to get comments)
-    const { url: fetchUrl, isRedditJson } = transformRedditUrl(url);
-    const result = await fetchUrlContent(fetchUrl, maxTokens);
+  async ({ url, maxTokens, timeout }) => {
+    // Transform Reddit URLs (use old.reddit.com for better token efficiency)
+    const { url: fetchUrl, isReddit } = transformRedditUrl(url);
+    const result = await fetchUrlContent(fetchUrl, maxTokens, timeout);
 
     if (result.error) {
       return {
@@ -180,9 +179,9 @@ server.tool(
 
     let text = result.content;
 
-    // Note if we transformed to JSON for Reddit
-    if (isRedditJson && fetchUrl !== url) {
-      text = `[Fetched as JSON for full comments: ${fetchUrl}]\n\n${text}`;
+    // Note if we transformed the URL
+    if (isReddit && fetchUrl !== url) {
+      text = `[Fetched via: ${fetchUrl}]\n\n${text}`;
     } else if (result.url && result.url !== fetchUrl) {
       text = `[Redirected to: ${result.url}]\n\n${text}`;
     }

@@ -68,6 +68,9 @@ fetch https://example.com
 
 # Fetch with token limit
 fetch https://example.com maxTokens=10000
+
+# Fetch slow site with longer timeout
+fetch https://slow-site.com maxTokens=25000 timeout=60
 ```
 
 ### Web Research Pattern
@@ -79,12 +82,13 @@ The CLAUDE.md file instructs Claude to prefer fetchaller over WebFetch.
 
 ## Tool Reference
 
-### `fetch(url, maxTokens?)`
+### `fetch(url, maxTokens?, timeout?)`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | url | string | required | URL to fetch (http/https) |
 | maxTokens | number | 25000 | Max tokens to return |
+| timeout | number | 30 | Request timeout in seconds |
 
 ### Returns
 
@@ -104,20 +108,21 @@ Clean markdown with:
 | JSON content | Returned as-is |
 | Plain text | Returned as-is |
 | PDF/binary | Error message |
-| Timeout | Error after 10s |
+| Timeout | Error after timeout (default 30s) |
 | Huge page | Truncated at maxTokens |
 
 ## Reddit Support
 
-fetchaller automatically handles Reddit URLs:
+fetchaller automatically transforms Reddit URLs to use `old.reddit.com` for 65-70% token savings:
 
-| URL Type | Behavior |
-|----------|----------|
-| Post (`/r/sub/comments/...`) | Fetches as JSON to include full comment threads |
-| Subreddit (`/r/sub/`) | Fetches as HTML (more compact) |
-| User profile (`/user/name/`) | Fetches as HTML (more compact) |
+| Input URL | Transformed To |
+|-----------|----------------|
+| `www.reddit.com/*` | `old.reddit.com/*` |
+| `reddit.com/*` | `old.reddit.com/*` |
+| `old.reddit.com/*` | unchanged |
+| `*.json` URLs | unchanged (escape hatch) |
 
-No special syntax needed - just pass the Reddit URL and fetchaller does the right thing.
+No special syntax needed - just pass any Reddit URL and fetchaller optimizes it automatically.
 
 ## How It Works
 
