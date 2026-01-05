@@ -27,7 +27,7 @@ mcp__fetchaller__fetch(url: string, maxTokens?: number, timeout?: number)
 |-----------|------|---------|-------------|
 | url | string | required | Any http/https URL |
 | maxTokens | number | 25000 | Max tokens to return |
-| timeout | number | 30 | Request timeout in seconds |
+| timeout | number | 10 | Request timeout in seconds |
 
 ## Examples
 
@@ -54,9 +54,9 @@ mcp__fetchaller__fetch("https://slow-site.example.com", 25000, 60)
 
 - Fetches any HTTP/HTTPS URL
 - Converts HTML to clean markdown (strips scripts, styles, nav, footer, ads)
-- Returns JSON and plain text as-is
+- Returns JSON, XML/RSS, CSV, and plain text as-is
 - Shows redirect destinations
-- Configurable timeout (default: 30 seconds)
+- Configurable timeout (default: 10 seconds)
 - Truncates at token limit
 
 ## Reddit Support

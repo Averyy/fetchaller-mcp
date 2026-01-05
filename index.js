@@ -7,7 +7,7 @@ import * as cheerio from "cheerio";
 import TurndownService from "turndown";
 
 const DEFAULT_MAX_TOKENS = 25000;
-const DEFAULT_TIMEOUT_SECONDS = 30;
+const DEFAULT_TIMEOUT_SECONDS = 10;
 const CHARS_PER_TOKEN = 4;
 
 // Reddit URL handling: use old.reddit.com HTML (65-70% more compact than JSON/new Reddit)
@@ -42,6 +42,25 @@ const turndown = new TurndownService({
   codeBlockStyle: "fenced",
 });
 
+async function fetchWithRetry(url, options, maxRetries = 1) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      // Retry on 5xx server errors (except on last attempt)
+      if (response.status >= 500 && attempt < maxRetries) {
+        lastError = new Error(`HTTP ${response.status}`);
+        continue;
+      }
+      return response;
+    } catch (err) {
+      lastError = err;
+      if (attempt === maxRetries) throw err;
+    }
+  }
+  throw lastError;
+}
+
 async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSeconds = DEFAULT_TIMEOUT_SECONDS) {
   // Validate URL
   let parsedUrl;
@@ -60,12 +79,15 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       signal: controller.signal,
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Upgrade-Insecure-Requests": "1",
+        "Connection": "keep-alive",
       },
     });
 
@@ -73,6 +95,13 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
 
     const contentType = response.headers.get("content-type") || "";
     const status = response.status;
+
+    // Handle 429 rate limiting with helpful message
+    if (status === 429) {
+      const retryAfter = response.headers.get("retry-after");
+      const retryMsg = retryAfter ? ` Retry after ${retryAfter} seconds.` : "";
+      return { error: `Rate limited (HTTP 429).${retryMsg}` };
+    }
 
     // Handle non-200 responses
     if (!response.ok) {
@@ -92,6 +121,16 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
     if (contentType.includes("text/plain")) {
       const text = await response.text();
       return { content: truncate(text, maxTokens), contentType: "text" };
+    }
+
+    if (contentType.includes("text/xml") || contentType.includes("application/xml") || contentType.includes("application/rss+xml") || contentType.includes("application/atom+xml")) {
+      const text = await response.text();
+      return { content: truncate(text, maxTokens), contentType: "xml" };
+    }
+
+    if (contentType.includes("text/csv")) {
+      const text = await response.text();
+      return { content: truncate(text, maxTokens), contentType: "csv" };
     }
 
     if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
@@ -156,7 +195,7 @@ server.tool(
   {
     url: z.string().describe("The URL to fetch"),
     maxTokens: z.number().optional().describe("Maximum tokens to return (default: 25000)"),
-    timeout: z.number().optional().describe("Request timeout in seconds (default: 30)"),
+    timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
   },
   async ({ url, maxTokens, timeout }) => {
     // Transform Reddit URLs (use old.reddit.com for better token efficiency)

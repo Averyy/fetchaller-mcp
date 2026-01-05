@@ -79,7 +79,7 @@ The CLAUDE.md file instructs Claude to prefer fetchaller over WebFetch.
 |-----------|------|---------|-------------|
 | url | string | required | URL to fetch (http/https) |
 | maxTokens | number | 25000 | Max tokens to return |
-| timeout | number | 30 | Request timeout in seconds |
+| timeout | number | 10 | Request timeout in seconds |
 
 ### Returns
 
@@ -97,9 +97,11 @@ Clean markdown with:
 | Invalid URL | Error message |
 | Non-200 response | Error + partial body |
 | JSON content | Returned as-is |
+| XML/RSS feeds | Returned as-is |
+| CSV files | Returned as-is |
 | Plain text | Returned as-is |
 | PDF/binary | Error message |
-| Timeout | Error after timeout (default 30s) |
+| Timeout | Error after timeout (default 10s) |
 | Huge page | Truncated at maxTokens |
 
 ## Reddit Support
@@ -121,7 +123,7 @@ No special syntax needed - just pass any Reddit URL and fetchaller optimizes it 
 2. Fetches with browser-like headers
 3. Detects content type
 4. For HTML: strips junk, converts to markdown via Turndown
-5. For JSON/text: returns raw
+5. For JSON/XML/CSV/text: returns raw
 6. Truncates to token limit
 
 ## Files
