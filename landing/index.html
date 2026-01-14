@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fetch Reddit & Any Website in Claude Code | fetchaller</title>
-    <meta name="description" content="MCP server for fetching Reddit and any URL in Claude Code without permission prompts.">
-    <meta name="keywords" content="Claude Code fetch websites automatically, Claude Code permission prompts, Claude Code MCP server, allow Claude Code to fetch, WebFetch alternative, Claude Code web research, Claude AI fetch URL, Anthropic Claude fetch, Claude Code Reddit, fetch Reddit posts">
+    <meta name="description" content="Browse and search Reddit, fetch any URL in Claude Code. No permission prompts, no domain restrictions. WebFetch alternative.">
+    <meta name="keywords" content="Claude Code fetch websites, Claude Code MCP server, WebFetch alternative, Claude Code Reddit, browse reddit Claude Code, search reddit Claude Code, fetch Reddit posts, Claude AI fetch URL, no permission prompts, no domain restrictions">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://fetchaller.dev/">
 
@@ -13,14 +13,14 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://fetchaller.dev/">
     <meta property="og:title" content="Fetch Reddit & Any Website in Claude Code | fetchaller">
-    <meta property="og:description" content="MCP server for fetching Reddit and any URL in Claude Code without permission prompts.">
+    <meta property="og:description" content="Browse and search Reddit, fetch any URL in Claude Code. No permission prompts, no domain restrictions.">
     <meta property="og:site_name" content="fetchaller">
     <meta property="og:locale" content="en_US">
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Fetch Reddit & Any Website in Claude Code | fetchaller">
-    <meta name="twitter:description" content="MCP server for fetching Reddit and any URL in Claude Code without permission prompts.">
+    <meta name="twitter:description" content="Browse and search Reddit, fetch any URL in Claude Code. No permission prompts, no domain restrictions.">
 
     <!-- Favicons -->
     <link rel="icon" type="image/png" href="favicon-96x96.png" sizes="96x96">
@@ -584,6 +584,7 @@
             </a>
             <div class="nav-links">
                 <a href="#setup">Setup</a>
+                <a href="#reddit">Reddit</a>
                 <a href="#faq">FAQ</a>
                 <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener">
                     <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
@@ -598,7 +599,7 @@
             <div class="container">
                 <div class="hero-badge">MCP Server for Claude Code</div>
                 <h1>Fetch <span class="highlight">Reddit & any website</span> in Claude Code</h1>
-                <p>Make research easier. Stop Claude Code from asking permission to fetch for every single domain.</p>
+                <p>Make browsing the web easier. Stop Claude Code from asking permission to fetch for every single domain.</p>
                 <div class="hero-cta">
                     <a href="#setup" class="btn btn-primary">Get Started</a>
                     <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener" class="btn btn-secondary">
@@ -611,7 +612,7 @@
 
         <section id="setup">
             <div class="container">
-                <h2 class="section-title">Quick Setup (2 minutes)</h2>
+                <h2 class="section-title">Quick Setup</h2>
 
                 <div class="code-window">
                     <div class="code-header">
@@ -627,8 +628,9 @@ git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
 npm install
 
-<span class="code-comment"># Add to Claude Code</span>
-claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js</pre>
+<span class="code-comment"># Add to Claude Code (choose one)</span>
+claude mcp add fetchaller -s user -- node /path/to/fetchaller-mcp/index.js    <span class="code-comment"># all projects</span>
+claude mcp add fetchaller -s project -- node /path/to/fetchaller-mcp/index.js <span class="code-comment"># this project only</span></pre>
                     </div>
                 </div>
 
@@ -643,7 +645,11 @@ claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js</pre>
                     <div class="code-body">
 <pre id="settings-code">{
   <span class="code-key">"permissions"</span>: {
-    <span class="code-key">"allow"</span>: [<span class="code-string">"mcp__fetchaller__fetch"</span>]
+    <span class="code-key">"allow"</span>: [
+      <span class="code-string">"mcp__fetchaller__fetch"</span>,
+      <span class="code-string">"mcp__fetchaller__browse_reddit"</span>,
+      <span class="code-string">"mcp__fetchaller__search_reddit"</span>
+    ]
   }
 }</pre>
                     </div>
@@ -658,11 +664,13 @@ claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js</pre>
                         <button class="copy-btn" onclick="copyCode(this, 'claude-md-code')">Copy</button>
                     </div>
                     <div class="code-body">
-<pre id="claude-md-code"><span class="code-comment">## Tool Selection</span>
+<pre id="claude-md-code"><span class="code-comment">## Web Fetching</span>
 
-<span class="code-key">**DO NOT use `WebFetch`**</span> - use fetchaller instead (no domain restrictions, no permission prompts).
+<span class="code-key">**Use fetchaller instead of WebFetch**</span> (no domain restrictions). If a dedicated MCP exists (GitHub, Slack, etc.), use that instead.
 
-<span class="code-key">**fetchaller replaces `WebFetch`, not dedicated MCPs.**</span> If a dedicated MCP exists for a service (GitHub, Slack, etc.), use that MCP instead. Use fetchaller for general web fetching.</pre>
+<span class="code-comment">## Reddit Searching and Browsing</span>
+
+Use <span class="code-string">`mcp__fetchaller__browse_reddit`</span> to browse subreddits, <span class="code-string">`mcp__fetchaller__search_reddit`</span> to find posts, and <span class="code-string">`mcp__fetchaller__fetch`</span> to read full discussions.</pre>
                     </div>
                 </div>
 
@@ -702,6 +710,47 @@ claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js</pre>
             </div>
         </section>
 
+        <section id="reddit">
+            <div class="container">
+                <h2 class="section-title">Reddit Tools</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 24px;">Three specialized tools for researching Reddit. Browse subreddits, search posts, and read full discussions.</p>
+
+                <div class="features-grid">
+                    <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
+                        <h4>🔍 browse_reddit</h4>
+                        <p>Browse any subreddit by hot, new, top, or rising. Get post metadata without reading every page.</p>
+                    </div>
+                    <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
+                        <h4>🔎 search_reddit</h4>
+                        <p>Search all of Reddit or within a specific subreddit. Filter by relevance, time, and sort order.</p>
+                    </div>
+                    <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
+                        <h4>📖 fetch</h4>
+                        <p>Read full posts with all comments. Auto-converts to old.reddit.com for 65-70% token savings.</p>
+                    </div>
+                </div>
+
+                <div class="code-window" style="margin-top: 24px;">
+                    <div class="code-header">
+                        <div class="code-dot red"></div>
+                        <div class="code-dot yellow"></div>
+                        <div class="code-dot green"></div>
+                        <span class="code-title">Example: Research headphones on Reddit</span>
+                    </div>
+                    <div class="code-body">
+<pre><span class="code-comment"># Step 1: Search Reddit for relevant posts</span>
+<span class="code-key">search_reddit</span>({ query: <span class="code-string">"best over ear headphones 2025"</span>, limit: 10 })
+
+<span class="code-comment"># Step 2: Read the most relevant posts</span>
+<span class="code-key">fetch</span>({ url: <span class="code-string">"https://reddit.com/r/HeadphoneAdvice/comments/..."</span> })
+
+<span class="code-comment"># Or browse a specific subreddit</span>
+<span class="code-key">browse_reddit</span>({ subreddit: <span class="code-string">"HeadphoneAdvice"</span>, sort: <span class="code-string">"top"</span>, time: <span class="code-string">"month"</span> })</pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <section>
             <div class="container">
                 <h2 class="section-title">Features</h2>
@@ -715,8 +764,8 @@ claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js</pre>
                         <p>HTML to markdown, JSON/XML/CSV returned as-is</p>
                     </div>
                     <div class="feature-card">
-                        <h4>📱 Reddit Support</h4>
-                        <p>Uses old.reddit.com for 65-70% smaller responses</p>
+                        <h4>🔄 Retry Logic</h4>
+                        <p>Auto-retries failed requests with exponential backoff</p>
                     </div>
                     <div class="feature-card">
                         <h4>🏠 100% Local</h4>
@@ -744,7 +793,7 @@ claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js</pre>
                     </div>
                     <div class="faq-item">
                         <h4>Does Reddit work?</h4>
-                        <p>Yes! fetchaller automatically uses old.reddit.com for 65-70% token savings compared to new Reddit. Posts, comments, subreddits, and user profiles all work.</p>
+                        <p>Yes! fetchaller has three Reddit tools: <code>browse_reddit</code> to browse subreddit listings, <code>search_reddit</code> to search posts, and <code>fetch</code> to read full discussions. All automatically use old.reddit.com for 65-70% token savings.</p>
                     </div>
                     <div class="faq-item">
                         <h4>Is this safe?</h4>

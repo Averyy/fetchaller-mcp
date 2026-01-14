@@ -27,11 +27,15 @@ function transformRedditUrl(url) {
     // old.reddit.com HTML converts to ~65-70% smaller markdown than JSON or new Reddit
     if (parsed.hostname === "www.reddit.com" || parsed.hostname === "reddit.com") {
       parsed.hostname = "old.reddit.com";
-      return { url: parsed.toString(), isReddit: true };
     }
 
-    // Already old.reddit.com or other subdomain (i.reddit.com, etc.) - keep as-is
-    return { url, isReddit: true };
+    // Add trailing slash to avoid 301 redirect (saves ~50-100ms latency)
+    // Skip paths that already have slash or have extensions like .json
+    if (!parsed.pathname.endsWith("/") && !parsed.pathname.includes(".")) {
+      parsed.pathname += "/";
+    }
+
+    return { url: parsed.toString(), isReddit: true };
   } catch {
     return { url, isReddit: false };
   }
@@ -144,6 +148,9 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
     // Remove junk elements
     $("script, style, nav, footer, iframe, noscript, svg, [role='navigation'], [role='banner'], [role='contentinfo'], .nav, .navbar, .footer, .sidebar, .ads, .advertisement").remove();
 
+    // Reddit-specific cleanup (old.reddit.com sidebar, search UI, etc.)
+    $(".side, .footer-parent, .listing-chooser, .search-page, .searchpane, .infobar, .premium-banner-outer, .morelink, .titlebox, .login-form-side, .promotedlink, .organic-listing").remove();
+
     // Get title
     const title = $("title").text().trim();
 
@@ -180,6 +187,68 @@ function truncate(text, maxTokens) {
     return text;
   }
   return text.slice(0, maxChars) + `\n\n[Truncated at ~${maxTokens} tokens]`;
+}
+
+// Reddit JSON API helpers
+async function fetchRedditJson(url, timeoutSeconds = DEFAULT_TIMEOUT_SECONDS) {
+  const controller = new AbortController();
+  const timeoutMs = timeoutSeconds * 1000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetchWithRetry(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+      },
+    });
+
+    clearTimeout(timeout);
+
+    if (response.status === 429) {
+      const retryAfter = response.headers.get("retry-after") || "60";
+      return { error: `Rate limited. Reddit allows ~10 requests/min. Retry after ${retryAfter}s.` };
+    }
+
+    if (!response.ok) {
+      return { error: `HTTP ${response.status}` };
+    }
+
+    const data = await response.json();
+    return { data };
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === "AbortError") {
+      return { error: `Request timed out (${timeoutSeconds}s limit)` };
+    }
+    return { error: `Fetch failed: ${err.message}` };
+  }
+}
+
+function formatRelativeTime(utcSeconds) {
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - utcSeconds;
+
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)} minutes ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
+  if (diff < 2592000) return `${Math.floor(diff / 86400)} days ago`;
+  if (diff < 31536000) return `${Math.floor(diff / 2592000)} months ago`;
+  return `${Math.floor(diff / 31536000)} years ago`;
+}
+
+function formatRedditPost(post, index, includeSubreddit = false) {
+  const { title, score, num_comments, author, created_utc, permalink, selftext, subreddit } = post.data;
+
+  const url = `https://old.reddit.com${permalink}`;
+  const preview = selftext ? selftext.slice(0, 200).replace(/\n/g, " ").trim() : "";
+  const previewLine = preview ? `\n   > "${preview}${selftext.length > 200 ? "..." : ""}"` : "";
+  const subLine = includeSubreddit ? `r/${subreddit} · ` : "";
+
+  return `${index}. ${title}
+   ${subLine}▲ ${score.toLocaleString()} · 💬 ${num_comments} · u/${author} · ${formatRelativeTime(created_utc)}
+   ${url}${previewLine}`;
 }
 
 // Create server
@@ -227,6 +296,138 @@ server.tool(
 
     return {
       content: [{ type: "text", text }],
+    };
+  }
+);
+
+// Browse subreddit listings
+server.tool(
+  "browse_reddit",
+  "Browse a subreddit's posts. Returns metadata and URLs. Use mcp__fetchaller__fetch to read full post content.",
+  {
+    subreddit: z.string().describe("Subreddit name without r/ prefix"),
+    sort: z.enum(["hot", "new", "top", "rising"]).default("hot").describe("Sort order"),
+    time: z.enum(["hour", "day", "week", "month", "year", "all"]).default("day")
+      .describe("Time filter (only applies to 'top' sort)"),
+    limit: z.number().min(1).max(25).default(10).describe("Number of posts (1-25)"),
+    after: z.string().optional().describe("Pagination cursor from previous response"),
+    timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
+  },
+  async ({ subreddit, sort, time, limit, after, timeout }) => {
+    // Build URL
+    const params = new URLSearchParams();
+    if (sort === "top") params.set("t", time);
+    params.set("limit", String(limit));
+    if (after) params.set("after", after);
+
+    const url = `https://www.reddit.com/r/${subreddit}/${sort}.json?${params}`;
+    const result = await fetchRedditJson(url, timeout);
+
+    if (result.error) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: `Error: ${result.error}` }],
+      };
+    }
+
+    const posts = result.data?.data?.children || [];
+    const afterCursor = result.data?.data?.after;
+
+    if (posts.length === 0) {
+      return {
+        content: [{
+          type: "text",
+          text: `r/${subreddit} · ${sort} · No posts found`,
+        }],
+      };
+    }
+
+    // Format output
+    const lines = [`r/${subreddit} · ${sort} · ${posts.length} posts\n`];
+
+    posts.forEach((post, i) => {
+      lines.push(formatRedditPost(post, i + 1, false));
+    });
+
+    if (afterCursor) {
+      lines.push(`\n[Next page: after=${afterCursor}]`);
+    }
+
+    lines.push(`\n---\nTo read full post: mcp__fetchaller__fetch({ url: "https://old.reddit.com/r/${subreddit}/comments/..." })`);
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+    };
+  }
+);
+
+// Search Reddit posts
+server.tool(
+  "search_reddit",
+  "Search Reddit posts. Returns metadata and URLs. Use mcp__fetchaller__fetch to read full post content.",
+  {
+    query: z.string().describe("Search query"),
+    subreddit: z.string().optional().describe("Limit to subreddit (without r/)"),
+    sort: z.enum(["relevance", "hot", "top", "new", "comments"]).default("relevance").describe("Sort order"),
+    time: z.enum(["hour", "day", "week", "month", "year", "all"]).default("all").describe("Time filter"),
+    limit: z.number().min(1).max(25).default(10).describe("Number of results (1-25)"),
+    after: z.string().optional().describe("Pagination cursor from previous response"),
+    timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
+  },
+  async ({ query, subreddit, sort, time, limit, after, timeout }) => {
+    // Build URL
+    const params = new URLSearchParams();
+    params.set("q", query);
+    params.set("sort", sort);
+    params.set("t", time);
+    params.set("limit", String(limit));
+    if (after) params.set("after", after);
+
+    let url;
+    if (subreddit) {
+      params.set("restrict_sr", "1");
+      url = `https://www.reddit.com/r/${subreddit}/search.json?${params}`;
+    } else {
+      url = `https://www.reddit.com/search.json?${params}`;
+    }
+
+    const result = await fetchRedditJson(url, timeout);
+
+    if (result.error) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: `Error: ${result.error}` }],
+      };
+    }
+
+    const posts = result.data?.data?.children || [];
+    const afterCursor = result.data?.data?.after;
+
+    if (posts.length === 0) {
+      return {
+        content: [{
+          type: "text",
+          text: `Search: "${query}" · ${sort} · ${time} · No results found`,
+        }],
+      };
+    }
+
+    // Format output
+    const subNote = subreddit ? ` in r/${subreddit}` : "";
+    const lines = [`Search: "${query}"${subNote} · ${sort} · ${time} · ${posts.length} results\n`];
+
+    posts.forEach((post, i) => {
+      lines.push(formatRedditPost(post, i + 1, !subreddit));
+    });
+
+    if (afterCursor) {
+      lines.push(`\n[Next page: after=${afterCursor}]`);
+    }
+
+    lines.push(`\n---\nTo read full post: mcp__fetchaller__fetch({ url: "https://old.reddit.com/r/.../comments/..." })`);
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
     };
   }
 );

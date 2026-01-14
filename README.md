@@ -1,17 +1,14 @@
 # fetchaller-mcp
 
-MCP server that fetches any URL and returns clean markdown. No domain restrictions, no permission prompts. Full Reddit support with comments.
+Fetch Reddit and any website in Claude Code without permission prompts. A WebFetch alternative with no domain restrictions.
 
-## The Problem
+## Why fetchaller?
 
-Claude Code's built-in `WebFetch` requires per-domain permissions with no wildcard support. Every new domain triggers a permission prompt. Reddit is completely blocked. This is tedious for research tasks.
+Claude Code's built-in `WebFetch` asks permission for every new domain and blocks Reddit entirely. fetchaller fixes both:
 
-## The Solution
-
-One MCP server with one permission rule = all domains work without prompts.
-
-- **WebSearch**: Keep using it for discovering URLs (it's good)
-- **fetchaller**: Use for reading URLs (no restrictions)
+- **`fetch`**: Read any URL without permission prompts
+- **`browse_reddit`**: Browse subreddit listings (hot/new/top/rising)
+- **`search_reddit`**: Search Reddit posts globally or within a subreddit
 
 ## Quick Start
 
@@ -25,12 +22,16 @@ npm install
 claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js
 ```
 
-Add permission to `~/.claude/settings.json`:
+Add permissions to `~/.claude/settings.json`:
 
 ```json
 {
   "permissions": {
-    "allow": ["mcp__fetchaller__fetch"]
+    "allow": [
+      "mcp__fetchaller__fetch",
+      "mcp__fetchaller__browse_reddit",
+      "mcp__fetchaller__search_reddit"
+    ]
   }
 }
 ```
@@ -42,11 +43,13 @@ Restart Claude Code.
 Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to instruct Claude to prefer fetchaller:
 
 ```markdown
-## Tool Selection
+## Web Fetching
 
-**DO NOT use `WebFetch`** - use fetchaller instead (no domain restrictions, no permission prompts).
+**Use fetchaller instead of WebFetch** (no domain restrictions). If a dedicated MCP exists (GitHub, Slack, etc.), use that instead.
 
-**fetchaller replaces `WebFetch`, not dedicated MCPs.** If a dedicated MCP exists for a service (GitHub, Slack, etc.), use that MCP instead. Use fetchaller for general web fetching.
+## Reddit Searching and Browsing
+
+Use `mcp__fetchaller__browse_reddit` to browse subreddits, `mcp__fetchaller__search_reddit` to find posts, and `mcp__fetchaller__fetch` to read full discussions.
 ```
 
 ## Usage
@@ -104,18 +107,50 @@ Clean markdown with:
 | Timeout | Error after timeout (default 10s) |
 | Huge page | Truncated at maxTokens |
 
-## Reddit Support
+## Reddit Tools
 
-fetchaller automatically transforms Reddit URLs to use `old.reddit.com` for 65-70% token savings:
+Three tools for Reddit research:
+
+### `browse_reddit` - Browse Subreddit Listings
+
+```javascript
+browse_reddit({
+  subreddit: "LocalLLaMA",   // without r/ prefix
+  sort: "hot",               // hot, new, top, rising
+  time: "day",               // hour, day, week, month, year, all (for "top" only)
+  limit: 10                  // 1-25
+})
+```
+
+Returns post titles, scores, comment counts, and URLs. Use `fetch` to read full posts.
+
+### `search_reddit` - Search Posts
+
+```javascript
+search_reddit({
+  query: "best mass spectrometry software",
+  subreddit: "labrats",      // optional - limit to subreddit
+  sort: "relevance",         // relevance, hot, top, new, comments
+  time: "year",              // hour, day, week, month, year, all
+  limit: 10                  // 1-25
+})
+```
+
+Returns matching posts with metadata. Use `fetch` to read full discussions.
+
+### URL Transformation
+
+All Reddit URLs are automatically transformed to `old.reddit.com` for 65-70% token savings. Trailing slashes are added to avoid 301 redirects (~50-100ms latency savings):
 
 | Input URL | Transformed To |
 |-----------|----------------|
-| `www.reddit.com/*` | `old.reddit.com/*` |
-| `reddit.com/*` | `old.reddit.com/*` |
-| `old.reddit.com/*` | unchanged |
-| `*.json` URLs | unchanged (escape hatch) |
+| `www.reddit.com/r/foo` | `old.reddit.com/r/foo/` |
+| `reddit.com/r/foo` | `old.reddit.com/r/foo/` |
+| `old.reddit.com/r/foo` | `old.reddit.com/r/foo/` |
 
-No special syntax needed - just pass any Reddit URL and fetchaller optimizes it automatically.
+### Rate Limits
+
+Reddit allows ~10 unauthenticated API requests per minute. `browse_reddit` and `search_reddit` each use 1 API call. `fetch` uses HTML (no API call).
 
 ## How It Works
 
