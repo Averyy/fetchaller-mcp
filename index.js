@@ -5,10 +5,62 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as cheerio from "cheerio";
 import TurndownService from "turndown";
+import { extractText, getDocumentProxy } from "unpdf";
 
 const DEFAULT_MAX_TOKENS = 25000;
 const DEFAULT_TIMEOUT_SECONDS = 10;
 const CHARS_PER_TOKEN = 4;
+const MAX_PDF_SIZE = 50 * 1024 * 1024; // 50MB
+const PDF_PROCESSING_TIMEOUT_MS = 30000; // 30s timeout for PDF parsing
+
+// SSRF protection: block private/internal IP ranges
+function isPrivateHost(hostname) {
+  // Block localhost variants (including bracketed IPv6)
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") {
+    return true;
+  }
+  // Block common internal hostnames
+  if (hostname.endsWith(".local") || hostname.endsWith(".internal")) {
+    return true;
+  }
+  // Block DNS rebinding services
+  if (hostname.endsWith(".nip.io") || hostname.endsWith(".xip.io") || hostname.endsWith(".localtest.me") || hostname === "localtest.me") {
+    return true;
+  }
+  // Check for private IPv4 ranges
+  const ipv4Match = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (ipv4Match) {
+    const [, a, b] = ipv4Match.map(Number);
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 (link-local, cloud metadata)
+    if (a === 127) return true; // 127.0.0.0/8
+    if (a === 0) return true; // 0.0.0.0/8
+  }
+  // Check for IPv6 private ranges (bracketed format from URL parsing)
+  const ipv6 = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1).toLowerCase() : null;
+  if (ipv6) {
+    // IPv4-mapped IPv6 (::ffff:127.0.0.1)
+    const v4MappedMatch = ipv6.match(/^::ffff:(\d+)\.(\d+)\.(\d+)\.(\d+)$/i);
+    if (v4MappedMatch) {
+      const [, a, b] = v4MappedMatch.map(Number);
+      if (a === 10) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 169 && b === 254) return true;
+      if (a === 127) return true;
+      if (a === 0) return true;
+    }
+    // Loopback (::1 and variants)
+    if (ipv6 === "::1" || ipv6 === "0:0:0:0:0:0:0:1") return true;
+    // Link-local (fe80::/10)
+    if (ipv6.startsWith("fe8") || ipv6.startsWith("fe9") || ipv6.startsWith("fea") || ipv6.startsWith("feb")) return true;
+    // Unique local addresses (fc00::/7 = fc00:: and fd00::)
+    if (ipv6.startsWith("fc") || ipv6.startsWith("fd")) return true;
+  }
+  return false;
+}
 
 // Reddit URL handling: use old.reddit.com HTML (65-70% more compact than JSON/new Reddit)
 function transformRedditUrl(url) {
@@ -65,6 +117,73 @@ async function fetchWithRetry(url, options, maxRetries = 1) {
   throw lastError;
 }
 
+async function processPdfContent(response, maxTokens) {
+  // Check size limit before downloading
+  const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
+  if (contentLength > MAX_PDF_SIZE) {
+    return { error: `PDF too large: ${(contentLength / 1024 / 1024).toFixed(1)}MB (max 50MB)` };
+  }
+
+  let pdf;
+  let timeoutId;
+  try {
+    const arrayBuffer = await response.arrayBuffer();
+    // Double-check actual size (Content-Length may be missing or wrong)
+    if (arrayBuffer.byteLength > MAX_PDF_SIZE) {
+      return { error: `PDF too large: ${(arrayBuffer.byteLength / 1024 / 1024).toFixed(1)}MB (max 50MB)` };
+    }
+
+    // Wrap PDF parsing in timeout to prevent hangs on complex PDFs
+    const pdfParsePromise = (async () => {
+      pdf = await getDocumentProxy(new Uint8Array(arrayBuffer));
+      return extractText(pdf, { mergePages: true });
+    })();
+
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("PDF_TIMEOUT")), PDF_PROCESSING_TIMEOUT_MS);
+    });
+
+    const { totalPages = 0, text = "" } = await Promise.race([pdfParsePromise, timeoutPromise]);
+
+    // Handle empty/scanned PDFs (use regex to avoid creating trimmed copy)
+    if (!text || /^\s*$/.test(text)) {
+      return {
+        content: `[PDF: ${totalPages} pages. No extractable text found - this may be a scanned document or image-based PDF.]`,
+        contentType: "pdf",
+      };
+    }
+
+    const header = `[PDF: ${totalPages} pages. Text extraction is approximate - complex layouts, tables, and formatting may not be preserved.]\n\n`;
+    // Account for header and potential truncation suffix in token budget
+    // Truncation suffix is ~"\n\n[Truncated at ~XXXXX tokens]" = ~35 chars = ~9 tokens
+    const reservedTokens = Math.ceil(header.length / CHARS_PER_TOKEN) + 10;
+    const availableTokens = Math.max(maxTokens - reservedTokens, 100);
+    return { content: header + truncate(text, availableTokens), contentType: "pdf" };
+  } catch (pdfErr) {
+    // Detect timeout
+    if (pdfErr.message === "PDF_TIMEOUT") {
+      return { error: `PDF parsing timed out after ${PDF_PROCESSING_TIMEOUT_MS / 1000}s. The PDF may be too complex or large to process.` };
+    }
+    // Detect password-protected PDFs
+    if (pdfErr.name === "PasswordException" || pdfErr.message?.includes("password")) {
+      return { error: "PDF is password-protected and cannot be read." };
+    }
+    // Generic error without leaking internals
+    return { error: "PDF parsing failed. The file may be corrupted, invalid, or use unsupported features. Try opening it in a browser to verify it's accessible." };
+  } finally {
+    // Clear timeout to prevent timer leak
+    if (timeoutId) clearTimeout(timeoutId);
+    // Wrap in try-catch to handle potential sync throws
+    try {
+      if (pdf?.destroy) {
+        await pdf.destroy();
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
+
 async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSeconds = DEFAULT_TIMEOUT_SECONDS) {
   // Validate URL
   let parsedUrl;
@@ -74,7 +193,12 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
       return { error: `Invalid protocol: ${parsedUrl.protocol}. Only http/https supported.` };
     }
   } catch {
-    return { error: `Invalid URL: ${url}` };
+    return { error: `Invalid URL format. Expected http:// or https:// URL.` };
+  }
+
+  // SSRF protection: block private/internal addresses
+  if (isPrivateHost(parsedUrl.hostname)) {
+    return { error: `Access to private/internal hosts is not allowed.` };
   }
 
   // Fetch with timeout
@@ -87,7 +211,7 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
       signal: controller.signal,
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.7",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate",
         "Upgrade-Insecure-Requests": "1",
@@ -96,6 +220,18 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
     });
 
     clearTimeout(timeout);
+
+    // SSRF protection: check final URL after redirects
+    if (response.url && response.url !== url) {
+      try {
+        const finalUrl = new URL(response.url);
+        if (isPrivateHost(finalUrl.hostname)) {
+          return { error: `Redirect to private/internal host is not allowed.` };
+        }
+      } catch {
+        // If we can't parse the final URL, proceed cautiously
+      }
+    }
 
     const contentType = response.headers.get("content-type") || "";
     const status = response.status;
@@ -137,6 +273,10 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
       return { content: truncate(text, maxTokens), contentType: "csv" };
     }
 
+    if (contentType.includes("application/pdf")) {
+      return processPdfContent(response, maxTokens);
+    }
+
     if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
       return { error: `Unsupported content type: ${contentType}` };
     }
@@ -175,7 +315,13 @@ async function fetchUrlContent(url, maxTokens = DEFAULT_MAX_TOKENS, timeoutSecon
   } catch (err) {
     clearTimeout(timeout);
     if (err.name === "AbortError") {
-      return { error: `Request timed out (${timeoutSeconds}s limit)` };
+      return { error: `Request timed out after ${timeoutSeconds}s. Try increasing the timeout parameter for slow servers.` };
+    }
+    if (err.code === "ENOTFOUND" || err.message?.includes("ENOTFOUND")) {
+      return { error: `Host not found. Check the URL for typos or verify the site is accessible.` };
+    }
+    if (err.code === "ECONNREFUSED" || err.message?.includes("ECONNREFUSED")) {
+      return { error: `Connection refused. The server may be down or blocking requests.` };
     }
     return { error: `Fetch failed: ${err.message}` };
   }
@@ -260,7 +406,7 @@ const server = new McpServer({
 // Register the fetch tool
 server.tool(
   "fetch",
-  "Fetch any URL and return the page content as clean markdown. Use this tool for reading/fetching web pages - it has no domain restrictions. For discovering URLs via search, use WebSearch. For reading URL content, use this tool.",
+  "Fetch any URL and return the page content as clean markdown. Handles HTML, JSON, XML, CSV, and PDF files. Use this tool for reading/fetching web pages - it has no domain restrictions. For discovering URLs via search, use WebSearch. For reading URL content, use this tool.",
   {
     url: z.string().describe("The URL to fetch"),
     maxTokens: z.number().optional().describe("Maximum tokens to return (default: 25000)"),

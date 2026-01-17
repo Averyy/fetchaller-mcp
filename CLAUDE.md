@@ -47,6 +47,7 @@ mcp__fetchaller__fetch("https://slow-site.example.com", 25000, 60)
 
 - Fetches any HTTP/HTTPS URL
 - Converts HTML to clean markdown (strips scripts, styles, nav, footer, ads)
+- Extracts text from PDFs
 - Returns JSON, XML/RSS, CSV, and plain text as-is
 - Shows redirect destinations
 - Configurable timeout (default: 10 seconds)
