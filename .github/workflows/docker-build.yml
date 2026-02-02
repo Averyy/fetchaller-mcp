@@ -65,20 +65,15 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            # Create directory if it doesn't exist (use $HOME for non-root users)
+            # Create directory if it doesn't exist
             mkdir -p $HOME/fetchaller-mcp
             cd $HOME/fetchaller-mcp
 
-            # Pull latest docker-compose.yml from repo
-            if [ -d ".git" ]; then
-              git fetch origin main
-              git checkout origin/main -- docker-compose.yml
-            else
-              git clone --depth 1 git@github.com:${{ github.repository }}.git .
-            fi
+            # Download docker-compose.yml directly (simpler than git)
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml -o docker-compose.yml
 
             # Stop old container, pull new image, start fresh
-            docker compose down --remove-orphans
+            docker compose down --remove-orphans || true
             docker compose pull
             docker compose up -d
 
