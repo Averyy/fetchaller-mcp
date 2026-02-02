@@ -142,7 +142,7 @@ This tool bypasses domain restrictions. It's intended for research workflows whe
 
 ## Remote Usage (HTTP Mode)
 
-fetchaller-mcp can be deployed remotely at `https://mcp.fetchaller.dev/mcp`.
+fetchaller-mcp can be deployed remotely at `https://mcp.fetchaller.com/mcp`.
 
 ### Running in HTTP Mode
 
@@ -163,7 +163,7 @@ node index.js --http
   "mcpServers": {
     "fetchaller": {
       "type": "streamable-http",
-      "url": "https://mcp.fetchaller.dev/mcp",
+      "url": "https://mcp.fetchaller.com/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_API_KEY"
       }

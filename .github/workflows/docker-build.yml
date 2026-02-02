@@ -94,5 +94,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Image: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "MCP endpoint: \`https://mcp.fetchaller.dev/mcp\`" >> $GITHUB_STEP_SUMMARY
-          echo "Health check: \`https://mcp.fetchaller.dev/health\`" >> $GITHUB_STEP_SUMMARY
+          echo "MCP endpoint: \`https://mcp.fetchaller.com/mcp\`" >> $GITHUB_STEP_SUMMARY
+          echo "Health check: \`https://mcp.fetchaller.com/health\`" >> $GITHUB_STEP_SUMMARY
