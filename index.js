@@ -2,16 +2,55 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
+import crypto from "crypto";
+import { createRequire } from "module";
 import { z } from "zod";
 import * as cheerio from "cheerio";
 import TurndownService from "turndown";
 import { extractText, getDocumentProxy } from "unpdf";
+
+// Import version from package.json to keep in sync
+const require = createRequire(import.meta.url);
+const { version: VERSION } = require("./package.json");
+
+// CLI args
+const args = process.argv.slice(2);
+const httpMode = args.includes("--http");
 
 const DEFAULT_MAX_TOKENS = 25000;
 const DEFAULT_TIMEOUT_SECONDS = 10;
 const CHARS_PER_TOKEN = 4;
 const MAX_PDF_SIZE = 50 * 1024 * 1024; // 50MB
 const PDF_PROCESSING_TIMEOUT_MS = 30000; // 30s timeout for PDF parsing
+
+// Pre-compiled Zod schemas (reused across requests to reduce GC pressure)
+const fetchSchema = {
+  url: z.string().describe("The URL to fetch"),
+  maxTokens: z.number().optional().describe("Maximum tokens to return (default: 25000)"),
+  timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
+};
+
+const browseRedditSchema = {
+  subreddit: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_]{0,20}$/, "Invalid subreddit name").describe("Subreddit name without r/ prefix"),
+  sort: z.enum(["hot", "new", "top", "rising"]).default("hot").describe("Sort order"),
+  time: z.enum(["hour", "day", "week", "month", "year", "all"]).default("day")
+    .describe("Time filter (only applies to 'top' sort)"),
+  limit: z.number().min(1).max(25).default(10).describe("Number of posts (1-25)"),
+  after: z.string().optional().describe("Pagination cursor from previous response"),
+  timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
+};
+
+const searchRedditSchema = {
+  query: z.string().describe("Search query"),
+  subreddit: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_]{0,20}$/, "Invalid subreddit name").optional().describe("Limit to subreddit (without r/)"),
+  sort: z.enum(["relevance", "hot", "top", "new", "comments"]).default("relevance").describe("Sort order"),
+  time: z.enum(["hour", "day", "week", "month", "year", "all"]).default("all").describe("Time filter"),
+  limit: z.number().min(1).max(25).default(10).describe("Number of results (1-25)"),
+  after: z.string().optional().describe("Pagination cursor from previous response"),
+  timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
+};
 
 // SSRF protection: block private/internal IP ranges
 function isPrivateHost(hostname) {
@@ -397,194 +436,456 @@ function formatRedditPost(post, index, includeSubreddit = false) {
    ${url}${previewLine}`;
 }
 
-// Create server
-const server = new McpServer({
-  name: "fetchaller",
-  version: "1.0.0",
-});
+// Factory function to create MCP server with all tools
+function createServer() {
+  const server = new McpServer({
+    name: "fetchaller",
+    version: VERSION,
+  });
 
-// Register the fetch tool
-server.tool(
-  "fetch",
-  "Fetch any URL and return the page content as clean markdown. Handles HTML, JSON, XML, CSV, and PDF files. Use this tool for reading/fetching web pages - it has no domain restrictions. For discovering URLs via search, use WebSearch. For reading URL content, use this tool.",
-  {
-    url: z.string().describe("The URL to fetch"),
-    maxTokens: z.number().optional().describe("Maximum tokens to return (default: 25000)"),
-    timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
-  },
-  async ({ url, maxTokens, timeout }) => {
-    // Transform Reddit URLs (use old.reddit.com for better token efficiency)
-    const { url: fetchUrl, isReddit } = transformRedditUrl(url);
-    const result = await fetchUrlContent(fetchUrl, maxTokens, timeout);
+  // Register the fetch tool (using pre-compiled schema)
+  server.tool(
+    "fetch",
+    "Fetch any URL and return the page content as clean markdown. Handles HTML, JSON, XML, CSV, and PDF files. Use this tool for reading/fetching web pages - it has no domain restrictions. For discovering URLs via search, use WebSearch. For reading URL content, use this tool.",
+    fetchSchema,
+    async ({ url, maxTokens, timeout }) => {
+      // Transform Reddit URLs (use old.reddit.com for better token efficiency)
+      const { url: fetchUrl, isReddit } = transformRedditUrl(url);
+      const result = await fetchUrlContent(fetchUrl, maxTokens, timeout);
 
-    if (result.error) {
+      if (result.error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: result.body
+                ? `Error: ${result.error}\n\nPartial content:\n${result.body}`
+                : `Error: ${result.error}`,
+            },
+          ],
+        };
+      }
+
+      let text = result.content;
+
+      // Note if we transformed the URL
+      if (isReddit && fetchUrl !== url) {
+        text = `[Fetched via: ${fetchUrl}]\n\n${text}`;
+      } else if (result.url && result.url !== fetchUrl) {
+        text = `[Redirected to: ${result.url}]\n\n${text}`;
+      }
+
       return {
-        isError: true,
-        content: [
-          {
+        content: [{ type: "text", text }],
+      };
+    }
+  );
+
+  // Browse subreddit listings (using pre-compiled schema)
+  server.tool(
+    "browse_reddit",
+    "Browse a subreddit's posts. Returns metadata and URLs. Use mcp__fetchaller__fetch to read full post content.",
+    browseRedditSchema,
+    async ({ subreddit, sort, time, limit, after, timeout }) => {
+      // Build URL
+      const params = new URLSearchParams();
+      if (sort === "top") params.set("t", time);
+      params.set("limit", String(limit));
+      if (after) params.set("after", after);
+
+      const url = `https://www.reddit.com/r/${subreddit}/${sort}.json?${params}`;
+      const result = await fetchRedditJson(url, timeout);
+
+      if (result.error) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: ${result.error}` }],
+        };
+      }
+
+      const posts = result.data?.data?.children || [];
+      const afterCursor = result.data?.data?.after;
+
+      if (posts.length === 0) {
+        return {
+          content: [{
             type: "text",
-            text: result.body
-              ? `Error: ${result.error}\n\nPartial content:\n${result.body}`
-              : `Error: ${result.error}`,
-          },
-        ],
+            text: `r/${subreddit} · ${sort} · No posts found`,
+          }],
+        };
+      }
+
+      // Format output
+      const lines = [`r/${subreddit} · ${sort} · ${posts.length} posts\n`];
+
+      posts.forEach((post, i) => {
+        lines.push(formatRedditPost(post, i + 1, false));
+      });
+
+      if (afterCursor) {
+        lines.push(`\n[Next page: after=${afterCursor}]`);
+      }
+
+      lines.push(`\n---\nTo read full post: mcp__fetchaller__fetch({ url: "https://old.reddit.com/r/${subreddit}/comments/..." })`);
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
       };
     }
+  );
 
-    let text = result.content;
+  // Search Reddit posts (using pre-compiled schema)
+  server.tool(
+    "search_reddit",
+    "Search Reddit posts. Returns metadata and URLs. Use mcp__fetchaller__fetch to read full post content.",
+    searchRedditSchema,
+    async ({ query, subreddit, sort, time, limit, after, timeout }) => {
+      // Build URL
+      const params = new URLSearchParams();
+      params.set("q", query);
+      params.set("sort", sort);
+      params.set("t", time);
+      params.set("limit", String(limit));
+      if (after) params.set("after", after);
 
-    // Note if we transformed the URL
-    if (isReddit && fetchUrl !== url) {
-      text = `[Fetched via: ${fetchUrl}]\n\n${text}`;
-    } else if (result.url && result.url !== fetchUrl) {
-      text = `[Redirected to: ${result.url}]\n\n${text}`;
+      let url;
+      if (subreddit) {
+        params.set("restrict_sr", "1");
+        url = `https://www.reddit.com/r/${subreddit}/search.json?${params}`;
+      } else {
+        url = `https://www.reddit.com/search.json?${params}`;
+      }
+
+      const result = await fetchRedditJson(url, timeout);
+
+      if (result.error) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: ${result.error}` }],
+        };
+      }
+
+      const posts = result.data?.data?.children || [];
+      const afterCursor = result.data?.data?.after;
+
+      if (posts.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: `Search: "${query}" · ${sort} · ${time} · No results found`,
+          }],
+        };
+      }
+
+      // Format output
+      const subNote = subreddit ? ` in r/${subreddit}` : "";
+      const lines = [`Search: "${query}"${subNote} · ${sort} · ${time} · ${posts.length} results\n`];
+
+      posts.forEach((post, i) => {
+        lines.push(formatRedditPost(post, i + 1, !subreddit));
+      });
+
+      if (afterCursor) {
+        lines.push(`\n[Next page: after=${afterCursor}]`);
+      }
+
+      lines.push(`\n---\nTo read full post: mcp__fetchaller__fetch({ url: "https://old.reddit.com/r/.../comments/..." })`);
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+      };
     }
+  );
 
-    return {
-      content: [{ type: "text", text }],
-    };
+  return server;
+}
+
+// HTTP server for remote deployment
+async function startHttpServer() {
+  const port = parseInt(process.env.HTTP_PORT || "6000", 10);
+  const apiKey = process.env.MCP_API_KEY;
+  const rateLimit = parseInt(process.env.RATE_LIMIT_REQUESTS || "100", 10);
+
+  // Validate environment variables
+  if (isNaN(port) || port < 1 || port > 65535) {
+    console.error("Invalid HTTP_PORT. Must be 1-65535.");
+    process.exit(1);
   }
-);
+  if (isNaN(rateLimit) || rateLimit < 1) {
+    console.error("Invalid RATE_LIMIT_REQUESTS. Must be a positive integer.");
+    process.exit(1);
+  }
 
-// Browse subreddit listings
-server.tool(
-  "browse_reddit",
-  "Browse a subreddit's posts. Returns metadata and URLs. Use mcp__fetchaller__fetch to read full post content.",
-  {
-    subreddit: z.string().describe("Subreddit name without r/ prefix"),
-    sort: z.enum(["hot", "new", "top", "rising"]).default("hot").describe("Sort order"),
-    time: z.enum(["hour", "day", "week", "month", "year", "all"]).default("day")
-      .describe("Time filter (only applies to 'top' sort)"),
-    limit: z.number().min(1).max(25).default(10).describe("Number of posts (1-25)"),
-    after: z.string().optional().describe("Pagination cursor from previous response"),
-    timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
-  },
-  async ({ subreddit, sort, time, limit, after, timeout }) => {
-    // Build URL
-    const params = new URLSearchParams();
-    if (sort === "top") params.set("t", time);
-    params.set("limit", String(limit));
-    if (after) params.set("after", after);
+  // Pre-compute API key buffer for timing-safe comparison (avoids allocation per request)
+  const apiKeyBuffer = apiKey ? Buffer.from(apiKey) : null;
 
-    const url = `https://www.reddit.com/r/${subreddit}/${sort}.json?${params}`;
-    const result = await fetchRedditJson(url, timeout);
+  const app = express();
+  app.use(express.json({ limit: "100kb" }));
 
-    if (result.error) {
-      return {
-        isError: true,
-        content: [{ type: "text", text: `Error: ${result.error}` }],
-      };
+  // JSON parse error handler
+  app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && "body" in err) {
+      return res.status(400).json({
+        jsonrpc: "2.0",
+        error: { code: -32700, message: "Parse error: Invalid JSON" },
+        id: null,
+      });
     }
+    next(err);
+  });
 
-    const posts = result.data?.data?.children || [];
-    const afterCursor = result.data?.data?.after;
-
-    if (posts.length === 0) {
-      return {
-        content: [{
-          type: "text",
-          text: `r/${subreddit} · ${sort} · No posts found`,
-        }],
-      };
-    }
-
-    // Format output
-    const lines = [`r/${subreddit} · ${sort} · ${posts.length} posts\n`];
-
-    posts.forEach((post, i) => {
-      lines.push(formatRedditPost(post, i + 1, false));
+  // Health check (no auth required, no version to avoid information disclosure)
+  app.get("/health", (req, res) => {
+    res.json({
+      status: "healthy",
+      service: "fetchaller-mcp",
+      timestamp: new Date().toISOString(),
     });
+  });
 
-    if (afterCursor) {
-      lines.push(`\n[Next page: after=${afterCursor}]`);
+  // Rate limiting state with bounded size
+  // Note: In-memory rate limiting. See CLAUDE.md for horizontal scaling limitations.
+  const rateLimits = new Map();
+  const MAX_RATE_LIMIT_ENTRIES = 10000; // Prevent unbounded growth
+
+  // Get client IP (supports reverse proxy)
+  function getClientIp(req) {
+    const forwarded = req.headers["x-forwarded-for"];
+    if (forwarded) {
+      // Use rightmost IP (set by our trusted reverse proxy, harder to spoof)
+      // Leftmost can be spoofed by clients; rightmost is what proxy actually sees
+      const ips = forwarded.split(",");
+      return ips[ips.length - 1].trim();
+    }
+    return req.socket?.remoteAddress || "unknown";
+  }
+
+  // Periodic cleanup of stale rate limit entries
+  let lastCleanup = Date.now();
+  function cleanupRateLimits() {
+    const now = Date.now();
+    const windowStart = now - 60000;
+
+    // Only cleanup every 30 seconds
+    if (now - lastCleanup < 30000) return;
+    lastCleanup = now;
+
+    for (const [ip, entry] of rateLimits) {
+      // Remove entries with no recent requests
+      if (entry.requests.length === 0 || entry.requests[entry.requests.length - 1] < windowStart) {
+        rateLimits.delete(ip);
+      }
+    }
+  }
+
+  // Rate limiting middleware
+  function rateLimitMiddleware(req, res, next) {
+    const clientIp = getClientIp(req);
+    const now = Date.now();
+    const windowStart = now - 60000; // 1 minute window
+
+    let entry = rateLimits.get(clientIp);
+    if (!entry) {
+      // Enforce max entries to prevent memory exhaustion
+      if (rateLimits.size >= MAX_RATE_LIMIT_ENTRIES) {
+        cleanupRateLimits();
+        // If still at limit after cleanup, reject new IPs temporarily
+        if (rateLimits.size >= MAX_RATE_LIMIT_ENTRIES) {
+          console.error(`[${new Date().toISOString()}] Rate limit map full, rejecting new IP: ${clientIp}`);
+          return res.status(503).json({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Server busy. Try again later." },
+            id: null,
+          });
+        }
+      }
+      entry = { requests: [] };
+      rateLimits.set(clientIp, entry);
     }
 
-    lines.push(`\n---\nTo read full post: mcp__fetchaller__fetch({ url: "https://old.reddit.com/r/${subreddit}/comments/..." })`);
+    // Filter old requests (keep only timestamps in current window)
+    // Use a simple loop instead of filter to avoid creating new arrays
+    let writeIdx = 0;
+    for (let i = 0; i < entry.requests.length; i++) {
+      if (entry.requests[i] > windowStart) {
+        entry.requests[writeIdx++] = entry.requests[i];
+      }
+    }
+    entry.requests.length = writeIdx;
 
-    return {
-      content: [{ type: "text", text: lines.join("\n") }],
-    };
+    // Check limit
+    if (entry.requests.length >= rateLimit) {
+      console.error(`[${new Date().toISOString()}] Rate limited: ${clientIp}`);
+      return res.status(429).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: `Rate limit exceeded (${rateLimit} requests/minute). Try again in 60 seconds.` },
+        id: null,
+      });
+    }
+
+    entry.requests.push(now);
+
+    // Trigger periodic cleanup
+    cleanupRateLimits();
+
+    next();
   }
-);
 
-// Search Reddit posts
-server.tool(
-  "search_reddit",
-  "Search Reddit posts. Returns metadata and URLs. Use mcp__fetchaller__fetch to read full post content.",
-  {
-    query: z.string().describe("Search query"),
-    subreddit: z.string().optional().describe("Limit to subreddit (without r/)"),
-    sort: z.enum(["relevance", "hot", "top", "new", "comments"]).default("relevance").describe("Sort order"),
-    time: z.enum(["hour", "day", "week", "month", "year", "all"]).default("all").describe("Time filter"),
-    limit: z.number().min(1).max(25).default(10).describe("Number of results (1-25)"),
-    after: z.string().optional().describe("Pagination cursor from previous response"),
-    timeout: z.number().optional().describe("Request timeout in seconds (default: 10)"),
-  },
-  async ({ query, subreddit, sort, time, limit, after, timeout }) => {
-    // Build URL
-    const params = new URLSearchParams();
-    params.set("q", query);
-    params.set("sort", sort);
-    params.set("t", time);
-    params.set("limit", String(limit));
-    if (after) params.set("after", after);
+  // Pre-compute API key hash for truly constant-time comparison
+  // Hashing ensures comparison is always same length regardless of input
+  const apiKeyHash = apiKeyBuffer
+    ? crypto.createHash("sha256").update(apiKeyBuffer).digest()
+    : null;
 
-    let url;
-    if (subreddit) {
-      params.set("restrict_sr", "1");
-      url = `https://www.reddit.com/r/${subreddit}/search.json?${params}`;
+  // Timing-safe token comparison to prevent timing attacks
+  // Uses SHA-256 hashing to ensure constant-time comparison regardless of token length
+  function safeTokenCompare(token) {
+    if (!token || !apiKeyHash) return false;
+    const tokenHash = crypto.createHash("sha256").update(token).digest();
+    return crypto.timingSafeEqual(tokenHash, apiKeyHash);
+  }
+
+  // Bearer token auth middleware
+  function authMiddleware(req, res, next) {
+    // If no API key configured, deny all requests (secure by default in production)
+    if (!apiKeyHash) {
+      console.error(`[${new Date().toISOString()}] Auth failed: No MCP_API_KEY configured`);
+      return res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "Server authentication not configured. Contact the server administrator." },
+        id: null,
+      });
+    }
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      console.error(`[${new Date().toISOString()}] Auth failed: Missing Authorization header from ${getClientIp(req)}`);
+      return res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32002, message: "Missing Authorization header" },
+        id: null,
+      });
+    }
+
+    // Parse auth header with regex to handle tokens containing spaces
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (!match || !safeTokenCompare(match[1])) {
+      console.error(`[${new Date().toISOString()}] Auth failed: Invalid token from ${getClientIp(req)}`);
+      return res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32003, message: "Invalid Bearer token" },
+        id: null,
+      });
+    }
+
+    next();
+  }
+
+  // MCP endpoint - stateless mode (new server + transport per request)
+  app.post("/mcp", rateLimitMiddleware, authMiddleware, async (req, res) => {
+    const server = createServer();
+    let transport;
+
+    try {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // stateless mode
+      });
+
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error handling MCP request:`, error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    } finally {
+      // Cleanup with proper error handling
+      try {
+        await transport?.close?.();
+      } catch {
+        // Ignore cleanup errors
+      }
+      try {
+        await server?.close?.();
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  });
+
+  // Reject other methods on /mcp (include Allow header per RFC 7231)
+  app.get("/mcp", (req, res) => {
+    res.set("Allow", "POST").status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed. Use POST." },
+      id: null,
+    });
+  });
+
+  app.delete("/mcp", (req, res) => {
+    res.set("Allow", "POST").status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed. Use POST." },
+      id: null,
+    });
+  });
+
+  // Catch-all 404 handler (return JSON-RPC error, not HTML)
+  app.use((req, res) => {
+    res.status(404).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Not found" },
+      id: null,
+    });
+  });
+
+  const server = app.listen(port, "0.0.0.0", () => {
+    console.error(`[${new Date().toISOString()}] fetchaller MCP HTTP server v${VERSION} listening on port ${port}`);
+    if (apiKeyHash) {
+      console.error(`[${new Date().toISOString()}] Bearer token authentication enabled`);
     } else {
-      url = `https://www.reddit.com/search.json?${params}`;
+      console.error(`[${new Date().toISOString()}] WARNING: No MCP_API_KEY set - all requests will be denied`);
     }
+    console.error(`[${new Date().toISOString()}] Rate limit: ${rateLimit} requests/minute per IP`);
+  });
 
-    const result = await fetchRedditJson(url, timeout);
-
-    if (result.error) {
-      return {
-        isError: true,
-        content: [{ type: "text", text: `Error: ${result.error}` }],
-      };
-    }
-
-    const posts = result.data?.data?.children || [];
-    const afterCursor = result.data?.data?.after;
-
-    if (posts.length === 0) {
-      return {
-        content: [{
-          type: "text",
-          text: `Search: "${query}" · ${sort} · ${time} · No results found`,
-        }],
-      };
-    }
-
-    // Format output
-    const subNote = subreddit ? ` in r/${subreddit}` : "";
-    const lines = [`Search: "${query}"${subNote} · ${sort} · ${time} · ${posts.length} results\n`];
-
-    posts.forEach((post, i) => {
-      lines.push(formatRedditPost(post, i + 1, !subreddit));
+  // Graceful shutdown handler
+  function gracefulShutdown(signal) {
+    console.error(`[${new Date().toISOString()}] Received ${signal}, shutting down gracefully...`);
+    server.close(() => {
+      console.error(`[${new Date().toISOString()}] HTTP server closed`);
+      process.exit(0);
     });
 
-    if (afterCursor) {
-      lines.push(`\n[Next page: after=${afterCursor}]`);
-    }
-
-    lines.push(`\n---\nTo read full post: mcp__fetchaller__fetch({ url: "https://old.reddit.com/r/.../comments/..." })`);
-
-    return {
-      content: [{ type: "text", text: lines.join("\n") }],
-    };
+    // Force exit after 10 seconds if connections don't close
+    // Use .unref() so this timer doesn't keep the process alive if server closes cleanly
+    const forceExitTimer = setTimeout(() => {
+      console.error(`[${new Date().toISOString()}] Forcing shutdown after timeout`);
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
   }
-);
+
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+}
 
 // Start server with proper error handling
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  // Log to stderr (stdout is reserved for MCP protocol)
-  console.error("fetchaller MCP server running on stdio");
+  if (httpMode) {
+    await startHttpServer();
+  } else {
+    // Stdio mode (default, for local use)
+    const server = createServer();
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("fetchaller MCP server running on stdio");
+  }
 }
 
 main().catch((error) => {

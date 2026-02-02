@@ -139,3 +139,68 @@ To verify you're using the local version, check that any code changes in `index.
 ## Security Note
 
 This tool bypasses domain restrictions. It's intended for research workflows where permission prompts are disruptive. The user has explicitly allowed this via their settings.
+
+## Remote Usage (HTTP Mode)
+
+fetchaller-mcp can be deployed remotely at `https://mcp.fetchaller.dev/mcp`.
+
+### Running in HTTP Mode
+
+```bash
+# With authentication (required for production)
+MCP_API_KEY=your-secret-key node index.js --http
+
+# Or use .env file
+cp .env.sample .env
+# Edit .env with your API key
+node index.js --http
+```
+
+### Claude Code/Desktop Configuration (Remote)
+
+```json
+{
+  "mcpServers": {
+    "fetchaller": {
+      "type": "streamable-http",
+      "url": "https://mcp.fetchaller.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+### Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/mcp` | POST | Bearer token | MCP protocol endpoint |
+| `/health` | GET | None | Health check for Docker |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HTTP_PORT` | 6000 | Server port |
+| `MCP_API_KEY` | (none) | Bearer token - **required** in HTTP mode |
+| `RATE_LIMIT_REQUESTS` | 100 | Requests per minute per IP |
+
+### Docker Deployment
+
+```bash
+# Build and run locally
+docker compose up --build
+
+# Production (uses GHCR image)
+docker compose pull
+docker compose up -d
+```
+
+### Scaling Limitations
+
+**In-memory rate limiting**: Rate limits are stored in-memory per container. If you run multiple container replicas:
+- Each replica has separate rate limit state
+- A client could exceed the intended limit by hitting different replicas
+- For horizontal scaling, use external rate limiting (e.g., Redis, Caddy rate-limit plugin, or a load balancer)

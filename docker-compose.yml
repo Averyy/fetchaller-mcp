@@ -1,0 +1,36 @@
+services:
+  fetchaller-mcp:
+    image: ghcr.io/averyy/fetchaller-mcp:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fetchaller-mcp
+    restart: unless-stopped
+    ports:
+      - "6000:6000"
+    networks:
+      - web
+    environment:
+      - HTTP_PORT=6000
+      - RATE_LIMIT_REQUESTS=100
+      - MCP_API_KEY=${MCP_API_KEY}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  web:
+    external: true
