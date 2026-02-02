@@ -65,7 +65,14 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            cd /root/fetchaller-mcp || git clone git@github.com:${{ github.repository }}.git /root/fetchaller-mcp && cd /root/fetchaller-mcp
+            mkdir -p /root/fetchaller-mcp
+            cd /root/fetchaller-mcp
+
+            # Initialize git if not already a repo
+            if [ ! -d ".git" ]; then
+              git init
+              git remote add origin git@github.com:${{ github.repository }}.git
+            fi
 
             # Pull latest files from repo
             git fetch origin main
