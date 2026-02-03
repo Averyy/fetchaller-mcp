@@ -147,6 +147,11 @@ def create_router(
     # =========================================================================
     # Authorization Endpoint
     # =========================================================================
+    @router.head("/authorize")
+    async def authorize_head():
+        """HEAD request for authorize - some clients check this first."""
+        return Response(status_code=200, headers={"Content-Type": "text/html; charset=utf-8"})
+
     @router.get("/authorize")
     async def authorize_get(
         client_id: str = Query(None),
@@ -157,6 +162,12 @@ def create_router(
         code_challenge_method: str = Query(None),
     ):
         """Authorization endpoint - GET shows the login form."""
+        # Log authorize attempts for debugging
+        print(
+            f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize called - client_id={sanitize_for_log(client_id)}, redirect_uri={sanitize_for_log(redirect_uri)}",
+            file=sys.stderr,
+        )
+
         # Manual validation for OAuth-compliant error responses (not FastAPI's 422)
         if not client_id:
             return JSONResponse(
