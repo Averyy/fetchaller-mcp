@@ -149,15 +149,24 @@ def create_router(
     # =========================================================================
     @router.get("/authorize")
     async def authorize_get(
-        client_id: str = Query(...),
+        client_id: str = Query(None),
         redirect_uri: str = Query(None),
-        response_type: str = Query(...),
+        response_type: str = Query(None),
         state: str = Query(None),
-        code_challenge: str = Query(...),
+        code_challenge: str = Query(None),
         code_challenge_method: str = Query(None),
     ):
         """Authorization endpoint - GET shows the login form."""
-        # Validate response_type
+        # Manual validation for OAuth-compliant error responses (not FastAPI's 422)
+        if not client_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "invalid_request",
+                    "error_description": "Missing client_id parameter",
+                },
+            )
+
         if response_type != "code":
             return JSONResponse(
                 status_code=400,
@@ -167,7 +176,15 @@ def create_router(
                 },
             )
 
-        # Validate code_challenge_method
+        if not code_challenge:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "invalid_request",
+                    "error_description": "PKCE code_challenge is required",
+                },
+            )
+
         if code_challenge_method and code_challenge_method != "S256":
             return JSONResponse(
                 status_code=400,
