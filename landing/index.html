@@ -625,11 +625,11 @@
 <pre id="install-code"><span class="code-comment"># Clone and install</span>
 git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
-npm install
+uv venv && uv pip install -e .
 
 <span class="code-comment"># Add to Claude Code (choose one)</span>
-claude mcp add fetchaller -s user -- node /path/to/fetchaller-mcp/index.js    <span class="code-comment"># all projects</span>
-claude mcp add fetchaller -s project -- node /path/to/fetchaller-mcp/index.js <span class="code-comment"># this project only</span></pre>
+claude mcp add fetchaller -s user -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main    <span class="code-comment"># all projects</span>
+claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main <span class="code-comment"># this project only</span></pre>
                     </div>
                 </div>
 
