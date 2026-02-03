@@ -123,6 +123,17 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.oauth_store = oauth_store
     app.state.jwt_secret = jwt_secret
 
+    # Add request logging middleware (runs BEFORE rate limiting)
+    @app.middleware("http")
+    async def log_all_requests(request, call_next):
+        """Log all incoming requests for debugging."""
+        print(
+            f"[{datetime.now(UTC).isoformat()}] REQUEST: {request.method} {request.url.path} from {request.client.host if request.client else 'unknown'}",
+            file=sys.stderr,
+        )
+        response = await call_next(request)
+        return response
+
     # Add rate limiting middleware
     app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)
 

@@ -252,77 +252,90 @@ def create_router(
         api_key: str = Form(...),
     ):
         """Authorization endpoint - POST handles form submission."""
-        # Validate client
-        client = oauth_store.get_client(client_id)
-        if client is None:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": "invalid_client",
-                    "error_description": "Unknown client_id",
-                },
-            )
+        import time
+        start_time = time.time()
+        print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize POST started for client {sanitize_for_log(client_id)}", file=sys.stderr)
 
-        # Validate redirect_uri
-        if redirect_uri not in client.redirect_uris:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": "invalid_request",
-                    "error_description": "Invalid redirect_uri",
-                },
-            )
+        try:
+            # Validate client
+            client = oauth_store.get_client(client_id)
+            if client is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_client",
+                        "error_description": "Unknown client_id",
+                    },
+                )
 
-        # Validate API key
-        if not api_keys:
-            html = get_authorize_page(
-                client_id,
-                redirect_uri,
-                state,
-                code_challenge,
-                error="Server not configured. MCP_API_KEY environment variable is not set.",
-            )
-            return HTMLResponse(content=html)
+            # Validate redirect_uri
+            if redirect_uri not in client.redirect_uris:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_request",
+                        "error_description": "Invalid redirect_uri",
+                    },
+                )
 
-        # Check if API key matches any valid key
-        provided_hash = hash_api_key(api_key)
-        if provided_hash not in api_key_hashes:
+            # Validate API key
+            if not api_keys:
+                html = get_authorize_page(
+                    client_id,
+                    redirect_uri,
+                    state,
+                    code_challenge,
+                    error="Server not configured. MCP_API_KEY environment variable is not set.",
+                )
+                return HTMLResponse(content=html)
+
+            # Check if API key matches any valid key
+            provided_hash = hash_api_key(api_key)
+            if provided_hash not in api_key_hashes:
+                print(
+                    f"[{datetime.now(UTC).isoformat()}] OAuth: Invalid API key attempt for client {sanitize_for_log(client_id)}",
+                    file=sys.stderr,
+                )
+                html = get_authorize_page(
+                    client_id,
+                    redirect_uri,
+                    state,
+                    code_challenge,
+                    error="Invalid API key. Please check your MCP_API_KEY and try again.",
+                )
+                return HTMLResponse(content=html)
+
+            # Create auth code
+            auth_code = oauth_store.create_auth_code(client_id, code_challenge, redirect_uri, api_key)
+            if auth_code is None:
+                html = get_authorize_page(
+                    client_id,
+                    redirect_uri,
+                    state,
+                    code_challenge,
+                    error="Server busy. Please try again in a few minutes.",
+                )
+                return HTMLResponse(content=html)
+
+            # Redirect back with code (URL-encode state to prevent open redirect)
+            redirect_url = f"{redirect_uri}?code={auth_code.code}"
+            if state:
+                redirect_url += f"&state={quote(state, safe='')}"
+
+            elapsed = time.time() - start_time
             print(
-                f"[{datetime.now(UTC).isoformat()}] OAuth: Invalid API key attempt for client {sanitize_for_log(client_id)}",
+                f"[{datetime.now(UTC).isoformat()}] OAuth: Issued auth code for client {sanitize_for_log(client_id)} in {elapsed:.3f}s, redirecting to {sanitize_for_log(redirect_url[:100])}",
                 file=sys.stderr,
             )
-            html = get_authorize_page(
-                client_id,
-                redirect_uri,
-                state,
-                code_challenge,
-                error="Invalid API key. Please check your MCP_API_KEY and try again.",
-            )
-            return HTMLResponse(content=html)
 
-        # Create auth code
-        auth_code = oauth_store.create_auth_code(client_id, code_challenge, redirect_uri, api_key)
-        if auth_code is None:
-            html = get_authorize_page(
-                client_id,
-                redirect_uri,
-                state,
-                code_challenge,
-                error="Server busy. Please try again in a few minutes.",
-            )
-            return HTMLResponse(content=html)
+            return RedirectResponse(url=redirect_url, status_code=302)
 
-        print(
-            f"[{datetime.now(UTC).isoformat()}] OAuth: Issued auth code for client {sanitize_for_log(client_id)}",
-            file=sys.stderr,
-        )
-
-        # Redirect back with code (URL-encode state to prevent open redirect)
-        redirect_url = f"{redirect_uri}?code={auth_code.code}"
-        if state:
-            redirect_url += f"&state={quote(state, safe='')}"
-
-        return RedirectResponse(url=redirect_url, status_code=302)
+        except Exception as e:
+            elapsed = time.time() - start_time
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize POST EXCEPTION after {elapsed:.3f}s: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            raise
 
     # =========================================================================
     # Token Endpoint
@@ -330,8 +343,12 @@ def create_router(
     @router.post("/token")
     async def token(request: Request):
         """Token endpoint - exchange code for access token."""
+        print(f"[{datetime.now(UTC).isoformat()}] OAuth: /token POST received", file=sys.stderr)
+
         # Parse form or JSON body
         content_type = request.headers.get("content-type", "")
+        print(f"[{datetime.now(UTC).isoformat()}] OAuth: /token content-type={content_type}", file=sys.stderr)
+
         if "application/x-www-form-urlencoded" in content_type:
             form = await request.form()
             body = dict(form)
@@ -347,8 +364,19 @@ def create_router(
         client_id = body.get("client_id")
         code_verifier = body.get("code_verifier")
 
+        print(
+            f"[{datetime.now(UTC).isoformat()}] OAuth: /token params - "
+            f"grant_type={sanitize_for_log(grant_type)}, "
+            f"client_id={sanitize_for_log(client_id)}, "
+            f"code={'present' if code else 'MISSING'}, "
+            f"redirect_uri={sanitize_for_log(redirect_uri)}, "
+            f"code_verifier={'present' if code_verifier else 'MISSING'}",
+            file=sys.stderr,
+        )
+
         # Validate grant type
         if grant_type != "authorization_code":
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /token FAILED - invalid grant_type", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -359,6 +387,7 @@ def create_router(
 
         # Validate required parameters
         if not code or not client_id:
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /token FAILED - missing code or client_id", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -369,6 +398,7 @@ def create_router(
 
         # PKCE code_verifier is required (RFC 7636)
         if not code_verifier:
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /token FAILED - missing code_verifier", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -380,6 +410,7 @@ def create_router(
         # Consume auth code (validates client_id, redirect_uri, PKCE)
         auth_code = oauth_store.consume_auth_code(code, client_id, redirect_uri or "", code_verifier)
         if auth_code is None:
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /token FAILED - invalid auth code (expired, wrong client, wrong redirect_uri, or PKCE mismatch)", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
