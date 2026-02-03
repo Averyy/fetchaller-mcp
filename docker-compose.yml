@@ -14,7 +14,7 @@ services:
       - HTTP_PORT=6000
       - RATE_LIMIT_REQUESTS=100
       - MCP_API_KEY=${MCP_API_KEY}
-      - MCP_SERVER_URL=https://mcp.fetchaller.com
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-http://localhost:6000}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6000/health"]
       interval: 30s
