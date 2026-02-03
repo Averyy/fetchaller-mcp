@@ -161,14 +161,65 @@ Reddit allows ~10 unauthenticated API requests per minute. `browse_reddit` and `
 5. For JSON/XML/CSV/text: returns raw
 6. Truncates to token limit
 
+## Remote Deployment (HTTP Mode)
+
+Deploy fetchaller as a remote MCP server for Claude.ai, Claude Desktop, or any MCP client.
+
+### Quick Start
+
+```bash
+# Run with authentication
+MCP_API_KEY=your-secret-key node index.js --http
+
+# Or use Docker
+docker compose up -d
+```
+
+### Claude Code/Desktop Config
+
+```json
+{
+  "mcpServers": {
+    "fetchaller": {
+      "type": "streamable-http",
+      "url": "https://mcp.fetchaller.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+### Claude.ai Custom Connector (OAuth)
+
+For Claude.ai web/mobile with cross-platform sync:
+
+1. Go to Settings → Connectors → Add Custom Connector
+2. **Name**: `fetchaller`
+3. **URL**: `https://mcp.fetchaller.com/mcp`
+4. Leave Client ID/Secret **blank**
+5. Enter your API key when prompted
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HTTP_PORT` | 6000 | Server port |
+| `MCP_API_KEY` | (required) | Bearer token for auth |
+| `MCP_SERVER_URL` | `http://localhost:$PORT` | Public URL for OAuth |
+| `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
+
 ## Files
 
 ```
 fetchaller-mcp/
-├── package.json    # Dependencies
-├── index.js        # MCP server (~170 lines)
-├── CLAUDE.md       # Instructions for Claude
-└── README.md       # This file
+├── package.json        # Dependencies
+├── index.js            # MCP server
+├── CLAUDE.md           # Instructions for Claude
+├── docker-compose.yml  # Docker deployment
+├── Dockerfile          # Container build
+└── README.md           # This file
 ```
 
 ## Dependencies

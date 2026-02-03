@@ -176,8 +176,14 @@ node index.js --http
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/mcp` | POST | Bearer token | MCP protocol endpoint |
+| `/mcp` | POST | Bearer token or OAuth | MCP protocol endpoint |
+| `/mcp` | HEAD | None | Protocol version discovery |
 | `/health` | GET | None | Health check for Docker |
+| `/.well-known/oauth-protected-resource` | GET | None | OAuth resource metadata |
+| `/.well-known/oauth-authorization-server` | GET | None | OAuth server metadata |
+| `/register` | POST | None | Dynamic client registration |
+| `/authorize` | GET/POST | None | OAuth authorization (login page) |
+| `/token` | POST | None | OAuth token exchange |
 
 ### Environment Variables
 
@@ -185,7 +191,45 @@ node index.js --http
 |----------|---------|-------------|
 | `HTTP_PORT` | 6000 | Server port |
 | `MCP_API_KEY` | (none) | Bearer token - **required** in HTTP mode |
+| `MCP_SERVER_URL` | `http://localhost:$PORT` | Public URL for OAuth redirects |
 | `RATE_LIMIT_REQUESTS` | 100 | Requests per minute per IP |
+
+## Claude.ai Custom Connector (OAuth)
+
+fetchaller supports OAuth 2.1 for Claude.ai web/mobile connectors. This allows cross-platform sync without manual configuration.
+
+### Setup
+
+1. **Deploy fetchaller** with `MCP_API_KEY` and `MCP_SERVER_URL` set:
+   ```bash
+   MCP_API_KEY=your-secret-key \
+   MCP_SERVER_URL=https://mcp.fetchaller.com \
+   node index.js --http
+   ```
+
+2. **Add connector in Claude.ai**:
+   - Go to Settings → Connectors → Add Custom Connector
+   - Name: `fetchaller`
+   - URL: `https://mcp.fetchaller.com/mcp`
+   - Leave OAuth Client ID/Secret **blank** (uses Dynamic Client Registration)
+
+3. **Authorize**: Enter your `MCP_API_KEY` when prompted
+
+### How It Works
+
+1. Claude discovers OAuth endpoints via `/.well-known/oauth-authorization-server`
+2. Claude registers itself via `/register` (Dynamic Client Registration)
+3. User enters API key on `/authorize` page
+4. Claude exchanges auth code for JWT token via `/token`
+5. Claude uses JWT for all MCP requests
+
+### Authentication Methods
+
+The server accepts **either**:
+- **Raw API key**: `Authorization: Bearer YOUR_MCP_API_KEY`
+- **OAuth JWT token**: Issued by the `/token` endpoint
+
+Both work identically for MCP requests. OAuth is for Claude.ai connectors; raw API key is for Claude Code/Desktop config files.
 
 ### Docker Deployment
 
