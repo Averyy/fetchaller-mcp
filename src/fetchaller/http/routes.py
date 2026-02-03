@@ -417,12 +417,19 @@ def create_router(
     @router.post("/mcp")
     async def mcp_endpoint(request: Request):
         """MCP protocol endpoint (requires auth)."""
+        import json as json_module
         from .middleware import get_client_ip, verify_bearer_auth
+
+        client_ip = get_client_ip(request)
+
+        # Log incoming request details
+        protocol_version = request.headers.get("mcp-protocol-version", "not-set")
+        accept_header = request.headers.get("accept", "not-set")
+        print(f"[{datetime.now(UTC).isoformat()}] MCP request from {client_ip} - Protocol-Version: {protocol_version}, Accept: {accept_header}", file=sys.stderr)
 
         # Verify authentication
         auth_error = verify_bearer_auth(request, api_keys, api_key_hashes, oauth_store, jwt_secret)
         if auth_error:
-            client_ip = get_client_ip(request)
             print(f"[{datetime.now(UTC).isoformat()}] Auth failed: {auth_error} from {client_ip}", file=sys.stderr)
             # Per MCP spec: 401 MUST include WWW-Authenticate with resource_metadata
             return JSONResponse(
@@ -438,6 +445,16 @@ def create_router(
             )
 
         try:
+            # Read and log request body for debugging
+            body_bytes = await request.body()
+            try:
+                body_json = json_module.loads(body_bytes)
+                method = body_json.get("method", "unknown")
+                request_id = body_json.get("id", "none")
+                print(f"[{datetime.now(UTC).isoformat()}] MCP method={method} id={request_id} from {client_ip}", file=sys.stderr)
+            except Exception:
+                print(f"[{datetime.now(UTC).isoformat()}] MCP request body parse failed from {client_ip}", file=sys.stderr)
+
             # Get session manager from app state
             manager = request.app.state.session_manager
 
@@ -457,9 +474,19 @@ def create_router(
                     if body:
                         response_body.append(body)
 
-            await manager.handle_request(request.scope, request.receive, collect_send)
+            # We need to create a new receive that returns the body we already read
+            body_consumed = False
+            async def receive_with_body():
+                nonlocal body_consumed
+                if not body_consumed:
+                    body_consumed = True
+                    return {"type": "http.request", "body": body_bytes, "more_body": False}
+                return {"type": "http.disconnect"}
+
+            await manager.handle_request(request.scope, receive_with_body, collect_send)
 
             content = b"".join(response_body)
+            print(f"[{datetime.now(UTC).isoformat()}] MCP response status={response_status[0]} size={len(content)} for method={method}", file=sys.stderr)
             return Response(
                 content=content,
                 status_code=response_status[0],

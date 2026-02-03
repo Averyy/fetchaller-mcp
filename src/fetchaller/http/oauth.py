@@ -260,31 +260,30 @@ class OAuthStore:
 
     def verify_token(self, token: str, jwt_secret: bytes, valid_api_key_hashes: set[str]) -> bool:
         """
-        Verify an access token.
+        Verify an access token (stateless).
 
         Checks:
-        1. Token is in our store
-        2. Token is not expired
-        3. JWT signature is valid
-        4. API key hash matches one of the valid hashes
+        1. JWT signature is valid (proves we issued it)
+        2. JWT is not expired (exp claim)
+        3. API key hash in JWT matches one of the valid hashes
+
+        This is stateless - tokens survive server restarts.
+        Trade-off: Can't revoke individual tokens (but can rotate JWT_SECRET
+        to invalidate all, or remove API keys to invalidate tokens for that key).
 
         Args:
             token: The JWT token
             jwt_secret: Secret used for JWT signing
             valid_api_key_hashes: Set of valid API key hashes
         """
-        stored = self.access_tokens.get(token)
-        if not stored:
-            return False
-
-        if stored.expires_at < time.time():
-            del self.access_tokens[token]
-            return False
-
-        # Verify JWT signature
+        # Verify JWT signature and expiration (both checked by verify_access_token)
         payload = verify_access_token(token, jwt_secret)
         if not payload:
             return False
 
-        # Verify API key hash
-        return stored.api_key_hash in valid_api_key_hashes
+        # Verify API key hash from JWT payload matches a valid key
+        token_api_key_hash = payload.get("api_key_hash")
+        if not token_api_key_hash:
+            return False
+
+        return token_api_key_hash in valid_api_key_hashes
