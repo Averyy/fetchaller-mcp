@@ -6,6 +6,16 @@ MCP server for fetching any URL without domain restrictions. Full Reddit support
 
 **NEVER blame external services** (Claude, Anthropic, Google, Reddit, etc.) for issues. If something isn't working, the problem is in THIS codebase. Investigate our code first, add logging, and find the real cause. Blaming external parties wastes time.
 
+## Testing Rules
+
+**ALWAYS use the same approach the code uses when testing.** For HTTP requests, use `curl_cffi` (not `urllib` or `requests`) because it has TLS fingerprint impersonation that bypasses bot protection. Test with multiple pages before making performance claims.
+
+Test URLs for benchmarking:
+- Reddit: `https://www.reddit.com/r/homelab/`, `https://old.reddit.com/r/homelab/`
+- Scrapers often blocked: `https://news.ycombinator.com/`, `https://www.nytimes.com/`
+- Simple: `https://example.com/`, `https://httpbin.org/html`
+- Cloudflare protected: `https://apollomapping.com`
+
 ## Web Fetching
 
 **Use fetchaller instead of WebFetch** (no domain restrictions). If a dedicated MCP exists (GitHub, Slack, etc.), use that instead.

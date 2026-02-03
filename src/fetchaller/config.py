@@ -44,10 +44,11 @@ class Config:
     reddit_backoff_rate_limit: int = 60  # After 429
     reddit_backoff_blocked: int = 300  # After 403
 
-    # Retry settings (NEW)
-    retry_max_attempts: int = 3
-    retry_initial_delay: float = 1.0
-    retry_max_delay: float = 30.0
+    # Retry settings - tuned for fast failure detection
+    # With 1 retry, max delay is 0.5s (vs 7s with old defaults)
+    retry_max_attempts: int = 1
+    retry_initial_delay: float = 0.5
+    retry_max_delay: float = 5.0
     retry_exponential_base: int = 2
     retry_jitter: float = 0.1
 

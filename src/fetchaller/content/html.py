@@ -1,10 +1,12 @@
 """HTML to markdown conversion with cleanup."""
 
+import re
+
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
-# Elements to remove from HTML before conversion
-JUNK_SELECTORS = [
+# Elements to remove from HTML before conversion (combined into single selector for speed)
+_JUNK_SELECTORS_LIST = [
     "script",
     "style",
     "nav",
@@ -24,7 +26,7 @@ JUNK_SELECTORS = [
 ]
 
 # Reddit-specific elements to remove (old.reddit.com)
-REDDIT_SELECTORS = [
+_REDDIT_SELECTORS_LIST = [
     ".side",
     ".footer-parent",
     ".listing-chooser",
@@ -38,6 +40,14 @@ REDDIT_SELECTORS = [
     ".promotedlink",
     ".organic-listing",
 ]
+
+# Pre-combined CSS selectors for single-pass removal (much faster than iterating)
+JUNK_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST)
+REDDIT_SELECTOR = ", ".join(_REDDIT_SELECTORS_LIST)
+JUNK_AND_REDDIT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _REDDIT_SELECTORS_LIST)
+
+# Pre-compiled regex for whitespace cleanup (faster than line-by-line iteration)
+_EXCESSIVE_NEWLINES = re.compile(r"\n{4,}")
 
 
 def clean_html(html: str, is_reddit: bool = False) -> BeautifulSoup:
@@ -53,16 +63,10 @@ def clean_html(html: str, is_reddit: bool = False) -> BeautifulSoup:
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # Remove standard junk elements
-    for selector in JUNK_SELECTORS:
-        for element in soup.select(selector):
-            element.decompose()
-
-    # Remove Reddit-specific elements
-    if is_reddit:
-        for selector in REDDIT_SELECTORS:
-            for element in soup.select(selector):
-                element.decompose()
+    # Single-pass removal using combined CSS selector (faster than iterating)
+    selector = JUNK_AND_REDDIT_SELECTOR if is_reddit else JUNK_SELECTOR
+    for element in soup.select(selector):
+        element.decompose()
 
     return soup
 
@@ -91,22 +95,8 @@ def html_to_markdown(html: str, is_reddit: bool = False) -> tuple[str, str | Non
     # Convert to markdown
     markdown = markdownify(content, heading_style="ATX", code_language_callback=None)
 
-    # Clean up excessive whitespace
-    lines = markdown.split("\n")
-    cleaned_lines = []
-    blank_count = 0
-
-    for line in lines:
-        stripped = line.rstrip()
-        if not stripped:
-            blank_count += 1
-            if blank_count <= 2:  # Allow max 2 consecutive blank lines
-                cleaned_lines.append("")
-        else:
-            blank_count = 0
-            cleaned_lines.append(stripped)
-
-    markdown = "\n".join(cleaned_lines).strip()
+    # Clean up excessive whitespace (regex is faster than line-by-line)
+    markdown = _EXCESSIVE_NEWLINES.sub("\n\n\n", markdown).strip()
 
     # Add title header if present
     if title:
