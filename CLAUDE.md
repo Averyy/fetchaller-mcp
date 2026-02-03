@@ -108,17 +108,17 @@ Reddit allows ~10 unauthenticated API requests per minute. The browse/search too
 
 ## Development & Testing
 
-**CRITICAL**: When testing changes to this MCP server, you MUST use the local version, not the production npm package.
+**CRITICAL**: When testing changes to this MCP server, you MUST use the local version, not the production Docker image.
 
 ### Testing Local Changes
 
-1. **Update MCP config** to use the local path:
+1. **Update MCP config** to use the local Python:
    ```json
    {
      "mcpServers": {
        "fetchaller": {
-         "command": "node",
-         "args": ["/Users/avery/Code/fetchaller-mcp/index.js"]
+         "command": "/Users/avery/Code/fetchaller-mcp/.venv/bin/python",
+         "args": ["-m", "fetchaller.main"]
        }
      }
    }
@@ -128,17 +128,38 @@ Reddit allows ~10 unauthenticated API requests per minute. The browse/search too
 
 3. **Test the changes** using the fetchaller tools
 
+### Docker Local Testing
+
+```bash
+# Build and run locally
+docker compose -f docker-compose.local.yml up --build
+
+# Test endpoints
+curl http://localhost:6000/health
+curl -X POST http://localhost:6000/mcp \
+  -H "Authorization: Bearer test-api-key-local" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+
+# Stop
+docker compose -f docker-compose.local.yml down
+```
+
 ### Common Mistake
 
-Do NOT test against the production version (`npx fetchaller-mcp` or global install). Changes to `index.js` won't be reflected unless you're running the local file directly.
-
-### Quick Verification
-
-To verify you're using the local version, check that any code changes in `index.js` are reflected in the tool behavior.
+Do NOT test against the production version (Docker image from GHCR). Changes to `src/fetchaller/` won't be reflected unless you rebuild locally.
 
 ## Security Note
 
 This tool bypasses domain restrictions. It's intended for research workflows where permission prompts are disruptive. The user has explicitly allowed this via their settings.
+
+SSRF protection blocks:
+- localhost, 127.0.0.1, ::1
+- Private IPs (10.x, 172.16-31.x, 192.168.x)
+- Link-local addresses
+- DNS rebinding services (nip.io, xip.io, localtest.me, sslip.io)
+- Hostnames that resolve to private IPs
 
 ## Remote Usage (HTTP Mode)
 
@@ -148,12 +169,10 @@ fetchaller-mcp can be deployed remotely at `https://mcp.fetchaller.com/mcp`.
 
 ```bash
 # With authentication (required for production)
-MCP_API_KEY=your-secret-key node index.js --http
+MCP_API_KEY=your-secret-key python -m fetchaller.main --http
 
-# Or use .env file
-cp .env.sample .env
-# Edit .env with your API key
-node index.js --http
+# Or use Docker
+docker compose up -d
 ```
 
 ### Claude Code/Desktop Configuration (Remote)
@@ -178,20 +197,22 @@ node index.js --http
 |----------|--------|------|-------------|
 | `/mcp` | POST | Bearer token or OAuth | MCP protocol endpoint |
 | `/mcp` | HEAD | None | Protocol version discovery |
+| `/mcp` | GET/DELETE | None | Returns 405 Method Not Allowed |
 | `/health` | GET | None | Health check for Docker |
 | `/.well-known/oauth-protected-resource` | GET | None | OAuth resource metadata |
 | `/.well-known/oauth-authorization-server` | GET | None | OAuth server metadata |
 | `/register` | POST | None | Dynamic client registration |
 | `/authorize` | GET/POST | None | OAuth authorization (login page) |
-| `/token` | POST | None | OAuth token exchange |
+| `/token` | POST | None | OAuth token exchange (PKCE required) |
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HTTP_PORT` | 6000 | Server port |
+| `HTTP_PORT` | 6000 | Server port (1-65535) |
 | `MCP_API_KEY` | (none) | Bearer token - **required** in HTTP mode |
 | `MCP_SERVER_URL` | `http://localhost:$PORT` | Public URL for OAuth redirects |
+| `JWT_SECRET` | (derived) | Secret for OAuth JWTs (set in production) |
 | `RATE_LIMIT_REQUESTS` | 100 | Requests per minute per IP |
 
 ## Claude.ai Custom Connector (OAuth)
@@ -204,7 +225,7 @@ fetchaller supports OAuth 2.1 for Claude.ai web/mobile connectors. This allows c
    ```bash
    MCP_API_KEY=your-secret-key \
    MCP_SERVER_URL=https://mcp.fetchaller.com \
-   node index.js --http
+   python -m fetchaller.main --http
    ```
 
 2. **Add connector in Claude.ai**:
@@ -220,7 +241,7 @@ fetchaller supports OAuth 2.1 for Claude.ai web/mobile connectors. This allows c
 1. Claude discovers OAuth endpoints via `/.well-known/oauth-authorization-server`
 2. Claude registers itself via `/register` (Dynamic Client Registration)
 3. User enters API key on `/authorize` page
-4. Claude exchanges auth code for JWT token via `/token`
+4. Claude exchanges auth code for JWT token via `/token` (PKCE required)
 5. Claude uses JWT for all MCP requests
 
 ### Authentication Methods
@@ -235,7 +256,7 @@ Both work identically for MCP requests. OAuth is for Claude.ai connectors; raw A
 
 ```bash
 # Build and run locally
-docker compose up --build
+docker compose -f docker-compose.local.yml up --build
 
 # Production (uses GHCR image)
 docker compose pull

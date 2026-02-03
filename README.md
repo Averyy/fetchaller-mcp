@@ -12,14 +12,16 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 
 ## Quick Start
 
+### Local Installation (stdio mode)
+
 ```bash
 # Clone and install
 git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
-npm install
+uv venv && uv pip install -e .
 
 # Add to Claude Code
-claude mcp add fetchaller -- node /path/to/fetchaller-mcp/index.js
+claude mcp add fetchaller -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main
 ```
 
 Add permissions to `~/.claude/settings.json`:
@@ -103,7 +105,7 @@ Clean markdown with:
 | XML/RSS feeds | Returned as-is |
 | CSV files | Returned as-is |
 | Plain text | Returned as-is |
-| PDF/binary | Error message |
+| PDF files | Text extracted |
 | Timeout | Error after timeout (default 10s) |
 | Huge page | Truncated at maxTokens |
 
@@ -155,11 +157,13 @@ Reddit allows ~10 unauthenticated API requests per minute. `browse_reddit` and `
 ## How It Works
 
 1. Validates URL (http/https only)
-2. Fetches with browser-like headers
-3. Detects content type
-4. For HTML: strips junk, converts to markdown via Turndown
-5. For JSON/XML/CSV/text: returns raw
-6. Truncates to token limit
+2. Blocks private/internal IPs (SSRF protection with DNS rebinding prevention)
+3. Fetches with browser-like TLS fingerprints (curl_cffi)
+4. Detects content type
+5. For HTML: strips junk, converts to markdown
+6. For JSON/XML/CSV/text: returns raw
+7. For PDF: extracts text
+8. Truncates to token limit
 
 ## Remote Deployment (HTTP Mode)
 
@@ -169,10 +173,25 @@ Deploy fetchaller as a remote MCP server for Claude.ai, Claude Desktop, or any M
 
 ```bash
 # Run with authentication
-MCP_API_KEY=your-secret-key node index.js --http
+MCP_API_KEY=your-secret-key python -m fetchaller.main --http
 
 # Or use Docker
 docker compose up -d
+```
+
+### Local Development
+
+```bash
+# Build and test locally
+docker compose -f docker-compose.local.yml up --build
+
+# Test endpoints
+curl http://localhost:6000/health
+curl -X POST http://localhost:6000/mcp \
+  -H "Authorization: Bearer test-api-key-local" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
 ```
 
 ### Claude Code/Desktop Config
@@ -205,40 +224,59 @@ For Claude.ai web/mobile with cross-platform sync:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HTTP_PORT` | 6000 | Server port |
+| `HTTP_PORT` | 6000 | Server port (1-65535) |
 | `MCP_API_KEY` | (required) | Bearer token for auth |
 | `MCP_SERVER_URL` | `http://localhost:$PORT` | Public URL for OAuth |
+| `JWT_SECRET` | (derived from API key) | Secret for OAuth tokens |
 | `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
+
+## Security
+
+- **SSRF Protection**: Blocks localhost, private IPs, link-local addresses, and DNS rebinding services (nip.io, xip.io, etc.). Resolves hostnames to verify final IP addresses.
+- **OAuth 2.1**: PKCE required for all token exchanges. Timing-safe comparisons for auth codes.
+- **Rate Limiting**: Per-IP rate limiting with configurable limits.
 
 ## Files
 
 ```
 fetchaller-mcp/
-├── package.json        # Dependencies
-├── index.js            # MCP server
-├── CLAUDE.md           # Instructions for Claude
-├── docker-compose.yml  # Docker deployment
-├── Dockerfile          # Container build
-└── README.md           # This file
+├── pyproject.toml           # Python package config
+├── src/fetchaller/          # Python source
+│   ├── main.py              # Entry point
+│   ├── server.py            # MCP server setup
+│   ├── config.py            # Configuration
+│   ├── http/                # HTTP server (FastAPI)
+│   ├── tools/               # MCP tools (fetch, reddit)
+│   ├── content/             # Content processing
+│   ├── cache/               # Response caching
+│   ├── queue/               # Reddit rate limiting
+│   └── security/            # SSRF, crypto, XSS
+├── docker-compose.yml       # Production deployment
+├── docker-compose.local.yml # Local testing
+├── Dockerfile               # Container build
+├── CLAUDE.md                # Instructions for Claude
+└── README.md                # This file
 ```
 
 ## Dependencies
 
-- `@modelcontextprotocol/sdk` - MCP protocol
-- `cheerio` - HTML parsing
-- `turndown` - HTML to markdown
+- `mcp` - MCP protocol SDK
+- `fastapi` + `uvicorn` - HTTP server
+- `curl-cffi` - TLS fingerprint impersonation
+- `beautifulsoup4` + `markdownify` - HTML to markdown
+- `pdfplumber` - PDF text extraction
+- `pyjwt` - OAuth tokens
 
 ## Testing
 
 ```bash
-# Verify syntax
-node --check index.js
+# Run tests locally
+uv venv && source .venv/bin/activate
+python -c "from fetchaller.http.app import create_app; print('OK')"
 
-# Test imports
-node -e "import('./index.js')"
-
-# In Claude Code after setup
-"fetch https://example.com and show me the content"
+# Test in Docker
+docker compose -f docker-compose.local.yml up --build
+curl http://localhost:6000/health
 ```
 
 ## License

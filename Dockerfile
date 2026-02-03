@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -8,14 +8,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -s /bin/false appuser
 
-# Copy package files
-COPY package*.json ./
+# Install uv for fast package management
+RUN pip install --no-cache-dir uv
 
-# Install production dependencies only
-RUN npm ci --omit=dev
+# Copy project files
+COPY pyproject.toml ./
+COPY src/ ./src/
 
-# Copy application code
-COPY index.js ./
+# Install dependencies using uv
+RUN uv pip install --system --no-cache .
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
@@ -24,15 +25,14 @@ RUN chown -R appuser:appuser /app
 USER appuser
 
 # Environment variables with defaults
-ENV NODE_ENV=production
 ENV HTTP_PORT=6000
 ENV RATE_LIMIT_REQUESTS=100
 
 EXPOSE 6000
 
-# Healthcheck (docker-compose can override if needed)
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:6000/health || exit 1
 
 # Run in HTTP mode
-CMD ["node", "index.js", "--http"]
+CMD ["python", "-m", "fetchaller.main", "--http"]
