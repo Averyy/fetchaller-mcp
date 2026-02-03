@@ -182,62 +182,73 @@ def create_server(
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         """Handle tool calls."""
-        if name == "fetch":
-            result = await fetch_url(
-                url=arguments["url"],
-                max_tokens=arguments.get("maxTokens", config.default_max_tokens),
-                timeout=arguments.get("timeout", config.default_timeout_seconds),
-                raw=arguments.get("raw", False),
-                fetcher=fetcher,
-                cache=cache,
-                config=config,
-            )
+        import sys
+        import traceback
 
-            if "error" in result:
-                text = f"Error: {result['error']}"
-                if "body" in result:
-                    text += f"\n\nPartial content:\n{result['body']}"
-                return [TextContent(type="text", text=text)]
+        try:
+            if name == "fetch":
+                result = await fetch_url(
+                    url=arguments["url"],
+                    max_tokens=arguments.get("maxTokens", config.default_max_tokens),
+                    timeout=arguments.get("timeout", config.default_timeout_seconds),
+                    raw=arguments.get("raw", False),
+                    fetcher=fetcher,
+                    cache=cache,
+                    config=config,
+                )
 
-            return [TextContent(type="text", text=result["content"])]
+                if "error" in result:
+                    text = f"Error: {result['error']}"
+                    if "body" in result:
+                        text += f"\n\nPartial content:\n{result['body']}"
+                    return [TextContent(type="text", text=text)]
 
-        elif name == "browse_reddit":
-            result = await browse_reddit(
-                subreddit=arguments["subreddit"],
-                sort=arguments.get("sort", "hot"),
-                time=arguments.get("time", "day"),
-                limit=arguments.get("limit", 10),
-                after=arguments.get("after"),
-                timeout=arguments.get("timeout", 10),
-                fetcher=fetcher,
-                queue=reddit_queue,
-            )
+                return [TextContent(type="text", text=result["content"])]
 
-            if "error" in result:
-                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            elif name == "browse_reddit":
+                result = await browse_reddit(
+                    subreddit=arguments["subreddit"],
+                    sort=arguments.get("sort", "hot"),
+                    time=arguments.get("time", "day"),
+                    limit=arguments.get("limit", 10),
+                    after=arguments.get("after"),
+                    timeout=arguments.get("timeout", 10),
+                    fetcher=fetcher,
+                    queue=reddit_queue,
+                )
 
-            return [TextContent(type="text", text=result["content"])]
+                if "error" in result:
+                    return [TextContent(type="text", text=f"Error: {result['error']}")]
 
-        elif name == "search_reddit":
-            result = await search_reddit(
-                query=arguments["query"],
-                subreddit=arguments.get("subreddit"),
-                sort=arguments.get("sort", "relevance"),
-                time=arguments.get("time", "all"),
-                limit=arguments.get("limit", 10),
-                after=arguments.get("after"),
-                timeout=arguments.get("timeout", 10),
-                fetcher=fetcher,
-                queue=reddit_queue,
-            )
+                return [TextContent(type="text", text=result["content"])]
 
-            if "error" in result:
-                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            elif name == "search_reddit":
+                result = await search_reddit(
+                    query=arguments["query"],
+                    subreddit=arguments.get("subreddit"),
+                    sort=arguments.get("sort", "relevance"),
+                    time=arguments.get("time", "all"),
+                    limit=arguments.get("limit", 10),
+                    after=arguments.get("after"),
+                    timeout=arguments.get("timeout", 10),
+                    fetcher=fetcher,
+                    queue=reddit_queue,
+                )
 
-            return [TextContent(type="text", text=result["content"])]
+                if "error" in result:
+                    return [TextContent(type="text", text=f"Error: {result['error']}")]
 
-        else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+                return [TextContent(type="text", text=result["content"])]
+
+            else:
+                return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
+        except Exception as e:
+            # Log full traceback to stderr for debugging
+            print(f"[fetchaller] Tool '{name}' exception: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            # Return useful error to client instead of generic MCP error
+            return [TextContent(type="text", text=f"Error: {type(e).__name__}: {e}")]
 
     return server
 

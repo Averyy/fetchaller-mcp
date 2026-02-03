@@ -2,6 +2,8 @@
 
 from urllib.parse import urlparse
 
+from curl_cffi.requests.errors import RequestsError
+
 from ..cache.response_cache import ResponseCache
 from ..config import Config
 from ..content.fetcher import ContentFetcher, RetryConfig
@@ -104,10 +106,13 @@ async def fetch_url(
         if "etimedout" in error_str:
             return {"error": "Connection timed out. The server may be slow or unreachable."}
         # Generic error without exposing internal details
-        return {"error": "Connection error. Unable to reach the server."}
-    except Exception:
-        # Don't expose exception details which may contain sensitive info
-        return {"error": "Fetch failed. An unexpected error occurred."}
+        return {"error": f"Connection error: {e}"}
+    except RequestsError as e:
+        # curl_cffi specific errors (TLS, SSL, certificate issues, etc.)
+        return {"error": f"Request failed: {e}"}
+    except Exception as e:
+        # Log unexpected errors and include type for debugging
+        return {"error": f"Fetch failed ({type(e).__name__}): {e}"}
 
     # SSRF protection: check final URL after redirects
     if result.final_url and result.final_url != fetch_url_str:
