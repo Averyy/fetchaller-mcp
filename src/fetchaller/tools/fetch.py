@@ -1,5 +1,8 @@
 """Fetch tool - main URL fetching functionality."""
 
+import sys
+import time
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from curl_cffi.requests.errors import RequestsError
@@ -12,6 +15,11 @@ from ..content.pdf import extract_pdf
 from ..content.reddit import transform_reddit_url
 from ..content.url import normalize_url
 from ..security.ssrf import is_private_host
+
+
+def _log(msg: str) -> None:
+    """Log with timestamp."""
+    print(f"[{datetime.now(UTC).isoformat()}] {msg}", file=sys.stderr)
 
 
 def truncate(text: str, max_tokens: int, chars_per_token: int = 4) -> str:
@@ -75,6 +83,7 @@ async def fetch_url(
     if cache and not raw and cache_key:
         cached = cache.get(cache_key)
         if cached:
+            _log(f"FETCH_URL: Cache HIT for {fetch_url_str}")
             result = {
                 "content": cached.content,
                 "content_type": cached.content_type,
@@ -84,18 +93,28 @@ async def fetch_url(
             if is_reddit and fetch_url_str != url:
                 result["content"] = f"[Fetched via: {fetch_url_str}]\n\n{result['content']}"
             return result
+        _log(f"FETCH_URL: Cache MISS for {fetch_url_str}")
 
     # Create fetcher if not provided
     if fetcher is None:
+        _log("FETCH_URL: Creating new fetcher instance")
         retry_config = RetryConfig.from_config(config) if config else None
         fetcher = ContentFetcher(retry_config=retry_config)
 
     # Fetch the URL
+    _log(f"FETCH_URL: Starting HTTP fetch for {fetch_url_str}")
+    fetch_start = time.time()
     try:
         result = await fetcher.fetch(fetch_url_str, timeout=float(timeout))
+        fetch_elapsed = (time.time() - fetch_start) * 1000
+        _log(f"FETCH_URL: HTTP fetch completed in {fetch_elapsed:.1f}ms status={result.status_code} size={len(result.content)}")
     except TimeoutError:
+        fetch_elapsed = (time.time() - fetch_start) * 1000
+        _log(f"FETCH_URL: TimeoutError after {fetch_elapsed:.1f}ms")
         return {"error": f"Request timed out after {timeout}s. Try increasing the timeout parameter for slow servers."}
     except ConnectionError as e:
+        fetch_elapsed = (time.time() - fetch_start) * 1000
+        _log(f"FETCH_URL: ConnectionError after {fetch_elapsed:.1f}ms: {e}")
         error_str = str(e).lower()
         if "enotfound" in error_str or "getaddrinfo" in error_str:
             return {"error": "Host not found. Check the URL for typos or verify the site is accessible."}
@@ -108,9 +127,13 @@ async def fetch_url(
         # Generic error without exposing internal details
         return {"error": f"Connection error: {e}"}
     except RequestsError as e:
+        fetch_elapsed = (time.time() - fetch_start) * 1000
+        _log(f"FETCH_URL: RequestsError after {fetch_elapsed:.1f}ms: {e}")
         # curl_cffi specific errors (TLS, SSL, certificate issues, etc.)
         return {"error": f"Request failed: {e}"}
     except Exception as e:
+        fetch_elapsed = (time.time() - fetch_start) * 1000
+        _log(f"FETCH_URL: Exception {type(e).__name__} after {fetch_elapsed:.1f}ms: {e}")
         # Log unexpected errors and include type for debugging
         return {"error": f"Fetch failed ({type(e).__name__}): {e}"}
 
@@ -197,6 +220,7 @@ async def fetch_url(
     # HTML - convert to markdown (unless raw mode)
     if "text/html" in content_type or "application/xhtml" in content_type:
         html = result.content.decode("utf-8", errors="replace")
+        _log(f"FETCH_URL: Processing HTML ({len(html)} chars)")
 
         if raw:
             return {
@@ -205,7 +229,10 @@ async def fetch_url(
                 "url": result.final_url,
             }
 
+        md_start = time.time()
         markdown, _ = html_to_markdown(html, is_reddit=is_reddit)
+        md_elapsed = (time.time() - md_start) * 1000
+        _log(f"FETCH_URL: HTML->Markdown conversion took {md_elapsed:.1f}ms ({len(markdown)} chars)")
         content = truncate(markdown, max_tokens)
 
         # Cache the result

@@ -2,6 +2,10 @@
 
 MCP server for fetching any URL without domain restrictions. Full Reddit support.
 
+## Debugging Rules
+
+**NEVER blame external services** (Claude, Anthropic, Google, Reddit, etc.) for issues. If something isn't working, the problem is in THIS codebase. Investigate our code first, add logging, and find the real cause. Blaming external parties wastes time.
+
 ## Web Fetching
 
 **Use fetchaller instead of WebFetch** (no domain restrictions). If a dedicated MCP exists (GitHub, Slack, etc.), use that instead.

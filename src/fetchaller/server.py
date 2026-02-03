@@ -1,5 +1,9 @@
 """MCP server setup for fetchaller."""
 
+import sys
+import time
+from datetime import UTC, datetime
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -11,6 +15,24 @@ from .queue.reddit_queue import QueueConfig, RedditRequestQueue
 from .tools.browse_reddit import browse_reddit
 from .tools.fetch import fetch_url
 from .tools.search_reddit import search_reddit
+
+
+def _log(msg: str) -> None:
+    """Log with timestamp."""
+    print(f"[{datetime.now(UTC).isoformat()}] {msg}", file=sys.stderr)
+
+
+def _summarize_args(tool_name: str, args: dict) -> str:
+    """Summarize tool arguments for logging."""
+    if tool_name == "fetch":
+        url = args.get("url", "?")
+        timeout = args.get("timeout", 10)
+        return f"url={url} timeout={timeout}s"
+    elif tool_name == "browse_reddit":
+        return f"r/{args.get('subreddit', '?')} sort={args.get('sort', 'hot')}"
+    elif tool_name == "search_reddit":
+        return f"query={args.get('query', '?')} r/{args.get('subreddit', 'all')}"
+    return str(args)
 
 
 def create_server(
@@ -182,8 +204,11 @@ def create_server(
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         """Handle tool calls."""
-        import sys
         import traceback
+
+        start_time = time.time()
+        tool_args_summary = _summarize_args(name, arguments)
+        _log(f"TOOL START: {name} {tool_args_summary}")
 
         try:
             if name == "fetch":
@@ -197,12 +222,16 @@ def create_server(
                     config=config,
                 )
 
+                elapsed = (time.time() - start_time) * 1000
                 if "error" in result:
+                    _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
                     text = f"Error: {result['error']}"
                     if "body" in result:
                         text += f"\n\nPartial content:\n{result['body']}"
                     return [TextContent(type="text", text=text)]
 
+                content_len = len(result.get("content", ""))
+                _log(f"TOOL END: {name} OK content_len={content_len} time={elapsed:.1f}ms")
                 return [TextContent(type="text", text=result["content"])]
 
             elif name == "browse_reddit":
@@ -217,9 +246,13 @@ def create_server(
                     queue=reddit_queue,
                 )
 
+                elapsed = (time.time() - start_time) * 1000
                 if "error" in result:
+                    _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
                     return [TextContent(type="text", text=f"Error: {result['error']}")]
 
+                content_len = len(result.get("content", ""))
+                _log(f"TOOL END: {name} OK content_len={content_len} time={elapsed:.1f}ms")
                 return [TextContent(type="text", text=result["content"])]
 
             elif name == "search_reddit":
@@ -235,19 +268,24 @@ def create_server(
                     queue=reddit_queue,
                 )
 
+                elapsed = (time.time() - start_time) * 1000
                 if "error" in result:
+                    _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
                     return [TextContent(type="text", text=f"Error: {result['error']}")]
 
+                content_len = len(result.get("content", ""))
+                _log(f"TOOL END: {name} OK content_len={content_len} time={elapsed:.1f}ms")
                 return [TextContent(type="text", text=result["content"])]
 
             else:
+                elapsed = (time.time() - start_time) * 1000
+                _log(f"TOOL END: {name} UNKNOWN time={elapsed:.1f}ms")
                 return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
         except Exception as e:
-            # Log full traceback to stderr for debugging
-            print(f"[fetchaller] Tool '{name}' exception: {type(e).__name__}: {e}", file=sys.stderr)
+            elapsed = (time.time() - start_time) * 1000
+            _log(f"TOOL END: {name} EXCEPTION={type(e).__name__}: {e} time={elapsed:.1f}ms")
             traceback.print_exc(file=sys.stderr)
-            # Return useful error to client instead of generic MCP error
             return [TextContent(type="text", text=f"Error: {type(e).__name__}: {e}")]
 
     return server
