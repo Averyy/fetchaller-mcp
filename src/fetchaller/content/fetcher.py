@@ -2,10 +2,7 @@
 
 import asyncio
 import random
-import sys
-import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from curl_cffi.requests import AsyncSession, Response
@@ -14,11 +11,6 @@ from ..config import BROWSER_FINGERPRINTS, Config
 
 if TYPE_CHECKING:
     from ..cache.response_cache import ResponseCache
-
-
-def _log(msg: str) -> None:
-    """Log with timestamp."""
-    print(f"[{datetime.now(UTC).isoformat()}] {msg}", file=sys.stderr)
 
 
 @dataclass
@@ -106,11 +98,7 @@ class ContentFetcher:
     async def _get_session(self) -> AsyncSession:
         """Get or create async session."""
         if self._session is None:
-            start = time.time()
-            _log("FETCH: Creating new AsyncSession...")
             self._session = AsyncSession()
-            elapsed = (time.time() - start) * 1000
-            _log(f"FETCH: AsyncSession created in {elapsed:.1f}ms")
         return self._session
 
     def rotate_fingerprint(self) -> None:
@@ -141,9 +129,6 @@ class ContentFetcher:
         Returns:
             FetchResult with content, type, status, final URL, and headers
         """
-        fetch_start = time.time()
-        _log(f"FETCH: Starting fetch url={url} timeout={timeout}s browser={self._browser}")
-
         session = await self._get_session()
         delay = self.retry_config.initial_delay
 
@@ -155,9 +140,6 @@ class ContentFetcher:
         last_error: Exception | None = None
 
         for attempt in range(self.retry_config.max_retries + 1):
-            attempt_start = time.time()
-            _log(f"FETCH: Attempt {attempt + 1}/{self.retry_config.max_retries + 1} for {url}")
-
             try:
                 response: Response = await session.get(
                     url,
@@ -166,8 +148,6 @@ class ContentFetcher:
                     impersonate=self._browser,
                     allow_redirects=allow_redirects,
                 )
-                attempt_elapsed = (time.time() - attempt_start) * 1000
-                _log(f"FETCH: Got response status={response.status_code} size={len(response.content)} in {attempt_elapsed:.1f}ms url={url}")
 
                 # Rate limited - use Retry-After header if present
                 if response.status_code == 429:
@@ -176,19 +156,14 @@ class ContentFetcher:
                         wait_time = delay
                         if retry_after:
                             try:
-                                # Validate and clamp Retry-After to reasonable range (1-300 seconds)
                                 parsed_retry = float(retry_after)
                                 if 0 < parsed_retry <= 300:
                                     wait_time = parsed_retry
                             except (ValueError, TypeError):
-                                pass  # Use default delay
-                        _log(f"FETCH: Rate limited (429), waiting {wait_time:.1f}s before retry")
+                                pass
                         await asyncio.sleep(wait_time)
                         delay = min(delay * self.retry_config.exponential_base, self.retry_config.max_delay)
                         continue
-                    # Return the 429 response on last attempt
-                    total_elapsed = (time.time() - fetch_start) * 1000
-                    _log(f"FETCH: Returning 429 after all retries, total time={total_elapsed:.1f}ms")
                     return self._make_result(response)
 
                 # Server error - retry with backoff
@@ -196,47 +171,31 @@ class ContentFetcher:
                     if attempt < self.retry_config.max_retries:
                         jitter = random.uniform(-self.retry_config.jitter, self.retry_config.jitter)
                         wait_time = delay * (1 + jitter)
-                        _log(f"FETCH: Server error ({response.status_code}), waiting {wait_time:.1f}s before retry")
                         await asyncio.sleep(wait_time)
                         delay = min(delay * self.retry_config.exponential_base, self.retry_config.max_delay)
                         continue
-                    total_elapsed = (time.time() - fetch_start) * 1000
-                    _log(f"FETCH: Returning {response.status_code} after all retries, total time={total_elapsed:.1f}ms")
                     return self._make_result(response)
 
                 # Possibly blocked - rotate fingerprint and retry
                 if response.status_code == 403:
-                    old_browser = self._browser
                     self.rotate_fingerprint()
-                    _log(f"FETCH: Got 403, rotating fingerprint {old_browser} -> {self._browser}")
                     if attempt < self.retry_config.max_retries:
-                        _log(f"FETCH: Waiting {delay:.1f}s before retry")
                         await asyncio.sleep(delay)
                         delay = min(delay * self.retry_config.exponential_base, self.retry_config.max_delay)
                         continue
-                    total_elapsed = (time.time() - fetch_start) * 1000
-                    _log(f"FETCH: Returning 403 after all retries, total time={total_elapsed:.1f}ms")
                     return self._make_result(response)
 
-                total_elapsed = (time.time() - fetch_start) * 1000
-                _log(f"FETCH: Success status={response.status_code} total time={total_elapsed:.1f}ms url={url}")
                 return self._make_result(response)
 
             except (TimeoutError, ConnectionError, OSError) as e:
-                attempt_elapsed = (time.time() - attempt_start) * 1000
-                _log(f"FETCH: Exception on attempt {attempt + 1}: {type(e).__name__}: {e} after {attempt_elapsed:.1f}ms")
                 last_error = e
                 if attempt == self.retry_config.max_retries:
-                    total_elapsed = (time.time() - fetch_start) * 1000
-                    _log(f"FETCH: Raising exception after all retries, total time={total_elapsed:.1f}ms")
                     raise
                 jitter = random.uniform(-self.retry_config.jitter, self.retry_config.jitter)
                 wait_time = delay * (1 + jitter)
-                _log(f"FETCH: Waiting {wait_time:.1f}s before retry")
                 await asyncio.sleep(wait_time)
                 delay = min(delay * self.retry_config.exponential_base, self.retry_config.max_delay)
 
-        # Should not reach here, but just in case
         if last_error:
             raise last_error
         raise RuntimeError(f"Failed after {self.retry_config.max_retries} retries")
