@@ -50,9 +50,36 @@ def create_router(
             "scopes_supported": ["fetchaller:read"],
         }
 
+    # Claude.ai sometimes appends /mcp to the protected resource path
+    @router.get("/.well-known/oauth-protected-resource/mcp")
+    async def oauth_protected_resource_mcp():
+        """OAuth Protected Resource Metadata - alternate path."""
+        return {
+            "resource": server_url,
+            "authorization_servers": [server_url],
+            "bearer_methods_supported": ["header"],
+            "scopes_supported": ["fetchaller:read"],
+        }
+
     @router.get("/.well-known/oauth-authorization-server")
     async def oauth_authorization_server():
         """OAuth Authorization Server Metadata (RFC 8414)."""
+        return {
+            "issuer": server_url,
+            "authorization_endpoint": f"{server_url}/authorize",
+            "token_endpoint": f"{server_url}/token",
+            "registration_endpoint": f"{server_url}/register",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+            "scopes_supported": ["fetchaller:read"],
+        }
+
+    # OpenID Connect discovery - return OAuth metadata for compatibility
+    @router.get("/.well-known/openid-configuration")
+    async def openid_configuration():
+        """OpenID Connect discovery - returns OAuth metadata for compatibility."""
         return {
             "issuer": server_url,
             "authorization_endpoint": f"{server_url}/authorize",
