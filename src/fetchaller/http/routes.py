@@ -162,14 +162,20 @@ def create_router(
         code_challenge_method: str = Query(None),
     ):
         """Authorization endpoint - GET shows the login form."""
-        # Log authorize attempts for debugging
+        # Log authorize attempts for debugging (include all params to diagnose issues)
         print(
-            f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize called - client_id={sanitize_for_log(client_id)}, redirect_uri={sanitize_for_log(redirect_uri)}",
+            f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize GET - "
+            f"client_id={sanitize_for_log(client_id)}, "
+            f"redirect_uri={sanitize_for_log(redirect_uri)}, "
+            f"response_type={sanitize_for_log(response_type)}, "
+            f"code_challenge={'present' if code_challenge else 'MISSING'}, "
+            f"code_challenge_method={sanitize_for_log(code_challenge_method)}",
             file=sys.stderr,
         )
 
         # Manual validation for OAuth-compliant error responses (not FastAPI's 422)
         if not client_id:
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize FAILED - missing client_id", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -179,6 +185,7 @@ def create_router(
             )
 
         if response_type != "code":
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize FAILED - response_type={sanitize_for_log(response_type)} (expected 'code')", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -188,6 +195,7 @@ def create_router(
             )
 
         if not code_challenge:
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize FAILED - missing code_challenge", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -197,6 +205,7 @@ def create_router(
             )
 
         if code_challenge_method and code_challenge_method != "S256":
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize FAILED - invalid code_challenge_method={sanitize_for_log(code_challenge_method)}", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -208,6 +217,7 @@ def create_router(
         # Validate client
         client = oauth_store.get_client(client_id)
         if client is None:
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize FAILED - unknown client_id={sanitize_for_log(client_id)}", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -219,6 +229,7 @@ def create_router(
         # Validate redirect_uri
         actual_redirect_uri = redirect_uri or client.redirect_uris[0]
         if redirect_uri and redirect_uri not in client.redirect_uris:
+            print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize FAILED - redirect_uri mismatch: {sanitize_for_log(redirect_uri)} not in {client.redirect_uris}", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -228,6 +239,7 @@ def create_router(
             )
 
         # Show authorization form
+        print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize SUCCESS - returning login page for client {sanitize_for_log(client_id)}", file=sys.stderr)
         html = get_authorize_page(client_id, actual_redirect_uri, state, code_challenge)
         return HTMLResponse(content=html)
 
@@ -412,12 +424,16 @@ def create_router(
         if auth_error:
             client_ip = get_client_ip(request)
             print(f"[{datetime.now(UTC).isoformat()}] Auth failed: {auth_error} from {client_ip}", file=sys.stderr)
+            # Per MCP spec: 401 MUST include WWW-Authenticate with resource_metadata
             return JSONResponse(
                 status_code=401,
                 content={
                     "jsonrpc": "2.0",
                     "error": {"code": -32001, "message": auth_error},
                     "id": None,
+                },
+                headers={
+                    "WWW-Authenticate": f'Bearer resource_metadata="{server_url}/.well-known/oauth-protected-resource", scope="fetchaller:read"',
                 },
             )
 
