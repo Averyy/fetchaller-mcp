@@ -69,8 +69,8 @@ class OAuthStore:
 
     # TTLs
     auth_code_ttl: int = 10 * 60  # 10 minutes
-    access_token_ttl: int = 24 * 60 * 60  # 24 hours
-    client_ttl: int = 30 * 24 * 60 * 60  # 30 days
+    access_token_ttl: int = 365 * 24 * 60 * 60  # 1 year
+    client_ttl: int = 365 * 24 * 60 * 60  # 1 year
 
     _cleanup_task: asyncio.Task | None = field(default=None, repr=False)
 
