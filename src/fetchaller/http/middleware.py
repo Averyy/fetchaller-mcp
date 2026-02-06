@@ -9,6 +9,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from ..security.crypto import timing_safe_compare
 from .oauth import OAuthStore
 
 
@@ -134,10 +135,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "jsonrpc": "2.0",
                     "error": {
                         "code": -32000,
-                        "message": f"Rate limit exceeded ({self.rate_limiter.requests_per_minute} requests/minute). Try again in 60 seconds.",
+                        "message": f"Rate limit exceeded ({self.rate_limiter.requests_per_minute} requests/minute). Try again in {retry_after or 60} seconds.",
                     },
                     "id": None,
                 },
+                headers={"Retry-After": str(retry_after or 60)},
             )
 
         return await call_next(request)
@@ -145,7 +147,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 def verify_bearer_auth(
     request: Request,
-    api_keys: list[str],
     api_key_hashes: set[str],
     oauth_store: OAuthStore | None,
     jwt_secret: bytes | None,
@@ -170,10 +171,9 @@ def verify_bearer_auth(
 
     token = parts[1]
 
-    # First, check if it's a raw API key
-    # Use timing-safe comparison via hashing
+    # First, check if it's a raw API key (timing-safe)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    if token_hash in api_key_hashes:
+    if any(timing_safe_compare(token_hash, h) for h in api_key_hashes):
         return None
 
     # Second, check if it's an OAuth JWT token

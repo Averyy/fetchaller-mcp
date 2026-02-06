@@ -8,7 +8,7 @@ from .crypto import (
     verify_access_token,
     verify_pkce,
 )
-from .ssrf import is_private_host
+from .ssrf import is_private_host, is_private_host_sync
 from .xss import escape_html, sanitize_for_log
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "generate_id",
     "hash_api_key",
     "is_private_host",
+    "is_private_host_sync",
     "sanitize_for_log",
     "timing_safe_compare",
     "verify_access_token",

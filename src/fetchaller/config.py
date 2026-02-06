@@ -3,7 +3,6 @@
 import os
 from dataclasses import dataclass
 
-
 # OAuth TTL defaults (shared with OAuthStore)
 AUTH_CODE_TTL = 10 * 60  # 10 minutes
 ACCESS_TOKEN_TTL = 365 * 24 * 60 * 60  # 1 year
@@ -36,7 +35,6 @@ class Config:
     # Memory limits
     max_oauth_clients: int = 1000
     max_auth_codes: int = 5000
-    max_access_tokens: int = 10000
     max_rate_limit_entries: int = 10000
 
     # Cache settings (NEW)
@@ -76,13 +74,48 @@ def load_config() -> Config:
     if rate_limit < 1:
         raise ValueError(f"RATE_LIMIT_REQUESTS must be positive, got {rate_limit}")
 
-    return Config(
+    def _int(key: str, default: int) -> int:
+        return int(os.environ.get(key, str(default)))
+
+    def _float(key: str, default: float) -> float:
+        return float(os.environ.get(key, str(default)))
+
+    config = Config(
         http_port=http_port,
         server_url=os.environ.get("MCP_SERVER_URL"),
         api_key=os.environ.get("MCP_API_KEY"),
         jwt_secret=os.environ.get("JWT_SECRET"),
         rate_limit_requests=rate_limit,
+        # Cache settings
+        cache_default_ttl=_int("CACHE_DEFAULT_TTL", 300),
+        cache_max_entries=_int("CACHE_MAX_ENTRIES", 1000),
+        cache_max_entry_size=_int("CACHE_MAX_ENTRY_SIZE", 1_000_000),
+        # Reddit queue
+        reddit_max_requests_per_minute=_int("REDDIT_MAX_REQUESTS_PER_MINUTE", 10),
+        reddit_proactive_threshold=_int("REDDIT_PROACTIVE_THRESHOLD", 8),
+        reddit_backoff_rate_limit=_int("REDDIT_BACKOFF_RATE_LIMIT", 60),
+        reddit_backoff_blocked=_int("REDDIT_BACKOFF_BLOCKED", 300),
+        # Retry
+        retry_max_attempts=_int("RETRY_MAX_ATTEMPTS", 1),
+        retry_initial_delay=_float("RETRY_INITIAL_DELAY", 0.5),
+        retry_max_delay=_float("RETRY_MAX_DELAY", 5.0),
     )
+
+    # Validate relationships
+    if config.retry_initial_delay > config.retry_max_delay:
+        raise ValueError(
+            f"retry_initial_delay ({config.retry_initial_delay}) must be <= retry_max_delay ({config.retry_max_delay})"
+        )
+    if config.retry_max_attempts < 0:
+        raise ValueError(f"retry_max_attempts must be >= 0, got {config.retry_max_attempts}")
+    if config.reddit_proactive_threshold > config.reddit_max_requests_per_minute:
+        raise ValueError(
+            f"reddit_proactive_threshold ({config.reddit_proactive_threshold}) must be <= reddit_max_requests_per_minute ({config.reddit_max_requests_per_minute})"
+        )
+    if config.reddit_backoff_rate_limit < 0 or config.reddit_backoff_blocked < 0:
+        raise ValueError("reddit backoff values must be non-negative")
+
+    return config
 
 
 # Browser fingerprints for TLS impersonation rotation (NEW)

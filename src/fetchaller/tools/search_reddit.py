@@ -1,9 +1,11 @@
 """Search Reddit tool - search posts across Reddit."""
 
+from urllib.parse import urlencode
+
 from ..content.fetcher import ContentFetcher, RetryConfig
 from ..content.reddit import format_reddit_post
-from ..queue.reddit_queue import RedditRequestQueue, get_reddit_queue
-from .browse_reddit import fetch_reddit_json
+from ..queue.reddit_queue import RedditRequestQueue
+from .browse_reddit import _SUBREDDIT_PATTERN, fetch_reddit_json
 
 
 async def search_reddit(
@@ -47,17 +49,13 @@ async def search_reddit(
         return {"error": "Invalid time. Must be: hour, day, week, month, year, all"}
 
     # Validate subreddit if provided
-    import re
-
-    if subreddit and not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_]{0,20}$", subreddit):
+    if subreddit and not _SUBREDDIT_PATTERN.match(subreddit):
         return {"error": "Invalid subreddit name"}
 
     # Clamp limit
     limit = max(1, min(25, limit))
 
     # Build URL
-    from urllib.parse import urlencode
-
     params = {
         "q": query,
         "sort": sort,
@@ -74,36 +72,44 @@ async def search_reddit(
         url = f"https://www.reddit.com/search.json?{urlencode(params)}"
 
     # Create fetcher if not provided
-    if fetcher is None:
+    owns_fetcher = fetcher is None
+    if owns_fetcher:
         fetcher = ContentFetcher(retry_config=RetryConfig())
 
     # Get queue if not provided
-    if queue is None:
-        queue = get_reddit_queue()
+    owns_queue = queue is None
+    if owns_queue:
+        queue = RedditRequestQueue()
 
-    result = await fetch_reddit_json(url, fetcher, queue, float(timeout))
+    try:
+        result = await fetch_reddit_json(url, fetcher, queue, float(timeout))
 
-    if "error" in result:
-        return result
+        if "error" in result:
+            return result
 
-    data = result["data"]
-    posts = data.get("data", {}).get("children", [])
-    after_cursor = data.get("data", {}).get("after")
+        data = result["data"]
+        posts = data.get("data", {}).get("children", [])
+        after_cursor = data.get("data", {}).get("after")
 
-    if not posts:
-        return {"content": f'Search: "{query}" · {sort} · {time} · No results found'}
+        if not posts:
+            return {"content": f'Search: "{query}" · {sort} · {time} · No results found'}
 
-    # Format output
-    sub_note = f" in r/{subreddit}" if subreddit else ""
-    lines = [f'Search: "{query}"{sub_note} · {sort} · {time} · {len(posts)} results\n']
+        # Format output
+        sub_note = f" in r/{subreddit}" if subreddit else ""
+        lines = [f'Search: "{query}"{sub_note} · {sort} · {time} · {len(posts)} results\n']
 
-    for i, post in enumerate(posts, 1):
-        # Include subreddit in search results (unless limited to one)
-        lines.append(format_reddit_post(post.get("data", {}), i, include_subreddit=not subreddit))
+        for i, post in enumerate(posts, 1):
+            # Include subreddit in search results (unless limited to one)
+            lines.append(format_reddit_post(post.get("data", {}), i, include_subreddit=not subreddit))
 
-    if after_cursor:
-        lines.append(f"\n[Next page: after={after_cursor}]")
+        if after_cursor:
+            lines.append(f"\n[Next page: after={after_cursor}]")
 
-    lines.append('\n---\nTo read full post: mcp__fetchaller__fetch({ url: "https://old.reddit.com/r/.../comments/..." })')
+        lines.append('\n---\nTo read full post: mcp__fetchaller__fetch({ url: "https://old.reddit.com/r/.../comments/..." })')
 
-    return {"content": "\n".join(lines)}
+        return {"content": "\n".join(lines)}
+    finally:
+        if owns_fetcher:
+            await fetcher.close()
+        if owns_queue:
+            await queue.stop()

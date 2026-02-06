@@ -28,11 +28,12 @@ USER appuser
 ENV HTTP_PORT=6000
 ENV RATE_LIMIT_REQUESTS=100
 
+# Default port; override with HTTP_PORT env var
 EXPOSE 6000
 
-# Healthcheck
+# Healthcheck (uses shell form for variable expansion)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:6000/health || exit 1
+    CMD curl -f http://localhost:${HTTP_PORT}/health || exit 1
 
 # Run in HTTP mode
 CMD ["python", "-m", "fetchaller.main", "--http"]

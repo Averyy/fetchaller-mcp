@@ -78,6 +78,7 @@ class ResponseCache:
         Get cached entry for URL.
 
         Returns None if not cached or expired.
+        Promotes accessed entries for true LRU behavior.
         """
         key = self._key(url)
         entry = self._cache.get(key)
@@ -90,6 +91,8 @@ class ResponseCache:
             del self._cache[key]
             return None
 
+        # Promote to most-recently-used (true LRU)
+        self._cache.move_to_end(key)
         return entry
 
     def set(
@@ -122,10 +125,15 @@ class ResponseCache:
         if len(content) > self.max_entry_size:
             return
 
-        # Evict oldest if at limit (O(1) with OrderedDict)
+        # Evict if at limit: first purge expired, then LRU
         if len(self._cache) >= self.max_entries:
-            # Remove the first (oldest) item
-            self._cache.popitem(last=False)
+            now = time.time()
+            expired = [k for k, v in self._cache.items() if v.expires_at <= now]
+            for k in expired:
+                del self._cache[k]
+            # If still at limit, evict least-recently-used
+            if len(self._cache) >= self.max_entries:
+                self._cache.popitem(last=False)
 
         now = time.time()
         self._cache[self._key(url)] = CacheEntry(

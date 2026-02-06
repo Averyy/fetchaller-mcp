@@ -39,16 +39,6 @@ class AuthCode:
 
 
 @dataclass
-class AccessToken:
-    """OAuth access token metadata."""
-
-    token: str
-    client_id: str
-    api_key_hash: str
-    expires_at: float
-
-
-@dataclass
 class OAuthStore:
     """
     In-memory OAuth store with bounded memory.
@@ -56,16 +46,13 @@ class OAuthStore:
     Limits:
     - Max 1000 clients
     - Max 5000 auth codes
-    - Max 10000 access tokens
     """
 
     clients: dict[str, OAuthClient] = field(default_factory=dict)
     auth_codes: dict[str, AuthCode] = field(default_factory=dict)
-    access_tokens: dict[str, AccessToken] = field(default_factory=dict)
 
     max_clients: int = 1000
     max_auth_codes: int = 5000
-    max_access_tokens: int = 10000
 
     # TTLs (defaults from config constants)
     auth_code_ttl: int = AUTH_CODE_TTL
@@ -79,7 +66,6 @@ class OAuthStore:
         return cls(
             max_clients=config.max_oauth_clients,
             max_auth_codes=config.max_auth_codes,
-            max_access_tokens=config.max_access_tokens,
             auth_code_ttl=config.auth_code_ttl,
             access_token_ttl=config.access_token_ttl,
             client_ttl=config.client_ttl,
@@ -117,11 +103,6 @@ class OAuthStore:
         expired_codes = [code for code, data in self.auth_codes.items() if data.expires_at < now]
         for code in expired_codes:
             del self.auth_codes[code]
-
-        # Clean access tokens
-        expired_tokens = [token for token, data in self.access_tokens.items() if data.expires_at < now]
-        for token in expired_tokens:
-            del self.access_tokens[token]
 
         # Clean old clients
         client_cutoff = now - self.client_ttl
@@ -237,26 +218,14 @@ class OAuthStore:
         client_id: str,
         api_key_hash: str,
         jwt_secret: bytes,
-    ) -> str | None:
+    ) -> str:
         """
-        Create an access token.
+        Create a JWT access token (stateless).
 
-        Returns the JWT token string, or None if at max capacity.
+        Tokens are verified statelessly via JWT signature, so no
+        in-memory tracking is needed.
         """
-        if len(self.access_tokens) >= self.max_access_tokens:
-            self._cleanup()
-            if len(self.access_tokens) >= self.max_access_tokens:
-                return None
-
-        token = create_access_token(client_id, api_key_hash, jwt_secret, self.access_token_ttl)
-
-        self.access_tokens[token] = AccessToken(
-            token=token,
-            client_id=client_id,
-            api_key_hash=api_key_hash,
-            expires_at=time.time() + self.access_token_ttl,
-        )
-        return token
+        return create_access_token(client_id, api_key_hash, jwt_secret, self.access_token_ttl)
 
     def verify_token(self, token: str, jwt_secret: bytes, valid_api_key_hashes: set[str]) -> bool:
         """
@@ -286,4 +255,4 @@ class OAuthStore:
         if not token_api_key_hash:
             return False
 
-        return token_api_key_hash in valid_api_key_hashes
+        return any(timing_safe_compare(token_api_key_hash, h) for h in valid_api_key_hashes)

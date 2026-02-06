@@ -69,6 +69,8 @@ def create_server(
         # Don't call start() here as there may not be a running event loop yet
 
     server = Server("fetchaller")
+    # Store reddit_queue for external cleanup access (e.g., HTTP app lifespan)
+    server._reddit_queue = reddit_queue  # type: ignore[attr-defined]
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -201,6 +203,20 @@ def create_server(
             ),
         ]
 
+    def _format_result(name: str, result: dict, start_time: float) -> list[TextContent]:
+        """Format a tool result into TextContent, with logging."""
+        elapsed = (time.time() - start_time) * 1000
+        if "error" in result:
+            _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
+            text = f"Error: {result['error']}"
+            if "body" in result:
+                text += f"\n\nPartial content:\n{result['body']}"
+            return [TextContent(type="text", text=text)]
+
+        content = result.get("content", "")
+        _log(f"TOOL END: {name} OK content_len={len(content)} time={elapsed:.1f}ms")
+        return [TextContent(type="text", text=content)]
+
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         """Handle tool calls."""
@@ -214,25 +230,14 @@ def create_server(
             if name == "fetch":
                 result = await fetch_url(
                     url=arguments["url"],
-                    max_tokens=arguments.get("maxTokens", config.default_max_tokens),
-                    timeout=arguments.get("timeout", config.default_timeout_seconds),
+                    max_tokens=max(1, min(250000, arguments.get("maxTokens", config.default_max_tokens))),
+                    timeout=max(1, min(300, arguments.get("timeout", config.default_timeout_seconds))),
                     raw=arguments.get("raw", False),
                     fetcher=fetcher,
                     cache=cache,
                     config=config,
                 )
-
-                elapsed = (time.time() - start_time) * 1000
-                if "error" in result:
-                    _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
-                    text = f"Error: {result['error']}"
-                    if "body" in result:
-                        text += f"\n\nPartial content:\n{result['body']}"
-                    return [TextContent(type="text", text=text)]
-
-                content_len = len(result.get("content", ""))
-                _log(f"TOOL END: {name} OK content_len={content_len} time={elapsed:.1f}ms")
-                return [TextContent(type="text", text=result["content"])]
+                return _format_result(name, result, start_time)
 
             elif name == "browse_reddit":
                 result = await browse_reddit(
@@ -241,19 +246,11 @@ def create_server(
                     time=arguments.get("time", "day"),
                     limit=arguments.get("limit", 10),
                     after=arguments.get("after"),
-                    timeout=arguments.get("timeout", 10),
+                    timeout=max(1, min(300, arguments.get("timeout", 10))),
                     fetcher=fetcher,
                     queue=reddit_queue,
                 )
-
-                elapsed = (time.time() - start_time) * 1000
-                if "error" in result:
-                    _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
-                    return [TextContent(type="text", text=f"Error: {result['error']}")]
-
-                content_len = len(result.get("content", ""))
-                _log(f"TOOL END: {name} OK content_len={content_len} time={elapsed:.1f}ms")
-                return [TextContent(type="text", text=result["content"])]
+                return _format_result(name, result, start_time)
 
             elif name == "search_reddit":
                 result = await search_reddit(
@@ -263,19 +260,11 @@ def create_server(
                     time=arguments.get("time", "all"),
                     limit=arguments.get("limit", 10),
                     after=arguments.get("after"),
-                    timeout=arguments.get("timeout", 10),
+                    timeout=max(1, min(300, arguments.get("timeout", 10))),
                     fetcher=fetcher,
                     queue=reddit_queue,
                 )
-
-                elapsed = (time.time() - start_time) * 1000
-                if "error" in result:
-                    _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
-                    return [TextContent(type="text", text=f"Error: {result['error']}")]
-
-                content_len = len(result.get("content", ""))
-                _log(f"TOOL END: {name} OK content_len={content_len} time={elapsed:.1f}ms")
-                return [TextContent(type="text", text=result["content"])]
+                return _format_result(name, result, start_time)
 
             else:
                 elapsed = (time.time() - start_time) * 1000
@@ -293,14 +282,19 @@ def create_server(
 
 async def run_stdio_server(config: Config | None = None) -> None:
     """Run the server in stdio mode."""
-    import sys
 
     if config is None:
         config = load_config()
 
-    server = create_server(config)
+    fetcher = ContentFetcher(retry_config=RetryConfig.from_config(config))
+    server = create_server(config, fetcher=fetcher)
 
     print("fetchaller MCP server running on stdio", file=sys.stderr)
 
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+    finally:
+        await fetcher.close()
+        if hasattr(server, '_reddit_queue'):
+            await server._reddit_queue.stop()

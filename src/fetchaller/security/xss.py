@@ -3,6 +3,9 @@
 import html
 import re
 
+# Pre-compiled regex for control character removal (hot path)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
 
 def escape_html(value: str | None) -> str:
     """
@@ -23,6 +26,5 @@ def sanitize_for_log(value: str | None, max_length: int = 100) -> str:
     """
     if value is None:
         return ""
-    # Remove control characters (0x00-0x1f and 0x7f)
-    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", str(value))
+    cleaned = _CONTROL_CHARS.sub("", str(value))
     return cleaned[:max_length]

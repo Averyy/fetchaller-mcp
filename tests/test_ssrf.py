@@ -2,7 +2,7 @@
 
 import pytest
 
-from fetchaller.security.ssrf import clear_dns_cache, is_private_host
+from fetchaller.security.ssrf import clear_dns_cache, is_private_host_sync as is_private_host
 
 
 class TestSSRFProtection:

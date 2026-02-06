@@ -77,7 +77,12 @@ def verify_access_token(token: str, secret: bytes) -> dict[str, Any] | None:
     Returns None if token is invalid or expired.
     """
     try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
+        payload = jwt.decode(
+            token,
+            secret,
+            algorithms=["HS256"],
+            options={"require": ["sub", "exp", "iat", "api_key_hash"]},
+        )
         return payload
     except jwt.PyJWTError:
         return None

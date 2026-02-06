@@ -2,8 +2,6 @@
 
 import argparse
 import asyncio
-import signal
-import sys
 
 from .config import load_config
 
@@ -41,23 +39,7 @@ async def run_http_mode(config) -> None:
     """Run in HTTP mode (remote deployment)."""
     from .http.app import run_http_server
 
-    # Set up graceful shutdown
-    shutdown_event = asyncio.Event()
-
-    def handle_signal(sig):
-        print(f"\n[Received {sig.name}] Shutting down gracefully...", file=sys.stderr)
-        shutdown_event.set()
-
-    # Register signal handlers
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, handle_signal, sig)
-
-    # Run server
-    try:
-        await run_http_server(config)
-    except asyncio.CancelledError:
-        pass
+    await run_http_server(config)
 
 
 if __name__ == "__main__":

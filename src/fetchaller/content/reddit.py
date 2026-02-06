@@ -88,14 +88,19 @@ def format_relative_time(utc_seconds: float) -> str:
     if diff < 60:
         return "just now"
     if diff < 3600:
-        return f"{int(diff / 60)} minutes ago"
+        n = int(diff / 60)
+        return f"{n} {'minute' if n == 1 else 'minutes'} ago"
     if diff < 86400:
-        return f"{int(diff / 3600)} hours ago"
+        n = int(diff / 3600)
+        return f"{n} {'hour' if n == 1 else 'hours'} ago"
     if diff < 2592000:  # 30 days
-        return f"{int(diff / 86400)} days ago"
+        n = int(diff / 86400)
+        return f"{n} {'day' if n == 1 else 'days'} ago"
     if diff < 31536000:  # 365 days
-        return f"{int(diff / 2592000)} months ago"
-    return f"{int(diff / 31536000)} years ago"
+        n = int(diff / 2592000)
+        return f"{n} {'month' if n == 1 else 'months'} ago"
+    n = int(diff / 31536000)
+    return f"{n} {'year' if n == 1 else 'years'} ago"
 
 
 def format_reddit_post(

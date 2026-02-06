@@ -3,14 +3,10 @@
 import asyncio
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from curl_cffi.requests import AsyncSession, Response
 
 from ..config import BROWSER_FINGERPRINTS, Config
-
-if TYPE_CHECKING:
-    from ..cache.response_cache import ResponseCache
 
 
 @dataclass
@@ -28,9 +24,10 @@ class FetchResult:
 class RetryConfig:
     """Configuration for retry behavior."""
 
-    max_retries: int = 3
-    initial_delay: float = 1.0
-    max_delay: float = 30.0
+    # Defaults match Config defaults for consistency
+    max_retries: int = 1
+    initial_delay: float = 0.5
+    max_delay: float = 5.0
     exponential_base: int = 2
     jitter: float = 0.1  # +/- 10% randomization
 
@@ -52,8 +49,10 @@ class ContentFetcher:
     Features:
     - Browser fingerprint rotation (chrome131, chrome133a, chrome136, chrome142)
     - Smart retry with exponential backoff
-    - Optional response caching
+    - Max response size enforcement (default 20MB)
     """
+
+    MAX_RESPONSE_SIZE = 20 * 1024 * 1024  # 20MB
 
     # Chrome 131 on macOS headers
     DEFAULT_HEADERS = {
@@ -88,10 +87,8 @@ class ContentFetcher:
     def __init__(
         self,
         retry_config: RetryConfig | None = None,
-        cache: "ResponseCache | None" = None,
     ):
         self.retry_config = retry_config or RetryConfig()
-        self.cache = cache
         self._browser = random.choice(BROWSER_FINGERPRINTS)
         self._session: AsyncSession | None = None
 
@@ -185,6 +182,13 @@ class ContentFetcher:
                         continue
                     return self._make_result(response)
 
+                # Enforce max response size
+                if len(response.content) > self.MAX_RESPONSE_SIZE:
+                    raise ValueError(
+                        f"Response too large ({len(response.content) // (1024 * 1024)}MB). "
+                        f"Max allowed: {self.MAX_RESPONSE_SIZE // (1024 * 1024)}MB."
+                    )
+
                 return self._make_result(response)
 
             except (TimeoutError, ConnectionError, OSError) as e:
@@ -201,9 +205,12 @@ class ContentFetcher:
         raise RuntimeError(f"Failed after {self.retry_config.max_retries} retries")
 
     def _make_result(self, response: Response) -> FetchResult:
-        """Convert curl_cffi response to FetchResult."""
+        """Convert curl_cffi response to FetchResult, enforcing size limit."""
+        content = response.content
+        if len(content) > self.MAX_RESPONSE_SIZE:
+            content = content[: self.MAX_RESPONSE_SIZE]
         return FetchResult(
-            content=response.content,
+            content=content,
             content_type=response.headers.get("content-type", ""),
             status_code=response.status_code,
             final_url=str(response.url),

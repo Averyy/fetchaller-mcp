@@ -71,9 +71,9 @@ def clean_html(html: str, is_reddit: bool = False) -> BeautifulSoup:
     return soup
 
 
-def html_to_markdown(html: str, is_reddit: bool = False) -> tuple[str, str | None]:
+def _html_to_markdown_sync(html: str, is_reddit: bool = False) -> tuple[str, str | None]:
     """
-    Convert HTML to clean markdown.
+    Convert HTML to clean markdown (CPU-bound, synchronous).
 
     Args:
         html: Raw HTML string
@@ -103,3 +103,22 @@ def html_to_markdown(html: str, is_reddit: bool = False) -> tuple[str, str | Non
         markdown = f"# {title}\n\n{markdown}"
 
     return markdown, title
+
+
+async def html_to_markdown(html: str, is_reddit: bool = False) -> tuple[str, str | None]:
+    """
+    Convert HTML to clean markdown without blocking the event loop.
+
+    Runs CPU-bound parsing in a thread pool executor.
+
+    Args:
+        html: Raw HTML string
+        is_reddit: If True, also clean Reddit-specific elements
+
+    Returns:
+        Tuple of (markdown_content, title)
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _html_to_markdown_sync, html, is_reddit)

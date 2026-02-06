@@ -1,10 +1,12 @@
 """Reddit request queue with proactive rate limiting."""
 
 import asyncio
+import sys
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 from ..config import Config
@@ -20,6 +22,7 @@ class QueueConfig:
     proactive_threshold: int = 8  # Start slowing at 8/10
     backoff_rate_limit: int = 60  # Backoff after 429
     backoff_blocked: int = 300  # Backoff after 403
+    max_queue_wait: float = 30.0  # Max seconds an item can wait in queue
 
     @classmethod
     def from_config(cls, config: Config) -> "QueueConfig":
@@ -40,6 +43,7 @@ class QueueItem:
     kwargs: dict
     # Note: future is created in enqueue() using the running loop, not here
     future: asyncio.Future = field(default=None)  # type: ignore[assignment]
+    enqueued_at: float = field(default_factory=time.time)
 
 
 class RedditRequestQueue:
@@ -128,12 +132,24 @@ class RedditRequestQueue:
 
     async def _process_queue(self) -> None:
         """Process queued requests with rate limiting."""
+        item = None
         while self._running:
             try:
                 # Get next item (with timeout to allow checking _running)
                 try:
                     item = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 except TimeoutError:
+                    item = None
+                    continue
+
+                # Drop items that have been waiting too long
+                wait_time = time.time() - item.enqueued_at
+                if wait_time > self.config.max_queue_wait:
+                    if not item.future.done():
+                        item.future.set_exception(
+                            TimeoutError(f"Request expired after {wait_time:.1f}s in queue")
+                        )
+                    item = None
                     continue
 
                 # Calculate and apply delay
@@ -150,12 +166,19 @@ class RedditRequestQueue:
                     item.future.set_result(result)
                 except Exception as e:
                     item.future.set_exception(e)
+                item = None
 
             except asyncio.CancelledError:
+                # Cancel any in-flight item's future so callers don't hang
+                if item and not item.future.done():
+                    item.future.cancel()
                 break
-            except Exception:
-                # Log but don't crash
-                pass
+            except Exception as e:
+                print(f"[{datetime.now(UTC).isoformat()}] Reddit queue error: {e}", file=sys.stderr)
+                # Ensure the dequeued item's future is resolved
+                if item and not item.future.done():
+                    item.future.set_exception(e)
+                item = None
 
     async def enqueue(
         self,
@@ -188,33 +211,3 @@ class RedditRequestQueue:
 
         await self._queue.put(item)
         return await item.future
-
-
-# Global instance for shared use
-_reddit_queue: RedditRequestQueue | None = None
-_reddit_queue_lock = asyncio.Lock()
-
-
-def get_reddit_queue(config: QueueConfig | None = None) -> RedditRequestQueue:
-    """Get or create the global Reddit request queue."""
-    global _reddit_queue
-    if _reddit_queue is None:
-        _reddit_queue = RedditRequestQueue(config)
-    return _reddit_queue
-
-
-async def get_reddit_queue_async(config: QueueConfig | None = None) -> RedditRequestQueue:
-    """Get or create the global Reddit request queue (thread-safe async version)."""
-    global _reddit_queue
-    async with _reddit_queue_lock:
-        if _reddit_queue is None:
-            _reddit_queue = RedditRequestQueue(config)
-        return _reddit_queue
-
-
-async def stop_reddit_queue() -> None:
-    """Stop the global Reddit request queue if running."""
-    global _reddit_queue
-    if _reddit_queue is not None:
-        await _reddit_queue.stop()
-        _reddit_queue = None

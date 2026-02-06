@@ -9,6 +9,7 @@ def get_authorize_page(
     state: str | None,
     code_challenge: str,
     error: str | None = None,
+    csrf_token: str | None = None,
 ) -> str:
     """
     Generate the OAuth authorization page HTML.
@@ -19,6 +20,7 @@ def get_authorize_page(
     safe_redirect_uri = escape_html(redirect_uri)
     safe_state = escape_html(state or "")
     safe_code_challenge = escape_html(code_challenge)
+    safe_csrf = escape_html(csrf_token or "")
     error_html = f'<div class="error" role="alert" aria-live="assertive">{escape_html(error)}</div>' if error else ""
 
     return f'''<!DOCTYPE html>
@@ -40,8 +42,8 @@ def get_authorize_page(
       --text-primary: #f5f5f7;
       --text-secondary: #a1a1a6;
       --text-tertiary: #8e8e93;
-      --accent: #ff2300;
-      --accent-hover: #cc1c00;
+      --accent: #cc1c00;
+      --accent-hover: #a81700;
       --purple: #62007f;
       --red: #ff453a;
     }}
@@ -244,6 +246,7 @@ def get_authorize_page(
       <input type="hidden" name="redirect_uri" value="{safe_redirect_uri}">
       <input type="hidden" name="state" value="{safe_state}">
       <input type="hidden" name="code_challenge" value="{safe_code_challenge}">
+      <input type="hidden" name="csrf_token" value="{safe_csrf}">
       <div class="form-group">
         <label for="api_key">API Key</label>
         <input type="password" id="api_key" name="api_key" placeholder="Enter your MCP_API_KEY" required autocomplete="off">
@@ -256,6 +259,11 @@ def get_authorize_page(
         btn.disabled = true;
         btn.setAttribute('aria-busy', 'true');
         btn.textContent = 'Authorizing...';
+        setTimeout(function() {{
+          btn.disabled = false;
+          btn.removeAttribute('aria-busy');
+          btn.textContent = 'Authorize';
+        }}, 10000);
       }});
     </script>
     <div class="info">
@@ -280,9 +288,11 @@ def get_authorize_success_page(redirect_url: str) -> str:
     Shows a success message so the tab doesn't get stuck on "Authorizing...".
     Uses both meta refresh and JS redirect for reliability.
     """
+    import json as json_module
+
     safe_url = escape_html(redirect_url)
-    # For JS we need to escape quotes in the URL
-    js_url = redirect_url.replace("\\", "\\\\").replace("'", "\\'")
+    # Use JSON encoding for safe JS string interpolation (handles </script>, unicode, etc.)
+    js_url = json_module.dumps(redirect_url)
 
     return f'''<!DOCTYPE html>
 <html lang="en">
@@ -397,16 +407,16 @@ def get_authorize_success_page(redirect_url: str) -> str:
 </head>
 <body>
   <div class="gradient-bg"></div>
-  <main class="card">
+  <main class="card" role="status">
     <div class="logo">
       <div class="logo-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="lg" x1="33.29" y1="363.29" x2="478.71" y2="808.71" gradientTransform="translate(0 -330)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#62007f"/><stop offset="1" stop-color="#ff2300"/></linearGradient></defs><rect fill="url(#lg)" width="512" height="512" rx="113.66" ry="113.66"/><path fill="#fff" d="M206.94,428.01v-32.65h-.01v-178.34h-57.99v-32.65h57.99v-13.64c0-30.53,7.96-52.63,23.88-66.27,15.91-13.64,38.65-20.47,68.22-20.47,10.72,0,20.3.66,28.75,1.95,8.44,1.3,17.54,3.9,27.29,7.8l-8.73,31.67c-8.41-3.57-16.5-5.92-24.26-7.07-7.77-1.13-14.88-1.7-21.34-1.7-21.35,0-35.91,5.28-43.67,15.84-7.77,10.56-11.64,27.86-11.64,51.9h100.87v32.65h-103.87l3,178.34h100.87v32.65h-139.35Z"/></svg></div>
       <span class="logo-text">fetchaller</span>
     </div>
-    <div class="checkmark"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+    <div class="checkmark"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg></div>
     <h1>Authorized</h1>
     <p class="subtitle">Redirecting to Claude...</p>
-    <p class="close-hint">You can close this tab.</p>
+    <p class="close-hint"><a href="{safe_url}" style="color: var(--text-tertiary);">Click here if not redirected</a> · You can close this tab.</p>
   </main>
-  <script>window.location.href = '{js_url}';</script>
+  <script>window.location.href = {js_url};</script>
 </body>
 </html>'''

@@ -1,15 +1,24 @@
 """SSRF protection: block private/internal IP ranges."""
 
+import asyncio
 import ipaddress
 import re
 import socket
-from functools import lru_cache
+import time
+
+# Pre-compiled regexes for hot path
+_IPV4_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)$")
+
+# DNS cache TTL (seconds)
+_DNS_CACHE_TTL = 60
+_DNS_CACHE_MAX = 1024
+_DNS_RESOLVE_TIMEOUT = 3  # seconds — DNS should be fast; slow = suspicious
+_dns_cache: dict[str, tuple[list[str], float]] = {}
 
 
 def _is_private_ip(ip_str: str) -> bool:
     """Check if an IP address string is private/internal."""
     try:
-        # Try IPv4
         ip = ipaddress.IPv4Address(ip_str)
         return (
             ip.is_private
@@ -22,8 +31,16 @@ def _is_private_ip(ip_str: str) -> bool:
         pass
 
     try:
-        # Try IPv6
         ip = ipaddress.IPv6Address(ip_str)
+        mapped = ip.ipv4_mapped
+        if mapped:
+            return (
+                mapped.is_private
+                or mapped.is_loopback
+                or mapped.is_link_local
+                or mapped.is_reserved
+                or mapped.is_unspecified
+            )
         return (
             ip.is_private
             or ip.is_loopback
@@ -37,42 +54,52 @@ def _is_private_ip(ip_str: str) -> bool:
     return False
 
 
-def _check_ipv4_mapped_ipv6(ipv6_str: str) -> bool:
-    """Check IPv4-mapped IPv6 addresses like ::ffff:127.0.0.1."""
-    v4_mapped_match = re.match(r"^::ffff:(\d+\.\d+\.\d+\.\d+)$", ipv6_str, re.IGNORECASE)
-    if v4_mapped_match:
-        return _is_private_ip(v4_mapped_match.group(1))
-    return False
-
-
-@lru_cache(maxsize=1024)
-def _resolve_hostname(hostname: str) -> list[str]:
+async def _resolve_hostname(hostname: str) -> list[str]:
     """
-    Resolve hostname to IP addresses.
+    Resolve hostname to IP addresses with TTL-based caching.
 
-    Cached to prevent repeated DNS lookups, but cache is bounded.
-    Returns list of resolved IP addresses.
+    Uses asyncio.getaddrinfo to avoid blocking the event loop.
+    Cache entries expire after _DNS_CACHE_TTL seconds to prevent
+    stale DNS from enabling SSRF bypass via DNS rebinding.
     """
+    now = time.monotonic()
+
+    cached = _dns_cache.get(hostname)
+    if cached:
+        ips, expires_at = cached
+        if now < expires_at:
+            return ips
+
+    # Non-blocking DNS resolution with short timeout
     try:
-        # Use getaddrinfo for both IPv4 and IPv6
-        results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        return list(set(addr[4][0] for addr in results))
-    except (socket.gaierror, socket.herror, OSError):
-        return []
+        loop = asyncio.get_running_loop()
+        results = await asyncio.wait_for(
+            loop.getaddrinfo(hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM),
+            timeout=_DNS_RESOLVE_TIMEOUT,
+        )
+        ips = list(set(addr[4][0] for addr in results))
+    except (socket.gaierror, socket.herror, OSError, TimeoutError):
+        ips = []
+
+    # Evict oldest entries if cache is full
+    if len(_dns_cache) >= _DNS_CACHE_MAX:
+        expired = [k for k, (_, exp) in _dns_cache.items() if now >= exp]
+        for k in expired:
+            del _dns_cache[k]
+        if len(_dns_cache) >= _DNS_CACHE_MAX:
+            to_remove = list(_dns_cache.keys())[: _DNS_CACHE_MAX // 2]
+            for k in to_remove:
+                del _dns_cache[k]
+    _dns_cache[hostname] = (ips, now + _DNS_CACHE_TTL)
+
+    return ips
 
 
-def is_private_host(hostname: str) -> bool:
+def _is_private_host_sync(hostname: str) -> bool | None:
     """
-    Check if hostname resolves to private/internal addresses.
+    Check hostname against static rules (no DNS needed).
 
-    Blocks:
-    - localhost variants
-    - Private IPv4 ranges (10.x, 172.16-31.x, 192.168.x)
-    - Link-local addresses (169.254.x, fe80::)
-    - Loopback (127.x, ::1)
-    - Unique local IPv6 (fc00::/7)
-    - DNS rebinding services (nip.io, xip.io, localtest.me)
-    - Resolves hostnames to check final IP addresses (DNS rebinding protection)
+    Returns True/False for definitive answers, None if DNS resolution is needed.
     """
     hostname = hostname.lower()
 
@@ -90,37 +117,70 @@ def is_private_host(hostname: str) -> bool:
         return True
 
     # Check for direct IPv4 addresses
-    ipv4_match = re.match(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)$", hostname)
-    if ipv4_match:
+    if _IPV4_PATTERN.match(hostname):
         return _is_private_ip(hostname)
 
     # Check for bracketed IPv6 addresses [::1]
     if hostname.startswith("[") and hostname.endswith("]"):
-        ipv6_str = hostname[1:-1]
-        if _is_private_ip(ipv6_str):
-            return True
-        if _check_ipv4_mapped_ipv6(ipv6_str):
-            return True
-        return False
+        return _is_private_ip(hostname[1:-1])
 
     # Check for non-bracketed IPv6 addresses (::1, fe80::1, etc.)
-    # IPv6 addresses contain colons but are not URLs with ports
     if ":" in hostname and not hostname.startswith("["):
-        # This looks like a bare IPv6 address
-        if _is_private_ip(hostname):
-            return True
-        if _check_ipv4_mapped_ipv6(hostname):
-            return True
-        # Don't return False yet - might be a hostname with a port
+        return _is_private_ip(hostname)
+
+    # Need DNS resolution
+    return None
+
+
+async def is_private_host(hostname: str) -> bool:
+    """
+    Check if hostname resolves to private/internal addresses.
+
+    This is async because it may need to perform DNS resolution.
+
+    Blocks:
+    - localhost variants
+    - Private IPv4 ranges (10.x, 172.16-31.x, 192.168.x)
+    - Link-local addresses (169.254.x, fe80::)
+    - Loopback (127.x, ::1)
+    - Unique local IPv6 (fc00::/7)
+    - DNS rebinding services (nip.io, xip.io, localtest.me)
+    - Resolves hostnames to check final IP addresses (DNS rebinding protection)
+    """
+    # Fast path: check static rules first (no async needed)
+    result = _is_private_host_sync(hostname)
+    if result is not None:
+        return result
 
     # DNS rebinding protection: resolve hostname and check all IPs
-    # This prevents attacks where a hostname initially resolves to a public IP
-    # but later resolves to a private IP
-    resolved_ips = _resolve_hostname(hostname)
+    resolved_ips = await _resolve_hostname(hostname.lower())
     for ip in resolved_ips:
         if _is_private_ip(ip):
             return True
-        if _check_ipv4_mapped_ipv6(ip):
+
+    return False
+
+
+def is_private_host_sync(hostname: str) -> bool:
+    """
+    Synchronous version for tests and non-async contexts.
+
+    Uses blocking DNS resolution. Do NOT call from async code.
+    """
+    result = _is_private_host_sync(hostname)
+    if result is not None:
+        return result
+
+    # Blocking DNS fallback
+    hostname = hostname.lower()
+    try:
+        results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        ips = list(set(addr[4][0] for addr in results))
+    except (socket.gaierror, socket.herror, OSError):
+        ips = []
+
+    for ip in ips:
+        if _is_private_ip(ip):
             return True
 
     return False
@@ -128,4 +188,4 @@ def is_private_host(hostname: str) -> bool:
 
 def clear_dns_cache() -> None:
     """Clear the DNS resolution cache. Useful for testing."""
-    _resolve_hostname.cache_clear()
+    _dns_cache.clear()

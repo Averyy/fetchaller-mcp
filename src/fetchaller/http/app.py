@@ -32,24 +32,26 @@ def create_app(config: Config | None = None) -> FastAPI:
         config = load_config()
 
     # Parse API keys (comma-separated for multiple keys)
-    api_keys: list[str] = []
     api_key_hashes: set[str] = set()
+    api_key_count = 0
     if config.api_key:
         for key in config.api_key.split(","):
             key = key.strip()
             if key:
-                api_keys.append(key)
                 api_key_hashes.add(hash_api_key(key))
+                api_key_count += 1
 
     # Create JWT secret
     if config.jwt_secret:
         jwt_secret = hashlib.sha256(config.jwt_secret.encode()).digest()
-    elif api_keys:
+    elif api_key_hashes:
         print(
             f"[{datetime.now(UTC).isoformat()}] WARNING: JWT_SECRET not set. Deriving from MCP_API_KEY. Set JWT_SECRET for better security.",
             file=sys.stderr,
         )
-        jwt_secret = hashlib.sha256((api_keys[0] + "fetchaller-oauth-secret").encode()).digest()
+        # Derive from API key hash (deterministic: min() ensures same result regardless of set order)
+        first_hash = min(api_key_hashes)
+        jwt_secret = hashlib.sha256((first_hash + "fetchaller-oauth-secret").encode()).digest()
     else:
         import secrets
 
@@ -64,8 +66,14 @@ def create_app(config: Config | None = None) -> FastAPI:
         max_entries=config.max_rate_limit_entries,
     )
 
+    # Create shared fetcher for cleanup tracking
+    from ..content.fetcher import ContentFetcher
+    from ..content.fetcher import RetryConfig as FetcherRetryConfig
+
+    fetcher = ContentFetcher(retry_config=FetcherRetryConfig.from_config(config))
+
     # Create MCP server and session manager
-    mcp_server = create_server(config)
+    mcp_server = create_server(config, fetcher=fetcher)
     session_manager = StreamableHTTPSessionManager(
         app=mcp_server,
         stateless=True,
@@ -79,8 +87,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         oauth_store.start_cleanup()
         print(f"[{datetime.now(UTC).isoformat()}] fetchaller MCP HTTP server v{__version__} starting", file=sys.stderr)
 
-        if api_keys:
-            print(f"[{datetime.now(UTC).isoformat()}] Bearer token authentication enabled ({len(api_keys)} key(s))", file=sys.stderr)
+        if api_key_hashes:
+            print(f"[{datetime.now(UTC).isoformat()}] Bearer token authentication enabled ({api_key_count} key(s))", file=sys.stderr)
             print(f"[{datetime.now(UTC).isoformat()}] OAuth 2.1 endpoints enabled (for Claude.ai connectors)", file=sys.stderr)
             print(f"[{datetime.now(UTC).isoformat()}]   - Authorization: {config.effective_server_url}/authorize", file=sys.stderr)
             print(f"[{datetime.now(UTC).isoformat()}]   - Token: {config.effective_server_url}/token", file=sys.stderr)
@@ -102,10 +110,11 @@ def create_app(config: Config | None = None) -> FastAPI:
         # Shutdown
         print(f"[{datetime.now(UTC).isoformat()}] Shutting down...", file=sys.stderr)
         await oauth_store.stop_cleanup()
+        await fetcher.close()
 
         # Stop Reddit queue if running
-        from ..queue.reddit_queue import stop_reddit_queue
-        await stop_reddit_queue()
+        if hasattr(mcp_server, '_reddit_queue'):
+            await mcp_server._reddit_queue.stop()
 
     app = FastAPI(
         title="fetchaller",
@@ -118,7 +127,6 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     # Store config items in app state for access by routes
     app.state.config = config
-    app.state.api_keys = api_keys
     app.state.api_key_hashes = api_key_hashes
     app.state.oauth_store = oauth_store
     app.state.jwt_secret = jwt_secret
@@ -138,7 +146,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)
 
     # Add routes
-    router = create_router(config, api_keys, api_key_hashes, oauth_store, jwt_secret)
+    router = create_router(config, api_key_hashes, oauth_store, jwt_secret)
     app.include_router(router)
 
     # Catch-all 404 handler

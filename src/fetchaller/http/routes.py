@@ -1,6 +1,8 @@
 """HTTP routes for fetchaller MCP server."""
 
+import secrets
 import sys
+import time
 from datetime import UTC, datetime
 from urllib.parse import quote, urlparse
 
@@ -8,15 +10,43 @@ from fastapi import APIRouter, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from ..config import Config
-from ..security.crypto import hash_api_key
+from ..security.crypto import hash_api_key, timing_safe_compare
 from ..security.xss import sanitize_for_log
 from .oauth import OAuthStore
 from .templates import get_authorize_page, get_authorize_success_page
 
+# Per-IP registration rate limiter (5 registrations per IP per hour)
+_register_timestamps: dict[str, list[float]] = {}
+_REGISTER_LIMIT = 5
+_REGISTER_WINDOW = 3600  # 1 hour
+_REGISTER_MAX_IPS = 10000  # Max tracked IPs
+
+# CSRF tokens for authorize form (token -> expiry)
+_csrf_tokens: dict[str, float] = {}
+_CSRF_TTL = 600  # 10 minutes
+_CSRF_MAX_TOKENS = 10000  # Max outstanding tokens
+
+
+def _new_csrf_token() -> str:
+    """Generate and store a new CSRF token, evicting expired entries if needed."""
+    now = time.time()
+    # Evict expired tokens if at capacity
+    if len(_csrf_tokens) >= _CSRF_MAX_TOKENS:
+        expired = [t for t, exp in _csrf_tokens.items() if exp < now]
+        for t in expired:
+            del _csrf_tokens[t]
+    # If still at capacity after cleanup, evict oldest entries
+    if len(_csrf_tokens) >= _CSRF_MAX_TOKENS:
+        by_expiry = sorted(_csrf_tokens.items(), key=lambda x: x[1])
+        for t, _ in by_expiry[: len(by_expiry) // 2]:
+            del _csrf_tokens[t]
+    token = secrets.token_urlsafe(32)
+    _csrf_tokens[token] = now + _CSRF_TTL
+    return token
+
 
 def create_router(
     config: Config,
-    api_keys: list[str],
     api_key_hashes: set[str],
     oauth_store: OAuthStore,
     jwt_secret: bytes,
@@ -61,9 +91,8 @@ def create_router(
             "scopes_supported": ["fetchaller:read"],
         }
 
-    @router.get("/.well-known/oauth-authorization-server")
-    async def oauth_authorization_server():
-        """OAuth Authorization Server Metadata (RFC 8414)."""
+    def _oauth_server_metadata() -> dict:
+        """OAuth Authorization Server Metadata (shared by discovery endpoints)."""
         return {
             "issuer": server_url,
             "authorization_endpoint": f"{server_url}/authorize",
@@ -76,21 +105,16 @@ def create_router(
             "scopes_supported": ["fetchaller:read"],
         }
 
+    @router.get("/.well-known/oauth-authorization-server")
+    async def oauth_authorization_server():
+        """OAuth Authorization Server Metadata (RFC 8414)."""
+        return _oauth_server_metadata()
+
     # OpenID Connect discovery - return OAuth metadata for compatibility
     @router.get("/.well-known/openid-configuration")
     async def openid_configuration():
         """OpenID Connect discovery - returns OAuth metadata for compatibility."""
-        return {
-            "issuer": server_url,
-            "authorization_endpoint": f"{server_url}/authorize",
-            "token_endpoint": f"{server_url}/token",
-            "registration_endpoint": f"{server_url}/register",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
-            "scopes_supported": ["fetchaller:read"],
-        }
+        return _oauth_server_metadata()
 
     # =========================================================================
     # Dynamic Client Registration (RFC 7591)
@@ -98,6 +122,37 @@ def create_router(
     @router.post("/register")
     async def register_client(request: Request):
         """Dynamic Client Registration endpoint."""
+        from .middleware import get_client_ip
+
+        # Per-IP rate limiting for registration
+        client_ip = get_client_ip(request)
+        now = time.time()
+        cutoff = now - _REGISTER_WINDOW
+        timestamps = _register_timestamps.get(client_ip, [])
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= _REGISTER_LIMIT:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "too_many_requests",
+                    "error_description": f"Registration limit ({_REGISTER_LIMIT} per hour) exceeded. Try again later.",
+                },
+                headers={"Retry-After": "3600"},
+            )
+        timestamps.append(now)
+        _register_timestamps[client_ip] = timestamps
+
+        # Evict stale IPs if dict is too large
+        if len(_register_timestamps) > _REGISTER_MAX_IPS:
+            stale = [ip for ip, ts in _register_timestamps.items() if not ts or ts[-1] < cutoff]
+            for ip in stale:
+                del _register_timestamps[ip]
+            # If still over limit after stale cleanup, evict oldest entries
+            if len(_register_timestamps) > _REGISTER_MAX_IPS:
+                by_latest = sorted(_register_timestamps.items(), key=lambda x: x[1][-1] if x[1] else 0)
+                for ip, _ in by_latest[: len(by_latest) // 2]:
+                    del _register_timestamps[ip]
+
         try:
             body = await request.json()
         except Exception:
@@ -231,7 +286,7 @@ def create_router(
                 },
             )
 
-        if code_challenge_method and code_challenge_method != "S256":
+        if code_challenge_method not in (None, "", "S256"):
             print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize FAILED - invalid code_challenge_method={sanitize_for_log(code_challenge_method)}", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
@@ -265,9 +320,23 @@ def create_router(
                 },
             )
 
+        # Generate CSRF token
+        now = time.time()
+        # Clean expired CSRF tokens
+        expired = [t for t, exp in _csrf_tokens.items() if exp < now]
+        for t in expired:
+            del _csrf_tokens[t]
+        # Cap total tokens to prevent memory growth
+        if len(_csrf_tokens) >= _CSRF_MAX_TOKENS:
+            return HTMLResponse(
+                content="<html><body><h1>Service Busy</h1><p>Too many pending authorization requests. Please try again later.</p></body></html>",
+                status_code=503,
+            )
+        csrf_token = _new_csrf_token()
+
         # Show authorization form
         print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize SUCCESS - returning login page for client {sanitize_for_log(client_id)}", file=sys.stderr)
-        html = get_authorize_page(client_id, actual_redirect_uri, state, code_challenge)
+        html = get_authorize_page(client_id, actual_redirect_uri, state, code_challenge, csrf_token=csrf_token)
         return HTMLResponse(content=html)
 
     @router.post("/authorize")
@@ -277,13 +346,26 @@ def create_router(
         state: str = Form(None),
         code_challenge: str = Form(...),
         api_key: str = Form(...),
+        csrf_token: str = Form(""),
     ):
         """Authorization endpoint - POST handles form submission."""
-        import time
         start_time = time.time()
         print(f"[{datetime.now(UTC).isoformat()}] OAuth: /authorize POST started for client {sanitize_for_log(client_id)}", file=sys.stderr)
 
         try:
+            # Validate CSRF token
+            now = time.time()
+            token_expiry = _csrf_tokens.pop(csrf_token, None)
+            if token_expiry is None or token_expiry < now:
+                html = get_authorize_page(
+                    client_id,
+                    redirect_uri,
+                    state,
+                    code_challenge,
+                    error="Session expired. Please try again.",
+                    csrf_token=_new_csrf_token(),
+                )
+                return HTMLResponse(content=html)
             # Validate client
             client = oauth_store.get_client(client_id)
             if client is None:
@@ -306,19 +388,20 @@ def create_router(
                 )
 
             # Validate API key
-            if not api_keys:
+            if not api_key_hashes:
                 html = get_authorize_page(
                     client_id,
                     redirect_uri,
                     state,
                     code_challenge,
                     error="Server not configured. MCP_API_KEY environment variable is not set.",
+                    csrf_token=_new_csrf_token(),
                 )
                 return HTMLResponse(content=html)
 
-            # Check if API key matches any valid key
+            # Check if API key matches any valid key (timing-safe)
             provided_hash = hash_api_key(api_key)
-            if provided_hash not in api_key_hashes:
+            if not any(timing_safe_compare(provided_hash, h) for h in api_key_hashes):
                 print(
                     f"[{datetime.now(UTC).isoformat()}] OAuth: Invalid API key attempt for client {sanitize_for_log(client_id)}",
                     file=sys.stderr,
@@ -329,6 +412,7 @@ def create_router(
                     state,
                     code_challenge,
                     error="Invalid API key. Please check your MCP_API_KEY and try again.",
+                    csrf_token=_new_csrf_token(),
                 )
                 return HTMLResponse(content=html)
 
@@ -341,6 +425,7 @@ def create_router(
                     state,
                     code_challenge,
                     error="Server busy. Please try again in a few minutes.",
+                    csrf_token=_new_csrf_token(),
                 )
                 return HTMLResponse(content=html)
 
@@ -448,14 +533,6 @@ def create_router(
 
         # Create access token
         access_token = oauth_store.create_access_token_entry(client_id, auth_code.api_key_hash, jwt_secret)
-        if access_token is None:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": "server_error",
-                    "error_description": "Unable to create access token. Try again later.",
-                },
-            )
 
         print(
             f"[{datetime.now(UTC).isoformat()}] OAuth: Issued access token for client {sanitize_for_log(client_id)}",
@@ -476,6 +553,7 @@ def create_router(
     async def mcp_endpoint(request: Request):
         """MCP protocol endpoint (requires auth)."""
         import json as json_module
+
         from .middleware import get_client_ip, verify_bearer_auth
 
         client_ip = get_client_ip(request)
@@ -486,7 +564,7 @@ def create_router(
         print(f"[{datetime.now(UTC).isoformat()}] MCP request from {client_ip} - Protocol-Version: {protocol_version}, Accept: {accept_header}", file=sys.stderr)
 
         # Verify authentication
-        auth_error = verify_bearer_auth(request, api_keys, api_key_hashes, oauth_store, jwt_secret)
+        auth_error = verify_bearer_auth(request, api_key_hashes, oauth_store, jwt_secret)
         if auth_error:
             print(f"[{datetime.now(UTC).isoformat()}] Auth failed: {auth_error} from {client_ip}", file=sys.stderr)
             # Per MCP spec: 401 MUST include WWW-Authenticate with resource_metadata
@@ -502,9 +580,31 @@ def create_router(
                 },
             )
 
+        method = "unknown"
         try:
+            # Reject oversized request bodies (1MB max for MCP JSON-RPC)
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > 1_048_576:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32000, "message": "Request body too large (max 1MB)"},
+                        "id": None,
+                    },
+                )
+
             # Read and log request body for debugging
             body_bytes = await request.body()
+            if len(body_bytes) > 1_048_576:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32000, "message": "Request body too large (max 1MB)"},
+                        "id": None,
+                    },
+                )
             try:
                 body_json = json_module.loads(body_bytes)
                 method = body_json.get("method", "unknown")
@@ -555,7 +655,7 @@ def create_router(
         except Exception as e:
             print(f"[{datetime.now(UTC).isoformat()}] Error handling MCP request: {e}", file=sys.stderr)
             import traceback
-            traceback.print_exc()
+            traceback.print_exc(file=sys.stderr)
             return JSONResponse(
                 status_code=500,
                 content={
