@@ -4,7 +4,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 
-from ..config import Config
+from ..config import ACCESS_TOKEN_TTL, AUTH_CODE_TTL, CLIENT_TTL, Config
 from ..security.crypto import (
     create_access_token,
     generate_id,
@@ -67,10 +67,10 @@ class OAuthStore:
     max_auth_codes: int = 5000
     max_access_tokens: int = 10000
 
-    # TTLs
-    auth_code_ttl: int = 10 * 60  # 10 minutes
-    access_token_ttl: int = 365 * 24 * 60 * 60  # 1 year
-    client_ttl: int = 365 * 24 * 60 * 60  # 1 year
+    # TTLs (defaults from config constants)
+    auth_code_ttl: int = AUTH_CODE_TTL
+    access_token_ttl: int = ACCESS_TOKEN_TTL
+    client_ttl: int = CLIENT_TTL
 
     _cleanup_task: asyncio.Task | None = field(default=None, repr=False)
 

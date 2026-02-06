@@ -4,6 +4,12 @@ import os
 from dataclasses import dataclass
 
 
+# OAuth TTL defaults (shared with OAuthStore)
+AUTH_CODE_TTL = 10 * 60  # 10 minutes
+ACCESS_TOKEN_TTL = 365 * 24 * 60 * 60  # 1 year
+CLIENT_TTL = 365 * 24 * 60 * 60  # 1 year
+
+
 @dataclass(frozen=True)
 class Config:
     """Application configuration loaded from environment variables."""
@@ -23,9 +29,9 @@ class Config:
     pdf_processing_timeout: int = 30  # seconds
 
     # OAuth TTLs
-    auth_code_ttl: int = 10 * 60  # 10 minutes
-    access_token_ttl: int = 365 * 24 * 60 * 60  # 1 year
-    client_ttl: int = 365 * 24 * 60 * 60  # 1 year
+    auth_code_ttl: int = AUTH_CODE_TTL
+    access_token_ttl: int = ACCESS_TOKEN_TTL
+    client_ttl: int = CLIENT_TTL
 
     # Memory limits
     max_oauth_clients: int = 1000
