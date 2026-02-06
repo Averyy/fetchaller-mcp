@@ -271,3 +271,142 @@ def get_authorize_page(
   </main>
 </body>
 </html>'''
+
+
+def get_authorize_success_page(redirect_url: str) -> str:
+    """
+    Generate the OAuth success page that auto-redirects to the callback.
+
+    Shows a success message so the tab doesn't get stuck on "Authorizing...".
+    Uses both meta refresh and JS redirect for reliability.
+    """
+    safe_url = escape_html(redirect_url)
+    # For JS we need to escape quotes in the URL
+    js_url = redirect_url.replace("\\", "\\\\").replace("'", "\\'")
+
+    return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="1;url={safe_url}">
+  <title>Authorized | fetchaller</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {{
+      --bg-primary: #000000;
+      --bg-card: rgba(255, 255, 255, 0.03);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --text-primary: #f5f5f7;
+      --text-secondary: #a1a1a6;
+      --text-tertiary: #8e8e93;
+      --green: #30d158;
+    }}
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+      font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      -webkit-font-smoothing: antialiased;
+    }}
+    .gradient-bg {{
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 100vh;
+      background:
+        radial-gradient(ellipse 60% 40% at 25% -10%, rgba(98, 0, 127, 0.15), transparent),
+        radial-gradient(ellipse 50% 35% at 75% 20%, rgba(255, 35, 0, 0.12), transparent);
+      pointer-events: none;
+      z-index: -1;
+    }}
+    .card {{
+      width: 100%;
+      max-width: 400px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 32px;
+      text-align: center;
+    }}
+    .logo {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }}
+    .logo-icon {{
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      overflow: hidden;
+    }}
+    .logo-icon svg {{
+      width: 100%;
+      height: 100%;
+    }}
+    .logo-text {{
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.5rem;
+      font-weight: 600;
+    }}
+    .checkmark {{
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 20px;
+      border-radius: 50%;
+      background: rgba(48, 209, 88, 0.1);
+      border: 2px solid var(--green);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }}
+    .checkmark svg {{
+      width: 32px;
+      height: 32px;
+      stroke: var(--green);
+      fill: none;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }}
+    h1 {{
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }}
+    .subtitle {{
+      color: var(--text-secondary);
+      font-size: 0.9375rem;
+      margin-bottom: 16px;
+      line-height: 1.5;
+    }}
+    .close-hint {{
+      color: var(--text-tertiary);
+      font-size: 0.8125rem;
+    }}
+  </style>
+</head>
+<body>
+  <div class="gradient-bg"></div>
+  <main class="card">
+    <div class="logo">
+      <div class="logo-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="lg" x1="33.29" y1="363.29" x2="478.71" y2="808.71" gradientTransform="translate(0 -330)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#62007f"/><stop offset="1" stop-color="#ff2300"/></linearGradient></defs><rect fill="url(#lg)" width="512" height="512" rx="113.66" ry="113.66"/><path fill="#fff" d="M206.94,428.01v-32.65h-.01v-178.34h-57.99v-32.65h57.99v-13.64c0-30.53,7.96-52.63,23.88-66.27,15.91-13.64,38.65-20.47,68.22-20.47,10.72,0,20.3.66,28.75,1.95,8.44,1.3,17.54,3.9,27.29,7.8l-8.73,31.67c-8.41-3.57-16.5-5.92-24.26-7.07-7.77-1.13-14.88-1.7-21.34-1.7-21.35,0-35.91,5.28-43.67,15.84-7.77,10.56-11.64,27.86-11.64,51.9h100.87v32.65h-103.87l3,178.34h100.87v32.65h-139.35Z"/></svg></div>
+      <span class="logo-text">fetchaller</span>
+    </div>
+    <div class="checkmark"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+    <h1>Authorized</h1>
+    <p class="subtitle">Redirecting to Claude...</p>
+    <p class="close-hint">You can close this tab.</p>
+  </main>
+  <script>window.location.href = '{js_url}';</script>
+</body>
+</html>'''

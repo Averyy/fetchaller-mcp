@@ -5,13 +5,13 @@ from datetime import UTC, datetime
 from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, Form, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from ..config import Config
 from ..security.crypto import hash_api_key
 from ..security.xss import sanitize_for_log
 from .oauth import OAuthStore
-from .templates import get_authorize_page
+from .templates import get_authorize_page, get_authorize_success_page
 
 
 def create_router(
@@ -355,7 +355,7 @@ def create_router(
                 file=sys.stderr,
             )
 
-            return RedirectResponse(url=redirect_url, status_code=302)
+            return HTMLResponse(content=get_authorize_success_page(redirect_url))
 
         except Exception as e:
             elapsed = time.time() - start_time
