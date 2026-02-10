@@ -64,21 +64,29 @@ class Config:
 
 def load_config() -> Config:
     """Load configuration from environment variables."""
+    def _int(key: str, default: int) -> int:
+        raw = os.environ.get(key, str(default))
+        try:
+            return int(raw)
+        except ValueError:
+            raise ValueError(f"{key} must be an integer, got {raw!r}") from None
+
+    def _float(key: str, default: float) -> float:
+        raw = os.environ.get(key, str(default))
+        try:
+            return float(raw)
+        except ValueError:
+            raise ValueError(f"{key} must be a number, got {raw!r}") from None
+
     # Parse and validate port
-    http_port = int(os.environ.get("HTTP_PORT", "6000"))
+    http_port = _int("HTTP_PORT", 6000)
     if not (1 <= http_port <= 65535):
         raise ValueError(f"HTTP_PORT must be between 1 and 65535, got {http_port}")
 
     # Parse rate limit with validation
-    rate_limit = int(os.environ.get("RATE_LIMIT_REQUESTS", "100"))
+    rate_limit = _int("RATE_LIMIT_REQUESTS", 100)
     if rate_limit < 1:
         raise ValueError(f"RATE_LIMIT_REQUESTS must be positive, got {rate_limit}")
-
-    def _int(key: str, default: int) -> int:
-        return int(os.environ.get(key, str(default)))
-
-    def _float(key: str, default: float) -> float:
-        return float(os.environ.get(key, str(default)))
 
     config = Config(
         http_port=http_port,

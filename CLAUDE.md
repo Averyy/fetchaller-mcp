@@ -120,6 +120,21 @@ fetchaller automatically transforms Reddit URLs to use `old.reddit.com` for 65-7
 
 Reddit allows ~10 unauthenticated API requests per minute. The browse/search tools use the JSON API (1 call each), while fetch uses HTML (no API call).
 
+## Content Processing Architecture
+
+`src/fetchaller/content/` handles HTML→markdown conversion:
+
+- **`html.py`** — Generic pipeline only. Universal junk selectors (nav, footer, ads, cookie banners, modals), markdownify conversion, whitespace cleanup. Dispatches to site modules based on URL.
+- **`github.py`** — GitHub: ~30 CSS selectors, soup cleanup, ~30 regex post-processors, URL transforms, file tree extraction.
+- **`reddit.py`** — Reddit: ~47 CSS selectors for old.reddit.com, URL transforms (www→old), post formatting.
+- **`hackernews.py`** — Hacker News: CSS selectors, table unwrapping, story block reformatter (compact `▲score 💬comments` format).
+- **`medium.py`** — Medium: CSS selectors (data-testid buttons), source param stripping, post-article block removal (Published in/Written by/Responses), footer, avatar dedup. HTML-based detection for unknown custom domains.
+- **`huggingface.py`** — Hugging Face: ~16 data-target CSS selectors, filter tag/button soup cleanup, ~30 regex post-processors for tabs/like/follow/deploy/inference/license gate. DatasetViewer removal (192k+ chars), gated model license stripping.
+- **`stackoverflow.py`** — Stack Overflow / Stack Exchange: ~16 CSS selectors (sidebars, vote buttons, post menus, user signatures, pagination, stats), soup cleanup (avatars, yellow banners, Collectives promo), ~20 regex post-processors for badges, date attributions, comment headers, footer CTAs. Covers stackoverflow.com, *.stackexchange.com, superuser.com, serverfault.com, askubuntu.com, mathoverflow.net.
+- **`wikipedia.py`** — Wikipedia: CSS selectors for edit buttons, navboxes, TOC, reference lists.
+
+Each site module exports the same interface: `is_<site>(url)`, `SELECTORS_LIST`, and optionally `strip_<site>_junk(soup)` / `postprocess_<site>(markdown)`. To add cleanup for a new site, create a new module following this pattern.
+
 ## Development & Testing
 
 **CRITICAL**: When testing changes to this MCP server, you MUST use the local version, not the production Docker image.

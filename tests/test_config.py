@@ -74,3 +74,27 @@ class TestConfig:
         finally:
             os.environ.pop("HTTP_PORT", None)
             os.environ.pop("RATE_LIMIT_REQUESTS", None)
+
+    def test_invalid_int_env_var(self, monkeypatch):
+        """Non-integer env var raises clear error."""
+        monkeypatch.setenv("CACHE_MAX_ENTRIES", "abc")
+        with pytest.raises(ValueError, match="CACHE_MAX_ENTRIES must be an integer"):
+            load_config()
+
+    def test_invalid_float_env_var(self, monkeypatch):
+        """Non-numeric env var raises clear error."""
+        monkeypatch.setenv("RETRY_INITIAL_DELAY", "not-a-number")
+        with pytest.raises(ValueError, match="RETRY_INITIAL_DELAY must be a number"):
+            load_config()
+
+    def test_invalid_port_env_var(self, monkeypatch):
+        """Non-integer port raises clear error."""
+        monkeypatch.setenv("HTTP_PORT", "banana")
+        with pytest.raises(ValueError, match="HTTP_PORT must be an integer"):
+            load_config()
+
+    def test_invalid_rate_limit_env_var(self, monkeypatch):
+        """Non-integer rate limit raises clear error."""
+        monkeypatch.setenv("RATE_LIMIT_REQUESTS", "xyz")
+        with pytest.raises(ValueError, match="RATE_LIMIT_REQUESTS must be an integer"):
+            load_config()

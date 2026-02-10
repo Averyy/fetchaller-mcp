@@ -1,4 +1,32 @@
-"""Content fetching and processing utilities."""
+"""Content fetching and processing utilities.
+
+Module layout:
+- html.py       — Generic HTML→markdown pipeline (universal junk selectors,
+                   markdownify, whitespace cleanup). Dispatches to site modules.
+- github.py     — GitHub: CSS selectors, soup cleanup, regex post-processing,
+                   URL transforms, file tree extraction.
+- reddit.py     — Reddit: CSS selectors, URL transforms, post formatting.
+- hackernews.py — Hacker News: CSS selectors, soup cleanup, story reformatter.
+- medium.py     — Medium: CSS selectors, source param stripping, post-article
+                   block removal, footer cleanup. HTML-based detection for
+                   unknown custom domains.
+- huggingface.py — Hugging Face: data-target CSS selectors, filter tag/button
+                   cleanup, DatasetViewer removal, gated model license stripping.
+- stackoverflow.py — Stack Overflow / Stack Exchange: CSS selectors for
+                   sidebars, vote buttons, post menus, user signatures; soup
+                   cleanup for avatars, banners, Collectives promo; regex
+                   post-processing for badges, dates, comments headers.
+- wikipedia.py  — Wikipedia: CSS selectors for edit buttons, navboxes, etc.
+- fetcher.py    — HTTP fetching via curl_cffi.
+- pdf.py        — PDF text extraction.
+- url.py        — URL validation and SSRF protection.
+
+Each site module follows the same interface:
+- is_<site>(url) → bool           — URL detection
+- SELECTORS_LIST: list[str]       — CSS selectors to remove before conversion
+- strip_<site>_junk(soup)         — BeautifulSoup-level cleanup (optional)
+- postprocess_<site>(markdown)    — Regex post-processing on output (optional)
+"""
 
 from .fetcher import ContentFetcher, FetchResult, RetryConfig
 from .html import clean_html, html_to_markdown

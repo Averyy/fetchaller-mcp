@@ -163,9 +163,11 @@ class RedditRequestQueue:
                 # Execute the callback
                 try:
                     result = await item.callback(*item.args, **item.kwargs)
-                    item.future.set_result(result)
+                    if not item.future.done():
+                        item.future.set_result(result)
                 except Exception as e:
-                    item.future.set_exception(e)
+                    if not item.future.done():
+                        item.future.set_exception(e)
                 item = None
 
             except asyncio.CancelledError:

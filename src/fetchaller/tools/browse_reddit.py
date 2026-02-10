@@ -145,8 +145,6 @@ async def browse_reddit(
         if after_cursor:
             lines.append(f"\n[Next page: after={after_cursor}]")
 
-        lines.append(f'\n---\nTo read full post: mcp__fetchaller__fetch({{ url: "https://old.reddit.com/r/{subreddit}/comments/..." }})')
-
         return {"content": "\n".join(lines)}
     finally:
         if owns_fetcher:

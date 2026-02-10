@@ -182,7 +182,18 @@ class ContentFetcher:
                         continue
                     return self._make_result(response)
 
-                # Enforce max response size
+                # Check Content-Length header before accessing body
+                try:
+                    content_length = int(response.headers.get("content-length", 0))
+                except (ValueError, TypeError):
+                    content_length = 0
+                if content_length > self.MAX_RESPONSE_SIZE:
+                    raise ValueError(
+                        f"Response too large ({content_length // (1024 * 1024)}MB). "
+                        f"Max allowed: {self.MAX_RESPONSE_SIZE // (1024 * 1024)}MB."
+                    )
+
+                # Still check actual body (header could lie or be missing)
                 if len(response.content) > self.MAX_RESPONSE_SIZE:
                     raise ValueError(
                         f"Response too large ({len(response.content) // (1024 * 1024)}MB). "

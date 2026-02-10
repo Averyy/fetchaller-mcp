@@ -28,3 +28,9 @@ Thumbs.db
 
 # Node.js (legacy)
 node_modules/
+
+# Playwright
+.playwright-mcp/
+
+# Baseline snapshots (local testing)
+baselines/

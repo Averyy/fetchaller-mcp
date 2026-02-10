@@ -160,7 +160,7 @@ Reddit allows ~10 unauthenticated API requests per minute. `browse_reddit` and `
 2. Blocks private/internal IPs (SSRF protection with DNS rebinding prevention)
 3. Fetches with browser-like TLS fingerprints (curl_cffi)
 4. Detects content type
-5. For HTML: strips junk, converts to markdown
+5. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup for GitHub/Reddit/HN/Wikipedia, converts to markdown
 6. For JSON/XML/CSV/text: returns raw
 7. For PDF: extracts text
 8. Truncates to token limit
@@ -248,6 +248,17 @@ fetchaller-mcp/
 │   ├── http/                # HTTP server (FastAPI)
 │   ├── tools/               # MCP tools (fetch, reddit)
 │   ├── content/             # Content processing
+│   │   ├── html.py          # Generic HTML→markdown pipeline
+│   │   ├── github.py        # GitHub cleanup, URL transforms, file trees
+│   │   ├── reddit.py        # Reddit cleanup, URL transforms, formatting
+│   │   ├── hackernews.py    # Hacker News cleanup, story reformatter
+│   │   ├── medium.py        # Medium cleanup, custom domain detection
+│   │   ├── huggingface.py   # Hugging Face cleanup, DatasetViewer removal
+│   │   ├── stackoverflow.py # Stack Overflow/SE cleanup, user card stripping
+│   │   ├── wikipedia.py     # Wikipedia cleanup (edit buttons, navboxes)
+│   │   ├── fetcher.py       # HTTP fetching (curl_cffi)
+│   │   ├── pdf.py           # PDF text extraction
+│   │   └── url.py           # URL validation, SSRF protection
 │   ├── cache/               # Response caching
 │   ├── queue/               # Reddit rate limiting
 │   └── security/            # SSRF, crypto, XSS
@@ -257,6 +268,8 @@ fetchaller-mcp/
 ├── CLAUDE.md                # Instructions for Claude
 └── README.md                # This file
 ```
+
+`html.py` contains only the generic pipeline (universal junk removal, markdownify, whitespace cleanup). Site-specific logic lives in its own module — each exports CSS selectors, soup-level cleanup, and markdown post-processing that `html.py` dispatches to based on URL.
 
 ## Dependencies
 

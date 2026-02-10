@@ -289,7 +289,9 @@ async def run_stdio_server(config: Config | None = None) -> None:
     fetcher = ContentFetcher(retry_config=RetryConfig.from_config(config))
     server = create_server(config, fetcher=fetcher)
 
-    print("fetchaller MCP server running on stdio", file=sys.stderr)
+    from . import __version__
+
+    print(f"[{datetime.now(UTC).isoformat()}] fetchaller MCP stdio server v{__version__} started", file=sys.stderr)
 
     try:
         async with stdio_server() as (read_stream, write_stream):
