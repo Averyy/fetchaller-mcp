@@ -21,6 +21,25 @@ If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify agai
 
 **ALWAYS use the same approach the code uses when testing.** For HTTP requests, use `curl_cffi` (not `urllib` or `requests`) because it has TLS fingerprint impersonation that bypasses bot protection. Test with multiple pages before making performance claims.
 
+### Writing Tests
+
+**Every test must assert a meaningful outcome.** No useless tests.
+
+- **Assert behavior, not existence.** Don't write `assert result is not None` or `assert len(x) > 0`. Assert the actual value, content, or effect.
+- **Don't test constants.** Never assert that a default config value equals a hardcoded number — there's no logic to verify.
+- **Don't test internal state.** Assert observable outcomes (return values, side effects), not private flags like `obj._running`.
+- **Include negative cases.** If testing a lookup, also test that wrong keys return None/error.
+- **Merge trivial tests.** A "register" test and a "get" test for the same store should be one test that does both.
+- **Test through the pipeline.** For site-specific cleanup, prefer tests that go through `clean_html()`/`html_to_markdown()` with a URL (verifying detection + cleanup together) over tests that call a postprocessor in isolation.
+
+### Test Organization
+
+- `test_site_detection.py` — Tests `_detect_site()` directly (URL-based, HTML-based, priority rules)
+- `test_fetch_integration.py` — Integration tests for `fetch_url()` with MockFetcher (forum hijack, feed discovery, URL transforms, content types, errors)
+- `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
+- `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
+- Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
+
 Test URLs for benchmarking:
 - Reddit: `https://www.reddit.com/r/homelab/`, `https://old.reddit.com/r/homelab/`
 - Scrapers often blocked: `https://news.ycombinator.com/`, `https://www.nytimes.com/`

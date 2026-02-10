@@ -45,6 +45,7 @@ class TestTransformForumUrl:
             "https://u11.bimmerpost.com/forums/showthread.php?t=2045678"
         )
         assert not result.is_forum_feed
+        assert result.is_thread
         assert result.forum_software == "vbulletin"
         assert result.url == "https://u11.bimmerpost.com/forums/showthread.php?t=2045678"
 
@@ -53,6 +54,7 @@ class TestTransformForumUrl:
             "https://u11.bimmerpost.com/forums/showthread.php?p=12345678"
         )
         assert not result.is_forum_feed
+        assert result.is_thread
         assert result.forum_software == "vbulletin"
 
     # --- XenForo listings ---
@@ -87,6 +89,7 @@ class TestTransformForumUrl:
         url = "https://www.vwvortex.com/threads/what-did-you-do-to-your-golf-r-today.6926800/"
         result = transform_forum_url(url)
         assert not result.is_forum_feed
+        assert result.is_thread
         assert result.forum_software == "xenforo"
         assert result.url == url
 
@@ -94,12 +97,14 @@ class TestTransformForumUrl:
         url = "https://www.golfmk7.com/forums/index.php?threads/my-thread.12345/"
         result = transform_forum_url(url)
         assert not result.is_forum_feed
+        assert result.is_thread
         assert result.forum_software == "xenforo"
 
     def test_xenforo_thread_with_page_not_transformed(self):
         url = "https://www.vwvortex.com/threads/some-thread.123/page-5"
         result = transform_forum_url(url)
         assert not result.is_forum_feed
+        assert result.is_thread
         assert result.forum_software == "xenforo"
 
     # --- phpBB (RFD) ---
@@ -109,15 +114,42 @@ class TestTransformForumUrl:
             "https://forums.redflagdeals.com/ongoing-deal-discussion-f129/"
         )
         assert result.is_forum_feed
+        assert not result.is_thread
         assert result.forum_software == "phpbb"
         assert result.url == "https://forums.redflagdeals.com/feed/forum/129"
+
+    def test_rfd_hot_deals_listing(self):
+        result = transform_forum_url(
+            "https://forums.redflagdeals.com/hot-deals-f9/"
+        )
+        assert result.is_forum_feed
+        assert not result.is_thread
+        assert result.forum_software == "phpbb"
+        assert result.url == "https://forums.redflagdeals.com/feed/forum/9"
 
     def test_rfd_thread_passthrough(self):
         """RFD thread URLs should NOT be transformed (handled by redflagdeals.py)."""
         url = "https://forums.redflagdeals.com/some-deal-t2660019.html"
         result = transform_forum_url(url)
-        # Not a listing URL, so no transform
         assert not result.is_forum_feed
+        assert result.is_thread
+        assert result.forum_software == "phpbb"
+
+    def test_rfd_thread_slug_url_passthrough(self):
+        """Real RFD thread URL (slug-based) should NOT be transformed."""
+        url = "https://forums.redflagdeals.com/amazon-ca-ugreen-ethernet-5-port-gigabit-ethernet-switch-fanless-11-99-20-off-2801530/"
+        result = transform_forum_url(url)
+        assert not result.is_forum_feed
+        assert result.is_thread
+        assert result.forum_software == "phpbb"
+        assert result.url == url
+
+    def test_rfd_homepage_not_thread(self):
+        """RFD homepage should NOT be marked as thread — allows Tier 2 autodiscovery."""
+        url = "https://forums.redflagdeals.com/"
+        result = transform_forum_url(url)
+        assert not result.is_forum_feed
+        assert not result.is_thread
         assert result.forum_software == "phpbb"
 
     # --- Already-feed URLs ---

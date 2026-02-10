@@ -29,6 +29,7 @@ class ForumTransformResult:
     is_forum_feed: bool  # True if transformed to feed URL
     original_url: str  # Original URL for [Feed: ...] note
     forum_software: str | None  # "xenforo", "vbulletin", "phpbb", "discourse"
+    is_thread: bool = False  # True if URL is a known thread (skip autodiscovery)
 
 
 @dataclass
@@ -116,6 +117,8 @@ _XF_THREAD_RE = re.compile(r"/threads/")
 
 # phpBB (RFD) listing: /{slug}-f{id}/
 _PHPBB_RFD_LISTING_RE = re.compile(r"/([a-z0-9-]+)-f(\d+)/?$")
+# phpBB (RFD) thread: /{slug}-t{id}.html or /{slug}-{id}/ (slug ending in digits)
+_PHPBB_RFD_THREAD_RE = re.compile(r"/[a-z0-9-]+-(?:t\d+\.html|\d+/?)$")
 
 # Discourse listing: /c/{slug}/{id}
 _DISCOURSE_LISTING_RE = re.compile(r"/c/([a-z0-9-]+)/(\d+)/?$")
@@ -127,6 +130,24 @@ _FEED_URL_RE = re.compile(
     r"(?:\.rss$|/index\.rss|/feed/|external\.php\?.*type=RSS|\.atom$)",
     re.IGNORECASE,
 )
+
+
+def is_thread_url(url: str) -> bool:
+    """Check if a URL looks like a forum thread (any software).
+
+    Used by Tier 2 autodiscovery on unknown domains to avoid hijacking
+    thread pages with feed content.
+    """
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return False
+    return bool(
+        _XF_THREAD_RE.search(path)
+        or _VB_THREAD_RE.search(path)
+        or _DISCOURSE_THREAD_RE.search(path)
+        or _PHPBB_RFD_THREAD_RE.search(path)
+    )
 
 
 def transform_forum_url(url: str) -> ForumTransformResult:
@@ -163,7 +184,8 @@ def transform_forum_url(url: str) -> ForumTransformResult:
         # Thread URLs: skip (external.php doesn't support thread-specific feeds)
         if _VB_THREAD_RE.search(path):
             return ForumTransformResult(
-                url=url, is_forum_feed=False, original_url=url, forum_software="vbulletin"
+                url=url, is_forum_feed=False, original_url=url, forum_software="vbulletin",
+                is_thread=True,
             )
 
         # Listing: forumdisplay.php?f={id}
@@ -191,11 +213,13 @@ def transform_forum_url(url: str) -> ForumTransformResult:
         # Thread URLs: skip (thread RSS is disabled on most XenForo installs)
         if _XF_THREAD_RE.search(path):
             return ForumTransformResult(
-                url=url, is_forum_feed=False, original_url=url, forum_software="xenforo"
+                url=url, is_forum_feed=False, original_url=url, forum_software="xenforo",
+                is_thread=True,
             )
         if "index.php" in path and query and "threads/" in query:
             return ForumTransformResult(
-                url=url, is_forum_feed=False, original_url=url, forum_software="xenforo"
+                url=url, is_forum_feed=False, original_url=url, forum_software="xenforo",
+                is_thread=True,
             )
 
         # Listing (clean URL): /forums/{slug}.{id}/
@@ -244,7 +268,12 @@ def transform_forum_url(url: str) -> ForumTransformResult:
                 original_url=url,
                 forum_software="phpbb",
             )
-        # Thread pages: pass through (redflagdeals.py handles HTML cleanup)
+        # Thread/topic pages: pass through (redflagdeals.py handles HTML cleanup)
+        if _PHPBB_RFD_THREAD_RE.search(path):
+            return ForumTransformResult(
+                url=url, is_forum_feed=False, original_url=url, forum_software="phpbb",
+                is_thread=True,
+            )
 
     # --- Discourse ---
     if software == "discourse":

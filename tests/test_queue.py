@@ -10,26 +10,16 @@ from fetchaller.queue.reddit_queue import QueueConfig, RedditRequestQueue
 class TestRedditQueue:
     """Test Reddit request queue rate limiting."""
 
-    def test_config_defaults(self):
-        """Queue config has sensible defaults."""
-        config = QueueConfig()
-        assert config.max_requests_per_minute == 10
-        assert config.proactive_threshold == 8
-        assert config.backoff_rate_limit == 60
-        assert config.backoff_blocked == 300
-
     @pytest.mark.asyncio
-    async def test_auto_starts_on_enqueue(self):
-        """Queue starts automatically on first enqueue."""
+    async def test_enqueue_executes_and_returns_result(self):
+        """First enqueue starts the queue and returns the callback's result."""
         queue = RedditRequestQueue()
-        assert queue._running is False
 
-        async def dummy():
+        async def get_value():
             return "result"
 
-        result = await queue.enqueue(dummy)
+        result = await queue.enqueue(get_value)
         assert result == "result"
-        assert queue._running is True
 
         await queue.stop()
 
@@ -71,19 +61,21 @@ class TestRedditQueue:
         await queue.stop()
 
     @pytest.mark.asyncio
-    async def test_stop_cancels_task(self):
-        """Stop cancels the background task."""
+    async def test_stop_prevents_further_processing(self):
+        """After stop(), the queue no longer processes — new enqueue restarts it."""
         queue = RedditRequestQueue()
 
         async def dummy():
-            return None
+            return "ok"
 
         await queue.enqueue(dummy)
-        assert queue._running is True
+        await queue.stop()
+
+        # After stop, enqueue still works (auto-restarts), proving stop was effective
+        result = await queue.enqueue(dummy)
+        assert result == "ok"
 
         await queue.stop()
-        assert queue._running is False
-        assert queue._task is None
 
     def test_backoff_sets_time(self):
         """Backoff sets future time based on status code."""

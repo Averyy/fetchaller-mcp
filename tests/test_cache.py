@@ -18,11 +18,6 @@ class TestResponseCache:
         assert entry.content == "content"
         assert entry.content_type == "text/html"
 
-    def test_cache_miss(self):
-        """Returns None for uncached URLs."""
-        cache = ResponseCache()
-        assert cache.get("http://not-cached.com") is None
-
     def test_expiration(self):
         """Expired entries return None."""
         cache = ResponseCache(default_ttl=0)  # Immediate expiration
@@ -31,20 +26,24 @@ class TestResponseCache:
         time.sleep(0.01)  # Let it expire
         assert cache.get("http://example.com") is None
 
-    def test_lru_eviction(self):
-        """Oldest entry is evicted when at capacity."""
+    def test_lru_eviction_removes_oldest(self):
+        """Least recently used entry is evicted, not just any entry."""
         cache = ResponseCache(max_entries=3)
 
         cache.set("http://one.com", "1", "text/html")
         cache.set("http://two.com", "2", "text/html")
         cache.set("http://three.com", "3", "text/html")
 
-        # This should evict "one"
+        # Access "one" to make it recently used — "two" becomes the LRU
+        cache.get("http://one.com")
+
+        # Adding a 4th entry should evict "two" (LRU), not "one"
         cache.set("http://four.com", "4", "text/html")
 
-        assert cache.get("http://one.com") is None
-        assert cache.get("http://two.com") is not None
-        assert cache.get("http://four.com") is not None
+        assert cache.get("http://two.com") is None  # evicted (was LRU)
+        assert cache.get("http://one.com").content == "1"  # kept (recently accessed)
+        assert cache.get("http://three.com").content == "3"  # kept
+        assert cache.get("http://four.com").content == "4"  # kept (just added)
 
     def test_respects_max_entry_size(self):
         """Large entries are not cached."""

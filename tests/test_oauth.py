@@ -57,11 +57,12 @@ class TestCrypto:
         assert timing_safe_compare("short", "longer") is False
 
     def test_generate_id_length(self):
-        """Generated ID has correct length."""
+        """Generated ID length scales with byte count (base64url encoding)."""
         id16 = generate_id(16)
         id32 = generate_id(32)
-        assert len(id16) > 0
-        assert len(id32) > len(id16)
+        # token_urlsafe(n) produces ceil(n * 4/3) chars (base64url, no padding)
+        assert 21 <= len(id16) <= 22  # 16 bytes → 22 base64url chars
+        assert 42 <= len(id32) <= 43  # 32 bytes → 43 base64url chars
 
     def test_generate_id_unique(self):
         """Generated IDs are unique."""
@@ -98,38 +99,36 @@ class TestJWT:
 class TestOAuthStore:
     """Test OAuth store operations."""
 
-    def test_register_client(self):
-        """Client registration creates client."""
+    def test_register_and_retrieve_client(self):
+        """Registered client is stored and retrievable by ID; unknown IDs return None."""
         store = OAuthStore()
         client = store.register_client(["https://example.com/cb"], "Test")
 
-        assert client is not None
-        assert client.client_id is not None
-        assert client.client_secret is not None
+        assert isinstance(client.client_id, str) and len(client.client_id) > 10
+        assert isinstance(client.client_secret, str) and len(client.client_secret) > 10
         assert client.redirect_uris == ["https://example.com/cb"]
 
-    def test_get_client(self):
-        """Can retrieve registered client."""
-        store = OAuthStore()
-        client = store.register_client(["https://example.com/cb"])
-
+        # Retrieve by ID
         retrieved = store.get_client(client.client_id)
-        assert retrieved is not None
         assert retrieved.client_id == client.client_id
+        assert retrieved.client_secret == client.client_secret
 
-    def test_get_unknown_client(self):
-        """Unknown client returns None."""
+        # Unknown ID
+        assert store.get_client("nonexistent-id") is None
+
+    def test_create_auth_code_is_consumable(self):
+        """Created auth code stores client_id and can be consumed with correct PKCE verifier."""
         store = OAuthStore()
-        assert store.get_client("unknown") is None
+        verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 
-    def test_create_auth_code(self):
-        """Auth code creation works."""
-        store = OAuthStore()
-        code = store.create_auth_code("client1", "challenge", "https://x.com/cb", "api_key")
+        auth_code = store.create_auth_code("client1", challenge, "https://x.com/cb", "api_key")
+        assert isinstance(auth_code.code, str) and len(auth_code.code) > 10
+        assert auth_code.client_id == "client1"
 
-        assert code is not None
-        assert code.code is not None
-        assert code.client_id == "client1"
+        # Code is consumable with correct verifier
+        result = store.consume_auth_code(auth_code.code, "client1", "https://x.com/cb", verifier)
+        assert result is not None
 
     def test_consume_auth_code_once(self):
         """Auth code can only be consumed once."""

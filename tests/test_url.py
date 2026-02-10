@@ -8,8 +8,10 @@ class TestURLNormalization:
     """Test URL normalization for caching."""
 
     def test_lowercase_host(self):
-        """Host is lowercased."""
-        assert "example.com" in normalize_url("https://EXAMPLE.COM/path")
+        """Host is lowercased while preserving the rest of the URL."""
+        result = normalize_url("https://EXAMPLE.COM/path")
+        assert result.startswith("https://example.com/path")
+        assert "EXAMPLE" not in result
 
     def test_removes_tracking_params(self):
         """UTM and tracking params are stripped."""
@@ -28,9 +30,10 @@ class TestURLNormalization:
         assert url1 == url2
 
     def test_removes_fragment(self):
-        """Fragment is removed."""
+        """Fragment is removed but path is preserved."""
         url = normalize_url("https://example.com/page#section")
-        assert "#" not in url
+        assert "/page" in url
+        assert "#section" not in url
 
     def test_removes_default_https_port(self):
         """Default HTTPS port 443 is removed."""

@@ -16,6 +16,7 @@ from ..content.forums import (
     format_feed_as_markdown,
     is_discourse_html,
     is_forum_html,
+    is_thread_url,
     parse_feed,
     transform_forum_url,
 )
@@ -280,8 +281,9 @@ async def fetch_url(
                 }
 
             # Tier 2: Forum autodiscovery — if forum software detected but
-            # Tier 1 didn't match, check for <link rel="alternate"> feed
-            if not is_forum_feed and forum_result.forum_software:
+            # Tier 1 didn't match, check for <link rel="alternate"> feed.
+            # Skip if URL was identified as a thread (handled by site-specific cleanup).
+            if not is_forum_feed and forum_result.forum_software and not forum_result.is_thread:
                 feed_url = discover_feed_url(html, result.final_url or url)
                 if feed_url:
                     try:
@@ -301,8 +303,9 @@ async def fetch_url(
                                 return response
                     except Exception:
                         pass  # Fall through to normal HTML pipeline
-            # Also check HTML for forum markers when domain not in registry
-            elif not is_forum_feed and not forum_result.forum_software:
+            # Also check HTML for forum markers when domain not in registry.
+            # Skip if URL looks like a thread (same patterns as Tier 1).
+            elif not is_forum_feed and not forum_result.forum_software and not is_thread_url(result.final_url or url):
                 from bs4 import BeautifulSoup as _Soup  # noqa: N812
 
                 _quick_soup = _Soup(html[:4096], "lxml")

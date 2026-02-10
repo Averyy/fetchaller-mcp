@@ -10,15 +10,6 @@ from fetchaller.config import Config, load_config
 class TestConfig:
     """Test configuration loading and validation."""
 
-    def test_default_values(self):
-        """Config has sensible defaults."""
-        config = Config()
-
-        assert config.http_port == 6000
-        assert config.rate_limit_requests == 100
-        assert config.default_max_tokens == 25000
-        assert config.default_timeout_seconds == 10
-
     def test_effective_server_url_default(self):
         """Server URL defaults to localhost with port."""
         config = Config(http_port=8080)
