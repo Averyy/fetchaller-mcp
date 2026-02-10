@@ -11,11 +11,13 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
+from . import forums as _forums
 from . import github as _github
 from . import hackernews as _hackernews
 from . import huggingface as _huggingface
 from . import medium as _medium
 from . import reddit as _reddit
+from . import redflagdeals as _redflagdeals
 from . import stackoverflow as _stackoverflow
 from . import wikipedia as _wikipedia
 
@@ -85,7 +87,9 @@ _JUNK_AND_HACKERNEWS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _hackernews.SEL
 _JUNK_AND_GITHUB_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _github.SELECTORS_LIST)
 _JUNK_AND_HUGGINGFACE_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _huggingface.SELECTORS_LIST)
 _JUNK_AND_MEDIUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _medium.SELECTORS_LIST)
+_JUNK_AND_REDFLAGDEALS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST + _redflagdeals.SELECTORS_LIST)
 _JUNK_AND_STACKOVERFLOW_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _stackoverflow.SELECTORS_LIST)
+_JUNK_AND_FORUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST)
 _JUNK_AND_WIKIPEDIA_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _wikipedia.SELECTORS_LIST)
 
 # Pre-compiled regex for whitespace cleanup
@@ -184,6 +188,8 @@ def _detect_site(
         return "github"
     if url and _huggingface.is_huggingface(url):
         return "huggingface"
+    if url and _redflagdeals.is_redflagdeals(url):
+        return "redflagdeals"
     if url and _stackoverflow.is_stackoverflow(url):
         return "stackoverflow"
     if url and _medium.is_medium(url):
@@ -193,6 +199,12 @@ def _detect_site(
     # HTML-based fallback for Medium custom domains
     if soup is not None and _medium.is_medium_html(soup):
         return "medium"
+    # Discourse gets its own site key (generic junk only, no forum-specific cleanup)
+    if soup is not None and _forums.is_discourse_html(soup):
+        return "discourse"
+    # HTML-based fallback for generic forum software (XenForo, vBulletin, phpBB)
+    if soup is not None and _forums.is_forum_html(soup):
+        return "forum"
     return None
 
 
@@ -202,8 +214,10 @@ _SITE_SELECTORS = {
     "hackernews": _JUNK_AND_HACKERNEWS_SELECTOR,
     "github": _JUNK_AND_GITHUB_SELECTOR,
     "huggingface": _JUNK_AND_HUGGINGFACE_SELECTOR,
+    "redflagdeals": _JUNK_AND_REDFLAGDEALS_SELECTOR,
     "stackoverflow": _JUNK_AND_STACKOVERFLOW_SELECTOR,
     "medium": _JUNK_AND_MEDIUM_SELECTOR,
+    "forum": _JUNK_AND_FORUM_SELECTOR,
     "wikipedia": _JUNK_AND_WIKIPEDIA_SELECTOR,
 }
 
@@ -227,6 +241,14 @@ def clean_html(
     # Detect site type (single pass, reused by caller)
     site = _detect_site(url, is_reddit, soup)
 
+    # Discourse: content lives inside <noscript> for SEO crawlers.
+    # Unwrap the noscript containing #main-outlet before generic selectors strip it.
+    if site == "discourse":
+        for noscript in soup.find_all("noscript"):
+            if noscript.find(id="main-outlet"):
+                noscript.unwrap()
+                break
+
     # Single-pass removal using combined CSS selector
     selector = _SITE_SELECTORS.get(site, _JUNK_SELECTOR)
     for element in soup.select(selector):
@@ -246,6 +268,10 @@ def clean_html(
         _stackoverflow.strip_stackoverflow_junk(soup)
     elif site == "medium":
         _medium.strip_medium_junk(soup)
+    elif site == "redflagdeals":
+        _redflagdeals.strip_rfd_junk(soup)
+    elif site == "forum":
+        _forums.strip_forum_junk(soup)
 
     # Fix lazy images (before URL resolution so we resolve the real src)
     _fix_lazy_images(soup)
@@ -307,6 +333,10 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _stackoverflow.postprocess_stackoverflow(markdown)
     elif site == "medium":
         markdown = _medium.postprocess_medium(markdown)
+    elif site == "redflagdeals":
+        markdown = _redflagdeals.postprocess_rfd(markdown)
+    elif site == "forum":
+        markdown = _forums.postprocess_forum(markdown)
 
     # Add title header only if markdown doesn't already start with a heading
     if title and not markdown.startswith("# "):

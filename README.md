@@ -160,7 +160,7 @@ Reddit allows ~10 unauthenticated API requests per minute. `browse_reddit` and `
 2. Blocks private/internal IPs (SSRF protection with DNS rebinding prevention)
 3. Fetches with browser-like TLS fingerprints (curl_cffi)
 4. Detects content type
-5. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup for GitHub/Reddit/HN/Wikipedia, converts to markdown
+5. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup for GitHub/Reddit/HN/Wikipedia/Medium/Stack Overflow/forums, converts to markdown
 6. For JSON/XML/CSV/text: returns raw
 7. For PDF: extracts text
 8. Truncates to token limit
@@ -255,6 +255,8 @@ fetchaller-mcp/
 │   │   ├── medium.py        # Medium cleanup, custom domain detection
 │   │   ├── huggingface.py   # Hugging Face cleanup, DatasetViewer removal
 │   │   ├── stackoverflow.py # Stack Overflow/SE cleanup, user card stripping
+│   │   ├── redflagdeals.py  # RedFlagDeals forum cleanup
+│   │   ├── forums.py        # Generic forum support (XenForo/vBulletin/phpBB/Discourse)
 │   │   ├── wikipedia.py     # Wikipedia cleanup (edit buttons, navboxes)
 │   │   ├── fetcher.py       # HTTP fetching (curl_cffi)
 │   │   ├── pdf.py           # PDF text extraction

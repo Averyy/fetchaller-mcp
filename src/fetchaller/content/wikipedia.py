@@ -38,4 +38,13 @@ SELECTORS_LIST = [
     ".vector-dropdown-label",
     # Sticky header (duplicate title + language picker + Add topic)
     ".vector-sticky-header",
+    # Site header (logo, search, personal tools)
+    ".vector-header",
+    # Left sidebar (Main page, Contents, Current events, etc.)
+    ".vector-column-start",
+    # Footer icons (Wikimedia/MediaWiki logos)
+    "#footer-icons",
+    # Sister project links (Commons, Wikiquote, Wikibooks, etc.)
+    ".sister-logo",
+    ".portalbox",
 ]

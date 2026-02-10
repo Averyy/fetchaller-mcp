@@ -11,6 +11,14 @@ from curl_cffi.requests.errors import RequestsError
 from ..cache.response_cache import ResponseCache
 from ..config import Config
 from ..content.fetcher import ContentFetcher, RetryConfig
+from ..content.forums import (
+    discover_feed_url,
+    format_feed_as_markdown,
+    is_discourse_html,
+    is_forum_html,
+    parse_feed,
+    transform_forum_url,
+)
 from ..content.github import extract_github_file_listing, transform_github_url
 from ..content.html import html_to_markdown
 from ..content.pdf import extract_pdf
@@ -110,6 +118,12 @@ async def fetch_url(
     if github_result.is_blob:
         fetch_url_str = github_result.url
 
+    # Tier 1: Transform known forum URLs to RSS/Atom feeds
+    forum_result = transform_forum_url(fetch_url_str)
+    is_forum_feed = forum_result.is_forum_feed
+    if is_forum_feed:
+        fetch_url_str = forum_result.url
+
     # Compute normalized URL once for cache operations
     cache_key = normalize_url(fetch_url_str) if cache else None
 
@@ -200,9 +214,23 @@ async def fetch_url(
                 "url": result.final_url,
             }
 
-        # XML/RSS/Atom
+        # XML/RSS/Atom — try structured feed parsing first
         if any(t in content_type for t in ("text/xml", "application/xml", "application/rss+xml", "application/atom+xml")):
             text = _decode_content(result.content, content_type)
+            feed = parse_feed(text)
+            if feed and feed.items:
+                markdown = format_feed_as_markdown(feed)
+                content = truncate(markdown, max_tokens)
+                response = {
+                    "content": content,
+                    "content_type": "markdown",
+                    "url": result.final_url,
+                }
+                if is_forum_feed and forum_result.url != forum_result.original_url:
+                    response["content"] = f"[Feed: {forum_result.original_url}]\n\n{content}"
+                _log(f"FETCH {url} -> feed ({len(feed.items)} items, {len(response['content'])} chars, {time.monotonic() - start:.1f}s)")
+                return response
+            # Not a feed — return raw XML
             return {
                 "content": truncate(text, max_tokens),
                 "content_type": "xml",
@@ -250,6 +278,54 @@ async def fetch_url(
                     "content_type": "html",
                     "url": result.final_url,
                 }
+
+            # Tier 2: Forum autodiscovery — if forum software detected but
+            # Tier 1 didn't match, check for <link rel="alternate"> feed
+            if not is_forum_feed and forum_result.forum_software:
+                feed_url = discover_feed_url(html, result.final_url or url)
+                if feed_url:
+                    try:
+                        feed_result = await fetcher.fetch(feed_url, timeout=float(timeout))
+                        if feed_result.status_code < 400:
+                            feed_text = _decode_content(feed_result.content, feed_result.content_type)
+                            feed = parse_feed(feed_text)
+                            if feed and feed.items:
+                                markdown = format_feed_as_markdown(feed)
+                                content = truncate(markdown, max_tokens)
+                                response = {
+                                    "content": f"[Feed: {url}]\n\n{content}",
+                                    "content_type": "markdown",
+                                    "url": result.final_url,
+                                }
+                                _log(f"FETCH {url} -> autodiscovered feed ({len(feed.items)} items, {len(response['content'])} chars, {time.monotonic() - start:.1f}s)")
+                                return response
+                    except Exception:
+                        pass  # Fall through to normal HTML pipeline
+            # Also check HTML for forum markers when domain not in registry
+            elif not is_forum_feed and not forum_result.forum_software:
+                from bs4 import BeautifulSoup as _Soup  # noqa: N812
+
+                _quick_soup = _Soup(html[:4096], "lxml")
+                if is_forum_html(_quick_soup) or is_discourse_html(_quick_soup):
+                    feed_url = discover_feed_url(html, result.final_url or url)
+                    if feed_url:
+                        try:
+                            feed_result = await fetcher.fetch(feed_url, timeout=float(timeout))
+                            if feed_result.status_code < 400:
+                                feed_text = _decode_content(feed_result.content, feed_result.content_type)
+                                feed = parse_feed(feed_text)
+                                if feed and feed.items:
+                                    markdown = format_feed_as_markdown(feed)
+                                    content = truncate(markdown, max_tokens)
+                                    response = {
+                                        "content": f"[Feed: {url}]\n\n{content}",
+                                        "content_type": "markdown",
+                                        "url": result.final_url,
+                                    }
+                                    _log(f"FETCH {url} -> autodiscovered feed ({len(feed.items)} items, {len(response['content'])} chars, {time.monotonic() - start:.1f}s)")
+                                    return response
+                        except Exception:
+                            pass  # Fall through to normal HTML pipeline
 
             # GitHub tree/repo pages: extract file listing from embedded JSON (additive).
             # The listing is prepended to the normal HTML→markdown result, which provides
