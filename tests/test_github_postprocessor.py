@@ -1,6 +1,5 @@
 """Tests for GitHub markdown post-processing — outcome-level tests."""
 
-import pytest
 
 from fetchaller.content.html import html_to_markdown
 

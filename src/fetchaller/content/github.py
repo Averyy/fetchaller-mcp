@@ -186,7 +186,7 @@ def extract_github_file_listing(html: str, url: str) -> str | None:
         if readme and isinstance(readme, dict):
             readme_md = _format_readme_from_json(readme)
             if readme_md:
-                lines.append(f"\n---\n")
+                lines.append("\n---\n")
                 lines.append(readme_md)
 
         return "\n".join(lines)

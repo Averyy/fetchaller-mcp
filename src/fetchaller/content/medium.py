@@ -5,7 +5,7 @@ strip_medium_junk, postprocess_medium).
 """
 
 import re
-from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 

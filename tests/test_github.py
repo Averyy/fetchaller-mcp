@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from fetchaller.content.github import (
     extract_github_file_listing,
     transform_github_url,
