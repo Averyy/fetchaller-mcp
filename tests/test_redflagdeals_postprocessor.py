@@ -3,7 +3,6 @@
 from fetchaller.content.html import html_to_markdown
 from fetchaller.content.redflagdeals import is_redflagdeals
 
-
 RFD_URL = "https://forums.redflagdeals.com/hot-deals-f9/"
 RFD_THREAD_URL = "https://forums.redflagdeals.com/some-deal-t1234567/"
 

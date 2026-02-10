@@ -6,6 +6,17 @@ MCP server for fetching any URL without domain restrictions. Full Reddit support
 
 **NEVER blame external services** (Claude, Anthropic, Google, Reddit, etc.) for issues. If something isn't working, the problem is in THIS codebase. Investigate our code first, add logging, and find the real cause. Blaming external parties wastes time.
 
+## Pre-Commit Rules
+
+**ALWAYS run lint and tests before EVERY commit. No exceptions.**
+
+```bash
+.venv/bin/ruff check src/ tests/   # Lint (import sorting, style)
+.venv/bin/python -m pytest tests/ -x -q   # Tests
+```
+
+If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify again. CI runs `uv run ruff check src/ tests/` — if you skip this locally, the push WILL fail.
+
 ## Testing Rules
 
 **ALWAYS use the same approach the code uses when testing.** For HTTP requests, use `curl_cffi` (not `urllib` or `requests`) because it has TLS fingerprint impersonation that bypasses bot protection. Test with multiple pages before making performance claims.
