@@ -14,6 +14,7 @@ from .content.fetcher import ContentFetcher, RetryConfig
 from .queue.reddit_queue import QueueConfig, RedditRequestQueue
 from .tools.browse_reddit import browse_reddit
 from .tools.fetch import fetch_url
+from .tools.search import search_web
 from .tools.search_reddit import search_reddit
 
 
@@ -32,6 +33,8 @@ def _summarize_args(tool_name: str, args: dict) -> str:
         return f"r/{args.get('subreddit', '?')} sort={args.get('sort', 'hot')}"
     elif tool_name == "search_reddit":
         return f"query={args.get('query', '?')} r/{args.get('subreddit', 'all')}"
+    elif tool_name == "search":
+        return f"query={args.get('query', '?')} page={args.get('page', 1)}"
     return str(args)
 
 
@@ -82,7 +85,7 @@ def create_server(
                     "Fetch any URL and return the page content as clean markdown. "
                     "Handles HTML, JSON, XML, CSV, and PDF files. "
                     "Use this tool for reading/fetching web pages - it has no domain restrictions. "
-                    "For discovering URLs via search, use WebSearch. For reading URL content, use this tool."
+                    "For discovering URLs via search, use the search tool. For reading URL content, use this tool."
                 ),
                 inputSchema={
                     "type": "object",
@@ -201,6 +204,29 @@ def create_server(
                     "required": ["query"],
                 },
             ),
+            Tool(
+                name="search",
+                description=(
+                    "Search the web and return results with titles, URLs, and snippets. "
+                    "Use this to discover URLs, then use fetch to read full page content."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query",
+                        },
+                        "page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 1,
+                            "description": "Result page (1-indexed, default: 1)",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
         ]
 
     def _format_result(name: str, result: dict, start_time: float) -> list[TextContent]:
@@ -266,6 +292,13 @@ def create_server(
                 )
                 return _format_result(name, result, start_time)
 
+            elif name == "search":
+                result = await search_web(
+                    query=arguments["query"],
+                    page=max(1, arguments.get("page", 1)),
+                )
+                return _format_result(name, result, start_time)
+
             else:
                 elapsed = (time.time() - start_time) * 1000
                 _log(f"TOOL END: {name} UNKNOWN time={elapsed:.1f}ms")
@@ -300,3 +333,5 @@ async def run_stdio_server(config: Config | None = None) -> None:
         await fetcher.close()
         if hasattr(server, '_reddit_queue'):
             await server._reddit_queue.stop()
+        from .search import close_session as close_search_session
+        await close_search_session()

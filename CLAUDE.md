@@ -1,6 +1,6 @@
 # fetchaller-mcp
 
-MCP server for fetching any URL without domain restrictions. Full Reddit support.
+MCP server for fetching any URL without domain restrictions. Full Reddit support. Built-in web search.
 
 ## Debugging Rules
 
@@ -38,6 +38,7 @@ If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify agai
 - `test_fetch_integration.py` — Integration tests for `fetch_url()` with MockFetcher (forum hijack, feed discovery, URL transforms, content types, errors)
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
+- `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP
 - Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
 
 Test URLs for benchmarking:
@@ -84,7 +85,7 @@ mcp__fetchaller__fetch("https://slow-site.example.com", 25000, 60)
 ```
 
 **Research workflow:**
-1. WebSearch "topic keywords"
+1. mcp__fetchaller__search("topic keywords")
 2. For each relevant URL: mcp__fetchaller__fetch(url)
 
 ## What It Does
@@ -96,6 +97,28 @@ mcp__fetchaller__fetch("https://slow-site.example.com", 25000, 60)
 - Shows redirect destinations
 - Configurable timeout (default: 10 seconds)
 - Truncates at token limit
+
+## Tool: `mcp__fetchaller__search`
+
+```
+mcp__fetchaller__search(query: string, limit?: number, page?: number)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| query | string | required | Search query |
+| page | number | 1 | Result page (1-indexed) |
+
+Searches Google (primary) and DuckDuckGo (supplement) in parallel. Returns titles, URLs, and snippets as text. Page 2+ queries Google only.
+
+**Example output:**
+```
+Search: "python asyncio tutorial" | google: 10 | ddg: 4 new | 14 total
+
+1. Python's asyncio: A Hands-On Walkthrough
+   https://realpython.com/async-io-python/
+   In this tutorial, you'll learn how Python asyncio works...
+```
 
 ## Reddit Tools
 
@@ -166,6 +189,16 @@ Reddit allows ~10 unauthenticated API requests per minute. The browse/search too
 - **`wikipedia.py`** — Wikipedia: CSS selectors for edit buttons, navboxes, TOC, reference lists.
 
 Each site module exports the same interface: `is_<site>(url)`, `SELECTORS_LIST`, and optionally `strip_<site>_junk(soup)` / `postprocess_<site>(markdown)`. To add cleanup for a new site, create a new module following this pattern.
+
+## Search Architecture
+
+`src/fetchaller/search/` handles web search:
+
+- **`__init__.py`** — Main `search()` function, result merging/dedup, 5-minute query cache, per-engine rate limiters (2s Google, 1s DDG), CAPTCHA escalating backoff (2m→5m→15m), lazy session lifecycle.
+- **`google.py`** — Google via Opera Mini SSR. UA pool (~14 variants), Opera proxy header fingerprint (X-OperaMini-Features, Phone, Device-Stock-UA), `/url?q=` extraction, `<h3>` title extraction with breadcrumb removal, structural snippet walk-up, CAPTCHA detection (sorry.google.com, /sorry, "unusual traffic", 429).
+- **`ddg.py`** — DuckDuckGo HTML endpoint (`html.duckduckgo.com/html/`). `.result` CSS selectors, `uddg=` URL decoding. Only queried on page 1.
+- **`models.py`** — `SearchResult` dataclass (title, url, snippet).
+- **`tools/search.py`** — MCP tool wrapper calling `search()`.
 
 ## Development & Testing
 

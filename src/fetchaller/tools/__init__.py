@@ -2,6 +2,7 @@
 
 from .browse_reddit import browse_reddit
 from .fetch import fetch_url
+from .search import search_web
 from .search_reddit import search_reddit
 
-__all__ = ["browse_reddit", "fetch_url", "search_reddit"]
+__all__ = ["browse_reddit", "fetch_url", "search_reddit", "search_web"]

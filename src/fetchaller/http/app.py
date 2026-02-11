@@ -116,6 +116,10 @@ def create_app(config: Config | None = None) -> FastAPI:
         if hasattr(mcp_server, '_reddit_queue'):
             await mcp_server._reddit_queue.stop()
 
+        # Close search session
+        from ..search import close_session as close_search_session
+        await close_search_session()
+
     app = FastAPI(
         title="fetchaller",
         version=__version__,
