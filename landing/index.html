@@ -3,24 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fetch Reddit & Any Website in Claude Code | fetchaller</title>
-    <meta name="description" content="Browse and search Reddit, fetch any URL, extract text from PDFs in Claude Code. No permission prompts, no domain restrictions. WebFetch alternative.">
-    <meta name="keywords" content="Claude Code fetch websites, Claude Code MCP server, WebFetch alternative, Claude Code Reddit, browse reddit Claude Code, search reddit Claude Code, fetch Reddit posts, Claude AI fetch URL, Claude Code PDF, extract PDF text, no permission prompts, no domain restrictions">
+    <title>Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller</title>
+    <meta name="description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 10+ sites. No permission prompts. WebFetch alternative for Claude Code.">
+    <meta name="keywords" content="Claude Code fetch websites, Claude Code MCP server, WebFetch alternative, Claude Code Reddit, web search Claude Code, Google search Claude Code, DuckDuckGo Claude Code, browse reddit Claude Code, search reddit Claude Code, fetch Reddit posts, Claude AI fetch URL, Claude Code PDF, site-specific cleanup, no permission prompts, no domain restrictions">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://fetchaller.dev/">
 
     <!-- Open Graph -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://fetchaller.dev/">
-    <meta property="og:title" content="Fetch Reddit & Any Website in Claude Code | fetchaller">
-    <meta property="og:description" content="Browse and search Reddit, fetch any URL, extract text from PDFs in Claude Code. No permission prompts, no domain restrictions.">
+    <meta property="og:title" content="Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller">
+    <meta property="og:description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 10+ sites. No permission prompts.">
     <meta property="og:site_name" content="fetchaller">
     <meta property="og:locale" content="en_US">
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Fetch Reddit & Any Website in Claude Code | fetchaller">
-    <meta name="twitter:description" content="Browse and search Reddit, fetch any URL, extract text from PDFs in Claude Code. No permission prompts, no domain restrictions.">
+    <meta name="twitter:title" content="Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller">
+    <meta name="twitter:description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 10+ sites. No permission prompts.">
 
     <!-- Favicons -->
     <link rel="icon" type="image/png" href="favicon-96x96.png" sizes="96x96">
@@ -597,8 +597,8 @@
         <section class="hero">
             <div class="container">
                 <div class="hero-badge">MCP Server for Claude Code</div>
-                <h1>Fetch <span class="highlight">Reddit & any website</span> in Claude Code</h1>
-                <p>Make browsing the web easier. Stop Claude Code from asking permission to fetch for every single domain.</p>
+                <h1><span class="highlight">Search, fetch & read</span> any website in Claude Code</h1>
+                <p>Web search, Reddit tools, and smart site-specific cleanup for 10+ sites. No permission prompts, no domain restrictions.</p>
                 <div class="hero-cta">
                     <a href="#setup" class="btn btn-primary">Get Started</a>
                     <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener" class="btn btn-secondary">
@@ -646,6 +646,7 @@ claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python
   <span class="code-key">"permissions"</span>: {
     <span class="code-key">"allow"</span>: [
       <span class="code-string">"mcp__fetchaller__fetch"</span>,
+      <span class="code-string">"mcp__fetchaller__search"</span>,
       <span class="code-string">"mcp__fetchaller__browse_reddit"</span>,
       <span class="code-string">"mcp__fetchaller__search_reddit"</span>
     ]
@@ -666,6 +667,10 @@ claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python
 <pre id="claude-md-code"><span class="code-comment">## Web Fetching</span>
 
 <span class="code-key">**Use fetchaller instead of WebFetch**</span> (no domain restrictions). If a dedicated MCP exists (GitHub, Slack, etc.), use that instead.
+
+<span class="code-comment">## Web Search</span>
+
+Use <span class="code-string">`mcp__fetchaller__search`</span> for web searches (Google + DuckDuckGo).
 
 <span class="code-comment">## Reddit Searching and Browsing</span>
 
@@ -745,28 +750,67 @@ docker compose up -d
                 <div class="comparison">
                 <div class="comparison-card problem">
                     <h3>
-                        <span>😤</span>
-                        The Problem with WebFetch
+                        <span>The Problem with WebFetch</span>
                     </h3>
                     <ul>
                         <li>Permission prompt for every new domain</li>
                         <li>No wildcard domain support</li>
                         <li>Reddit is completely blocked</li>
+                        <li>No built-in web search</li>
                         <li>Interrupts research workflows constantly</li>
                     </ul>
                 </div>
                 <div class="comparison-card solution">
                     <h3>
-                        <span>✨</span>
-                        The fetchaller Solution
+                        <span>The fetchaller Solution</span>
                     </h3>
                     <ul>
                         <li>One permission rule, all domains work</li>
+                        <li>Built-in web search (Google + DuckDuckGo)</li>
                         <li>Reddit works with full comments</li>
-                        <li>Clean markdown output</li>
+                        <li>Smart site-specific cleanup saves 65-98% tokens</li>
                         <li>Seamless research workflows</li>
                     </ul>
                 </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="search">
+            <div class="container">
+                <h2 class="section-title">Web Search</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 24px;">Search Google and DuckDuckGo in parallel. Results are deduplicated, cached, and returned as clean text.</p>
+
+                <div class="features-grid" style="grid-template-columns: repeat(3, 1fr);">
+                    <div class="feature-card" style="border-color: rgba(98, 0, 127, 0.3);">
+                        <h4>Google + DDG</h4>
+                        <p>Queries both engines in parallel for broader coverage. DuckDuckGo supplements Google results.</p>
+                    </div>
+                    <div class="feature-card" style="border-color: rgba(98, 0, 127, 0.3);">
+                        <h4>Dedup & Cache</h4>
+                        <p>Duplicate results are merged automatically. 5-minute query cache prevents redundant requests.</p>
+                    </div>
+                    <div class="feature-card" style="border-color: rgba(98, 0, 127, 0.3);">
+                        <h4>Search + Fetch</h4>
+                        <p>Search to find URLs, then fetch to read them. A complete research workflow in two tools.</p>
+                    </div>
+                </div>
+
+                <div class="code-window" style="margin-top: 24px;">
+                    <div class="code-header">
+                        <div class="code-dot red"></div>
+                        <div class="code-dot yellow"></div>
+                        <div class="code-dot green"></div>
+                        <span class="code-title">Example: Research a topic</span>
+                    </div>
+                    <div class="code-body">
+<pre><span class="code-comment"># Step 1: Search the web</span>
+<span class="code-key">search</span>({ query: <span class="code-string">"python asyncio best practices 2025"</span> })
+
+<span class="code-comment"># Returns titles, URLs, and snippets from Google + DuckDuckGo</span>
+<span class="code-comment"># Step 2: Read the most relevant results</span>
+<span class="code-key">fetch</span>({ url: <span class="code-string">"https://realpython.com/async-io-python/"</span> })</pre>
+                    </div>
                 </div>
             </div>
         </section>
@@ -778,15 +822,15 @@ docker compose up -d
 
                 <div class="features-grid">
                     <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
-                        <h4>🔍 browse_reddit</h4>
+                        <h4>browse_reddit</h4>
                         <p>Browse any subreddit by hot, new, top, or rising. Get post metadata without reading every page.</p>
                     </div>
                     <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
-                        <h4>🔎 search_reddit</h4>
+                        <h4>search_reddit</h4>
                         <p>Search all of Reddit or within a specific subreddit. Filter by relevance, time, and sort order.</p>
                     </div>
                     <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
-                        <h4>📖 fetch</h4>
+                        <h4>fetch</h4>
                         <p>Read full posts with all comments. Auto-converts to old.reddit.com for 65-70% token savings.</p>
                     </div>
                 </div>
@@ -812,33 +856,79 @@ docker compose up -d
             </div>
         </section>
 
+        <section id="cleanup">
+            <div class="container">
+                <h2 class="section-title">Smart Cleanup</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 24px;">Site-specific optimizations strip junk and save 65-98% of tokens. Every site gets universal cleanup, and these get extra attention.</p>
+
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <h4>GitHub</h4>
+                        <p>Issues, PRs, repos, org pages. Strips sidebar, nav, metadata chrome.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Stack Overflow</h4>
+                        <p>All Stack Exchange sites. Removes sidebars, vote buttons, user cards, ads.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Hacker News</h4>
+                        <p>Compact story format, clean comment threads. Table unwrapping.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Medium</h4>
+                        <p>Detects 100s of custom domains. Strips sign-up prompts, footers, avatars.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Hugging Face</h4>
+                        <p>Models, datasets, spaces. Removes DatasetViewer, inference widgets, gated blocks.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Wikipedia</h4>
+                        <p>Strips edit buttons, navboxes, table of contents, reference lists.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Reddit</h4>
+                        <p>Auto-converts to old.reddit.com. 65-70% token savings with full comments.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Forums</h4>
+                        <p>XenForo, vBulletin, phpBB, Discourse. Auto-detects and cleans thread pages.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Everything Else</h4>
+                        <p>Universal cleanup strips nav, footer, ads, cookie banners, modals from all sites.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <section>
             <div class="container">
                 <h2 class="section-title">Features</h2>
                 <div class="features-grid">
                     <div class="feature-card">
-                        <h4>🌐 Any Domain</h4>
-                        <p>HTTP/HTTPS URLs from any website, no restrictions</p>
+                        <h4>Web Search</h4>
+                        <p>Search Google + DuckDuckGo in parallel, with dedup and caching</p>
                     </div>
                     <div class="feature-card">
-                        <h4>📄 Clean Output</h4>
-                        <p>HTML to markdown, PDF text extraction, JSON/XML/CSV as-is</p>
+                        <h4>Reddit Tools</h4>
+                        <p>Browse, search, and read full discussions with optimized output</p>
                     </div>
                     <div class="feature-card">
-                        <h4>🔄 Retry Logic</h4>
-                        <p>Auto-retries on server errors (5xx)</p>
+                        <h4>Smart Cleanup</h4>
+                        <p>Site-specific optimization for 10+ sites, saving 65-98% tokens</p>
                     </div>
                     <div class="feature-card">
-                        <h4>🏠 100% Local</h4>
-                        <p>Runs on your machine, no data sent to third parties</p>
+                        <h4>Any Domain</h4>
+                        <p>No permission prompts, no restrictions. One rule covers all URLs</p>
                     </div>
                     <div class="feature-card">
-                        <h4>🔒 Safe</h4>
-                        <p>Read-only, no cookies, no state</p>
+                        <h4>Forum Support</h4>
+                        <p>Auto-detects XenForo, vBulletin, phpBB, Discourse. RSS feed discovery</p>
                     </div>
                     <div class="feature-card">
-                        <h4>📏 Configurable</h4>
-                        <p>Set max tokens (default 25k) and timeout (default 10s)</p>
+                        <h4>PDF & More</h4>
+                        <p>Extract text from PDFs, handle JSON, XML, CSV, and plain text</p>
                     </div>
                 </div>
             </div>
@@ -850,11 +940,19 @@ docker compose up -d
                 <div class="faq-list">
                     <div class="faq-item">
                         <h4>Why not just use WebFetch?</h4>
-                        <p>WebFetch requires you to approve each domain individually, and Reddit is completely blocked. fetchaller removes these limitations with a single permission rule.</p>
+                        <p>WebFetch requires you to approve each domain individually, Reddit is completely blocked, and there's no web search. fetchaller removes these limitations with a single permission rule and adds search, Reddit tools, and smart cleanup.</p>
+                    </div>
+                    <div class="faq-item">
+                        <h4>Can it search the web?</h4>
+                        <p>Yes! The <code>search</code> tool queries Google and DuckDuckGo in parallel. Results are deduplicated and cached. Use <code>search</code> to find URLs, then <code>fetch</code> to read them.</p>
+                    </div>
+                    <div class="faq-item">
+                        <h4>What sites are optimized?</h4>
+                        <p>GitHub, Stack Overflow (all SE sites), Hacker News, Medium (including custom domains), Hugging Face, Wikipedia, Reddit, and generic forums (XenForo, vBulletin, phpBB, Discourse). Each gets tailored cleanup saving 65-98% tokens. All other sites get universal junk removal.</p>
                     </div>
                     <div class="faq-item">
                         <h4>Does Reddit work?</h4>
-                        <p>Yes! fetchaller has three Reddit tools: <code>browse_reddit</code> to browse subreddit listings, <code>search_reddit</code> to search posts, and <code>fetch</code> to read full discussions. All automatically use old.reddit.com for 65-70% token savings.</p>
+                        <p>Yes! fetchaller has three Reddit tools: <code>browse_reddit</code> for subreddit listings, <code>search_reddit</code> for searching posts, and <code>fetch</code> for reading full discussions. It's one of several sites with deep optimization.</p>
                     </div>
                     <div class="faq-item">
                         <h4>Is this safe?</h4>
