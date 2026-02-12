@@ -15,6 +15,9 @@ services:
       - RATE_LIMIT_REQUESTS=100
       - MCP_API_KEY=${MCP_API_KEY}
       - MCP_SERVER_URL=${MCP_SERVER_URL:-http://localhost:6000}
+      - CHROME_IDLE_TIMEOUT=${CHROME_IDLE_TIMEOUT:-60}
+    volumes:
+      - cookie-data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6000/health"]
       interval: 30s
@@ -24,13 +27,16 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 3G
           cpus: '1.0'
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  cookie-data:
 
 networks:
   web:

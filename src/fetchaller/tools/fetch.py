@@ -8,9 +8,15 @@ from urllib.parse import urlparse
 
 from curl_cffi.requests.errors import RequestsError
 
+from ..botfighter import (
+    ChallengeSolver,
+    CookieCache,
+    detect_challenge,
+    solve_acw_sc_v2,
+)
 from ..cache.response_cache import ResponseCache
 from ..config import Config
-from ..content.fetcher import ContentFetcher, RetryConfig
+from ..content.fetcher import ContentFetcher, FetchResult, RetryConfig
 from ..content.forums import (
     discover_feed_url,
     format_feed_as_markdown,
@@ -65,6 +71,205 @@ def truncate(text: str, max_tokens: int, chars_per_token: int = 4) -> str:
     return text[:max_chars] + f"\n\n[Truncated at ~{max_tokens} tokens]"
 
 
+def _quick_challenge_possible(result: FetchResult) -> bool:
+    """Fast header-only check to decide if body decode is needed for challenge detection.
+
+    Returns True if a challenge is possible, False if we can skip body decode. [#11]
+    """
+    if result.status_code in (403, 429):
+        return True
+    # CF header can appear on any status
+    if result.headers.get("cf-mitigated") == "challenge":
+        return True
+    # ACW can appear on 200
+    # Check cookie markers for Akamai/DataDome/PerimeterX/Imperva (non-200 with cookies)
+    set_cookie = result.headers.get("set-cookie", "")
+    if set_cookie and any(
+        marker in set_cookie
+        for marker in ("_abck", "ak_bmsc", "datadome", "_px3", "_pxhd", "reese84", "___utmvc")
+    ):
+        return True
+    return False
+
+
+async def _handle_botfighter(
+    result: FetchResult,
+    fetch_url_str: str,
+    timeout: float,
+    fetcher: ContentFetcher,
+    cookie_cache: CookieCache | None,
+    challenge_solver: ChallengeSolver | None,
+    had_cached_cookies: bool,
+    cookie_lookup_domain: str = "",
+) -> FetchResult | dict:
+    """Handle bot challenge detection and solving after initial fetch.
+
+    Args:
+        cookie_lookup_domain: The domain used for the cache lookup in fetch_url().
+            When a cached final_url overrides fetch_url_str, this differs from the
+            domain derived from fetch_url_str. Needed to evict the original cache
+            entry on re-challenge (prevents stale cookie loop with geo-redirects).
+
+    Returns:
+        FetchResult if challenge was solved or no challenge detected.
+        Dict with 'error' key if solve failed or lock busy.
+    """
+    # [#11] Short-circuit: skip body decode if no challenge indicators in headers/status
+    if not _quick_challenge_possible(result):
+        # Still need to check for ACW (can appear on 200 with no header markers)
+        # Only decode if content looks like it could be ACW (check raw bytes)
+        if b"acw_sc__v2" not in result.content:
+            return result
+
+    content_type = result.content_type.lower()
+    body = _decode_content(result.content, content_type)
+    challenge = detect_challenge(result.status_code, result.headers, body)
+
+    if not challenge:
+        return result
+
+    domain = urlparse(fetch_url_str).hostname or ""
+    _log(f"Challenge detected: {challenge} for {domain}")
+
+    # ACW: solve inline (~1ms, pure Python)
+    if challenge == "acw":
+        cookie_value = solve_acw_sc_v2(body)
+        if cookie_value:
+            # Use a dedicated fetcher to avoid mutating shared fetcher state
+            acw_fetcher = ContentFetcher()
+            try:
+                await acw_fetcher.set_cookie("acw_sc__v2", cookie_value, domain=domain)
+                # [#13] Wrap retry fetch in try/except
+                try:
+                    result = await acw_fetcher.fetch(fetch_url_str, timeout=timeout)
+                except (TimeoutError, ConnectionError, RequestsError) as e:
+                    return {"error": f"Request failed after ACW solve: {e}"}
+                except Exception as e:
+                    return {"error": f"Fetch failed after ACW solve ({type(e).__name__}): {e}"}
+            finally:
+                await acw_fetcher.close()
+            # Check for additional challenges (layered protection: ACW + Akamai)
+            body = _decode_content(result.content, result.content_type.lower())
+            challenge = detect_challenge(result.status_code, result.headers, body)
+            if not challenge:
+                _log(f"ACW solved for {domain}")
+                return result
+            _log(f"Additional challenge after ACW: {challenge}")
+            # Fall through to browser solve
+        else:
+            return result  # ACW solve failed, return as-is
+
+    # Browser challenge
+    if not challenge_solver:
+        return result  # No solver available
+
+    # Evict stale cookies if we had cached ones.
+    # Evict both the current domain AND the original lookup domain to prevent
+    # stale cookie loops with geo-redirects (e.g., glassdoor.com → glassdoor.ca).
+    if had_cached_cookies and cookie_cache:
+        cookie_cache.evict(domain)
+        if cookie_lookup_domain and cookie_lookup_domain != domain:
+            cookie_cache.evict(cookie_lookup_domain)
+
+    solve_result = await challenge_solver.solve(fetch_url_str, challenge)
+    if not solve_result:
+        # [#14] Distinguish "Chrome not available" from "solve failed"
+        return {"error": f"This page is protected by {challenge} bot detection and could not be bypassed. "
+                "Ensure Chrome/Chromium is installed for browser-based challenge solving."}
+    if "error" in solve_result:
+        return solve_result
+
+    # Cache cookies under original domain (with final_url for redirect-aware cache hits)
+    final_url = solve_result.get("final_url", "")
+    final_domain = urlparse(final_url).hostname or "" if final_url else ""
+
+    # [#2] SSRF validation on browser solve final_url
+    redirect_url = None
+    if final_domain and final_domain != domain:
+        if await is_private_host(final_domain):
+            _log(f"Browser redirected to private host {final_domain}, ignoring redirect")
+            final_domain = ""
+        else:
+            redirect_url = final_url
+
+    # [#3/#8] Use impersonate from solver (not fetcher._browser)
+    impersonate = solve_result.get("impersonate", fetcher.current_impersonate)
+
+    # Determine which domains need caching (avoid duplicate writes for same domain)
+    has_browser_redirect = bool(final_domain and final_domain != domain)
+    needs_lookup_recache = bool(
+        cookie_lookup_domain
+        and cookie_lookup_domain != domain
+        and cookie_lookup_domain != final_domain
+    )
+
+    if cookie_cache:
+        # Use _save=False for intermediate calls, True only on the last (avoids extra disk writes)
+        cookie_cache.set(
+            domain,
+            challenge,
+            solve_result["cookies"],
+            solve_result["user_agent"],
+            impersonate,
+            final_url=redirect_url,
+            _save=not (has_browser_redirect or needs_lookup_recache),
+        )
+
+    # If browser ended up on a different domain (geo-redirect), cache there too
+    if has_browser_redirect and cookie_cache:
+        cookie_cache.set(
+            final_domain,
+            challenge,
+            solve_result["cookies"],
+            solve_result["user_agent"],
+            impersonate,
+            _save=not needs_lookup_recache,
+        )
+
+    # Re-cache original lookup domain so the next request to it gets a cache hit
+    # instead of needing a redundant solve. final_url points to fetch_url_str
+    # (the redirect URL that was fetched after the original cache hit).
+    if needs_lookup_recache and cookie_cache:
+        cookie_cache.set(
+            cookie_lookup_domain,
+            challenge,
+            solve_result["cookies"],
+            solve_result["user_agent"],
+            impersonate,
+            final_url=fetch_url_str,
+        )
+
+    # Create a dedicated fetcher for the post-solve retry to avoid mutating the
+    # shared fetcher's cookies/identity (race condition with concurrent requests).
+    retry_fetcher = ContentFetcher()
+    try:
+        await retry_fetcher.apply_cookies(solve_result["cookies"])
+        retry_fetcher.pin_identity(impersonate)
+        ua_header = {"User-Agent": solve_result["user_agent"]} if solve_result.get("user_agent") else None
+        retry_url = final_url if final_domain and final_domain != domain else fetch_url_str
+
+        # [#13] Wrap retry fetch in try/except
+        try:
+            result = await retry_fetcher.fetch(retry_url, timeout=timeout, headers=ua_header)
+        except TimeoutError:
+            return {"error": f"Request timed out after {timeout:.0f}s (after {challenge} challenge solve). "
+                    "Try increasing the timeout parameter."}
+        except (ConnectionError, RequestsError) as e:
+            return {"error": f"Request failed after {challenge} challenge solve: {e}"}
+        except Exception as e:
+            return {"error": f"Fetch failed after {challenge} solve ({type(e).__name__}): {e}"}
+    finally:
+        await retry_fetcher.close()
+
+    # Check if still challenged after solve
+    body = _decode_content(result.content, result.content_type.lower())
+    if detect_challenge(result.status_code, result.headers, body):
+        return {"error": f"This page is protected by {challenge} bot detection and could not be bypassed."}
+
+    _log(f"{challenge} challenge solved for {domain}")
+    return result
+
+
 async def fetch_url(
     url: str,
     max_tokens: int = 25000,
@@ -73,6 +278,8 @@ async def fetch_url(
     fetcher: ContentFetcher | None = None,
     cache: ResponseCache | None = None,
     config: Config | None = None,
+    cookie_cache: CookieCache | None = None,
+    challenge_solver: ChallengeSolver | None = None,
 ) -> dict:
     """
     Fetch a URL and return its content.
@@ -85,6 +292,8 @@ async def fetch_url(
         fetcher: Optional ContentFetcher instance (creates new if not provided)
         cache: Optional ResponseCache instance
         config: Optional Config instance
+        cookie_cache: Optional CookieCache for bot challenge cookies
+        challenge_solver: Optional ChallengeSolver for browser-based challenges
 
     Returns:
         Dict with:
@@ -150,10 +359,45 @@ async def fetch_url(
         retry_config = RetryConfig.from_config(config) if config else None
         fetcher = ContentFetcher(retry_config=retry_config)
 
+    # Botfighter: check cookie cache and prepare a dedicated fetcher if needed.
+    # A separate fetcher avoids race conditions on the shared instance when
+    # concurrent requests apply/clear cookies for different domains.
+    # Use fetch_url_str hostname (post-transform) to match how _handle_botfighter
+    # stores cookies — the challenge is on the transformed URL, not the original.
+    had_cached_cookies = False
+    cached_bot_cookies = None
+    bf_fetcher: ContentFetcher | None = None  # Dedicated fetcher for botfighter requests
+    if cookie_cache:
+        domain = urlparse(fetch_url_str).hostname or ""
+        cached_bot_cookies = cookie_cache.get(domain)
+        if cached_bot_cookies:
+            had_cached_cookies = True
+            retry_config = RetryConfig.from_config(config) if config else None
+            bf_fetcher = ContentFetcher(retry_config=retry_config)
+            await bf_fetcher.apply_cookies(cached_bot_cookies.cookies)
+            bf_fetcher.pin_identity(cached_bot_cookies.impersonate)
+            # [#1] SSRF validation on cached final_url before using it
+            if cached_bot_cookies.final_url:
+                try:
+                    final_parsed = urlparse(cached_bot_cookies.final_url)
+                    if not await is_private_host(final_parsed.hostname or ""):
+                        fetch_url_str = cached_bot_cookies.final_url
+                    else:
+                        _log(f"Ignoring private cached final_url for {domain}")
+                except Exception:
+                    pass
+
+    # Use dedicated botfighter fetcher if we have cached cookies, else shared fetcher
+    active_fetcher = bf_fetcher if bf_fetcher else fetcher
+
     # Fetch the URL
     try:
         try:
-            result = await fetcher.fetch(fetch_url_str, timeout=float(timeout))
+            result = await active_fetcher.fetch(
+                fetch_url_str,
+                timeout=float(timeout),
+                headers={"User-Agent": cached_bot_cookies.user_agent} if cached_bot_cookies else None,
+            )
         except TimeoutError:
             _log(f"FETCH {url} -> ERROR: timeout after {timeout}s ({time.monotonic() - start:.1f}s)")
             return {"error": f"Request timed out after {timeout}s. Try increasing the timeout parameter for slow servers."}
@@ -181,6 +425,21 @@ async def fetch_url(
                     return {"error": "Redirect to private/internal host is not allowed."}
             except Exception:
                 pass
+
+        # Botfighter: detect and solve challenges (ACW inline, browser via PyDoll)
+        # When a challenge is detected, _handle_botfighter creates its own dedicated
+        # fetcher internally to avoid mutating the shared fetcher's state.
+        if cookie_cache is not None:
+            bf_result = await _handle_botfighter(
+                result, fetch_url_str, float(timeout),
+                active_fetcher, cookie_cache, challenge_solver, had_cached_cookies,
+                cookie_lookup_domain=domain if had_cached_cookies else "",
+            )
+            if isinstance(bf_result, dict):
+                # Error from botfighter (solve failed or lock busy)
+                _log(f"FETCH {url} -> BOTFIGHTER: {bf_result.get('error', '?')} ({time.monotonic() - start:.1f}s)")
+                return bf_result
+            result = bf_result
 
         # Handle rate limiting
         if result.status_code == 429:
@@ -383,5 +642,8 @@ async def fetch_url(
         # Unsupported content type
         return {"error": f"Unsupported content type: {content_type}"}
     finally:
+        # Close the dedicated botfighter fetcher if one was created
+        if bf_fetcher:
+            await bf_fetcher.close()
         if owns_fetcher:
             await fetcher.close()

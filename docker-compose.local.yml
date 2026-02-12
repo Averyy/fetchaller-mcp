@@ -20,6 +20,7 @@ services:
       - RATE_LIMIT_REQUESTS=100
       - MCP_API_KEY=test-api-key-local
       - MCP_SERVER_URL=http://localhost:6000
+      - CHROME_IDLE_TIMEOUT=60
       # Uncomment to test with separate JWT secret:
       # - JWT_SECRET=test-jwt-secret-local
     healthcheck:
@@ -28,9 +29,14 @@ services:
       timeout: 5s
       retries: 3
       start_period: 3s
+    volumes:
+      - cookie-data:/app/data
     # No resource limits for local testing (easier debugging)
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "1"
+
+volumes:
+  cookie-data:

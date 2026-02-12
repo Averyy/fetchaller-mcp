@@ -8,6 +8,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from .botfighter import ChallengeSolver, CookieCache
 from .cache.response_cache import ResponseCache
 from .config import Config, load_config
 from .content.fetcher import ContentFetcher, RetryConfig
@@ -43,6 +44,8 @@ def create_server(
     fetcher: ContentFetcher | None = None,
     cache: ResponseCache | None = None,
     reddit_queue: RedditRequestQueue | None = None,
+    cookie_cache: CookieCache | None = None,
+    challenge_solver: ChallengeSolver | None = None,
 ) -> Server:
     """
     Create and configure the MCP server.
@@ -52,6 +55,8 @@ def create_server(
         fetcher: Optional ContentFetcher instance
         cache: Optional ResponseCache instance
         reddit_queue: Optional RedditRequestQueue instance
+        cookie_cache: Optional CookieCache for bot challenge cookie persistence
+        challenge_solver: Optional ChallengeSolver for browser-based challenge solving
 
     Returns:
         Configured MCP Server instance
@@ -70,6 +75,12 @@ def create_server(
         reddit_queue = RedditRequestQueue(QueueConfig.from_config(config))
         # Note: Queue auto-starts on first enqueue() call when event loop is running
         # Don't call start() here as there may not be a running event loop yet
+
+    if cookie_cache is None:
+        cookie_cache = CookieCache(persist_path=config.cookie_cache_path)
+
+    if challenge_solver is None:
+        challenge_solver = ChallengeSolver(config)
 
     server = Server("fetchaller")
     # Store reddit_queue for external cleanup access (e.g., HTTP app lifespan)
@@ -262,6 +273,8 @@ def create_server(
                     fetcher=fetcher,
                     cache=cache,
                     config=config,
+                    cookie_cache=cookie_cache,
+                    challenge_solver=challenge_solver,
                 )
                 return _format_result(name, result, start_time)
 
@@ -320,7 +333,11 @@ async def run_stdio_server(config: Config | None = None) -> None:
         config = load_config()
 
     fetcher = ContentFetcher(retry_config=RetryConfig.from_config(config))
-    server = create_server(config, fetcher=fetcher)
+    challenge_solver = ChallengeSolver(config)
+    cookie_cache = CookieCache(persist_path=config.cookie_cache_path)
+    server = create_server(
+        config, fetcher=fetcher, cookie_cache=cookie_cache, challenge_solver=challenge_solver,
+    )
 
     from . import __version__
 
@@ -331,6 +348,7 @@ async def run_stdio_server(config: Config | None = None) -> None:
             await server.run(read_stream, write_stream, server.create_initialization_options())
     finally:
         await fetcher.close()
+        await challenge_solver.close()
         if hasattr(server, '_reddit_queue'):
             await server._reddit_queue.stop()
         from .search import close_session as close_search_session

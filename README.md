@@ -1,12 +1,13 @@
 # fetchaller-mcp
 
-Fetch Reddit and any website in Claude Code without permission prompts. A WebFetch alternative with no domain restrictions.
+Fetch any website in Claude Code without permission prompts. Built-in web search, Reddit support, and automatic bot challenge bypass.
 
 ## Why fetchaller?
 
 Claude Code's built-in `WebFetch` asks permission for every new domain and blocks Reddit entirely. fetchaller fixes both:
 
-- **`fetch`**: Read any URL without permission prompts
+- **`fetch`**: Read any URL — automatically bypasses Cloudflare, Akamai, and other bot challenges
+- **`search`**: Web search via Google + DuckDuckGo
 - **`browse_reddit`**: Browse subreddit listings (hot/new/top/rising)
 - **`search_reddit`**: Search Reddit posts globally or within a subreddit
 
@@ -31,6 +32,7 @@ Add permissions to `~/.claude/settings.json`:
   "permissions": {
     "allow": [
       "mcp__fetchaller__fetch",
+      "mcp__fetchaller__search",
       "mcp__fetchaller__browse_reddit",
       "mcp__fetchaller__search_reddit"
     ]
@@ -45,13 +47,14 @@ Restart Claude Code.
 Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to instruct Claude to prefer fetchaller:
 
 ```markdown
-## Web Fetching
+## Web Fetching & Search
 
-**Use fetchaller instead of WebFetch** (no domain restrictions). If a dedicated MCP exists (GitHub, Slack, etc.), use that instead.
+**ALWAYS use fetchaller tools instead of WebFetch and WebSearch.** fetchaller has no domain restrictions and produces cleaner output.
 
-## Reddit Searching and Browsing
-
-Use `mcp__fetchaller__browse_reddit` to browse subreddits, `mcp__fetchaller__search_reddit` to find posts, and `mcp__fetchaller__fetch` to read full discussions.
+- `mcp__fetchaller__fetch(url, maxTokens?, timeout?)` — Fetch any URL → clean markdown
+- `mcp__fetchaller__search(query, page?)` — Web search (Google + DuckDuckGo)
+- `mcp__fetchaller__browse_reddit(subreddit, sort?, time?, limit?)` — Browse subreddit listings
+- `mcp__fetchaller__search_reddit(query, subreddit?, sort?, time?, limit?)` — Search Reddit posts
 ```
 
 ## Usage
@@ -69,12 +72,20 @@ fetch https://example.com maxTokens=10000
 fetch https://slow-site.com maxTokens=25000 timeout=60
 ```
 
+### Web Search
+
+```
+# Search the web
+search "python asyncio tutorial"
+
+# Page 2 of results
+search "python asyncio tutorial" page=2
+```
+
 ### Web Research Pattern
 
-1. Use `WebSearch` to find URLs
-2. Use `mcp__fetchaller__fetch` to read them
-
-The CLAUDE.md file instructs Claude to prefer fetchaller over WebFetch.
+1. Use `search` to find URLs
+2. Use `fetch` to read them
 
 ## Tool Reference
 
@@ -108,6 +119,15 @@ Clean markdown with:
 | PDF files | Text extracted |
 | Timeout | Error after timeout (default 10s) |
 | Huge page | Truncated at maxTokens |
+
+### `search(query, page?)`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| query | string | required | Search query |
+| page | number | 1 | Result page (1-indexed) |
+
+Searches Google (primary) and DuckDuckGo (supplement) in parallel. Returns titles, URLs, and snippets. Page 2+ queries Google only.
 
 ## Reddit Tools
 
@@ -158,12 +178,41 @@ Reddit allows ~10 unauthenticated API requests per minute. `browse_reddit` and `
 
 1. Validates URL (http/https only)
 2. Blocks private/internal IPs (SSRF protection with DNS rebinding prevention)
-3. Fetches with browser-like TLS fingerprints (curl_cffi)
-4. Detects content type
-5. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup for GitHub/Reddit/HN/Wikipedia/Medium/Stack Overflow/forums, converts to markdown
-6. For JSON/XML/CSV/text: returns raw
-7. For PDF: extracts text
-8. Truncates to token limit
+3. Checks cookie cache for domain — if cached, uses pinned cookies + UA + TLS fingerprint
+4. Fetches with browser-like TLS fingerprints (curl_cffi)
+5. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
+6. Detects content type
+7. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup for GitHub/Reddit/HN/Wikipedia/Medium/Stack Overflow/forums, converts to markdown
+8. For JSON/XML/CSV/text: returns raw
+9. For PDF: extracts text
+10. Truncates to token limit
+
+## Bot Challenge Bypass
+
+fetchaller transparently bypasses bot challenges. First requests to protected sites take longer (total wall time = solve + fetch, typically 10-40s), but subsequent requests use cached cookies and are fast (~0.5s). The `timeout` parameter only controls the HTTP fetch — the browser solve has its own internal timeouts.
+
+### Supported Challenges
+
+| Challenge | Method | Speed |
+|-----------|--------|-------|
+| Alibaba Cloud WAF (`acw_sc__v2`) | Pure Python solver (fixed shuffle + XOR) | ~1ms |
+| Cloudflare Managed Challenge | Headful Chrome via PyDoll + Xvfb | ~3-30s |
+| Akamai Bot Manager | Headful Chrome, poll for `_abck` cookie | ~3-15s |
+| DataDome, PerimeterX, Imperva, Kasada | Headful Chrome, network idle wait | ~3-10s |
+
+### How It Works
+
+1. **ACW challenges** (Alibaba Cloud WAF): Solved inline with pure Python — no browser needed. Extracts `arg1` from challenge HTML, applies fixed shuffle permutation + XOR → cookie value.
+2. **Browser challenges** (everything else): Launches headful Chrome via PyDoll with Xvfb virtual display (CF detects headless mode). Solves the challenge, extracts all cookies + User-Agent, caches per-domain.
+3. **Cookie caching**: Cookies are bound to UA + TLS fingerprint. Cached cookies are replayed on subsequent requests with the exact same UA and fingerprint. CF cookies track expiry; all others cached until re-challenged.
+4. **Geo-redirects**: Sites like Glassdoor redirect based on location (.com → .ca). Cookies are cached under both domains and requests retry from the final URL.
+5. **Persistence**: Cookie cache auto-persists to `/app/data/cookies.json` in Docker (survives container restarts). In-memory only outside Docker.
+
+### Requirements
+
+**Docker**: Chrome and Xvfb are included in the image. The `cookie-data` volume persists solved cookies across restarts. No extra setup needed.
+
+**Local (stdio)**: Requires Chrome or Chromium installed on your system for browser-based challenges. Without Chrome, fetchaller still works — it just can't bypass Cloudflare/Akamai/etc. (ACW challenges still work since they're pure Python). macOS uses an offscreen window; Linux needs Xvfb for headful mode.
 
 ## Remote Deployment (HTTP Mode)
 
@@ -229,6 +278,8 @@ For Claude.ai web/mobile with cross-platform sync:
 | `MCP_SERVER_URL` | `http://localhost:$PORT` | Public URL for OAuth |
 | `JWT_SECRET` | (derived from API key) | Secret for OAuth tokens |
 | `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
+| `CHROME_IDLE_TIMEOUT` | 60 | Minutes before idle Chrome shuts down |
+| `COOKIE_CACHE_PATH` | auto | Cookie persistence path (auto-detects `/app/data/` in Docker) |
 
 ## Security
 
@@ -245,22 +296,11 @@ fetchaller-mcp/
 │   ├── main.py              # Entry point
 │   ├── server.py            # MCP server setup
 │   ├── config.py            # Configuration
+│   ├── botfighter.py        # Bot challenge detection, solving, cookie cache
 │   ├── http/                # HTTP server (FastAPI)
-│   ├── tools/               # MCP tools (fetch, reddit)
-│   ├── content/             # Content processing
-│   │   ├── html.py          # Generic HTML→markdown pipeline
-│   │   ├── github.py        # GitHub cleanup, URL transforms, file trees
-│   │   ├── reddit.py        # Reddit cleanup, URL transforms, formatting
-│   │   ├── hackernews.py    # Hacker News cleanup, story reformatter
-│   │   ├── medium.py        # Medium cleanup, custom domain detection
-│   │   ├── huggingface.py   # Hugging Face cleanup, DatasetViewer removal
-│   │   ├── stackoverflow.py # Stack Overflow/SE cleanup, user card stripping
-│   │   ├── redflagdeals.py  # RedFlagDeals forum cleanup
-│   │   ├── forums.py        # Generic forum support (XenForo/vBulletin/phpBB/Discourse)
-│   │   ├── wikipedia.py     # Wikipedia cleanup (edit buttons, navboxes)
-│   │   ├── fetcher.py       # HTTP fetching (curl_cffi)
-│   │   ├── pdf.py           # PDF text extraction
-│   │   └── url.py           # URL validation, SSRF protection
+│   ├── tools/               # MCP tools (fetch, search, reddit)
+│   ├── content/             # Content processing (HTML→markdown, site-specific cleanup)
+│   ├── search/              # Web search (Google + DuckDuckGo)
 │   ├── cache/               # Response caching
 │   ├── queue/               # Reddit rate limiting
 │   └── security/            # SSRF, crypto, XSS
@@ -271,8 +311,6 @@ fetchaller-mcp/
 └── README.md                # This file
 ```
 
-`html.py` contains only the generic pipeline (universal junk removal, markdownify, whitespace cleanup). Site-specific logic lives in its own module — each exports CSS selectors, soup-level cleanup, and markdown post-processing that `html.py` dispatches to based on URL.
-
 ## Dependencies
 
 - `mcp` - MCP protocol SDK
@@ -281,6 +319,7 @@ fetchaller-mcp/
 - `beautifulsoup4` + `markdownify` - HTML to markdown
 - `pdfplumber` - PDF text extraction
 - `pyjwt` - OAuth tokens
+- `pydoll-python` - Headful Chrome automation for bot challenge bypass
 
 ## Testing
 

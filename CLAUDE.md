@@ -39,13 +39,15 @@ If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify agai
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
 - `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP
+- `test_botfighter.py` — ACW solver (known arg1, deterministic, edge cases), challenge detection (all 7 WAF types + priority + negative cases), cookie cache (set/get/evict, CF expiry, persistence round-trip, corrupt file handling), solver dispatch (lock busy, browser fail, CF/Akamai/generic routing)
 - Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
 
 Test URLs for benchmarking:
 - Reddit: `https://www.reddit.com/r/homelab/`, `https://old.reddit.com/r/homelab/`
 - Scrapers often blocked: `https://news.ycombinator.com/`, `https://www.nytimes.com/`
 - Simple: `https://example.com/`, `https://httpbin.org/html`
-- Cloudflare protected: `https://apollomapping.com`
+- Cloudflare protected: `https://apollomapping.com`, `https://www.miata.net/`, `https://beyond.ca/`
+- Cloudflare + geo-redirect: `https://www.glassdoor.com/`
 
 ## Web Fetching
 
@@ -200,6 +202,12 @@ Each site module exports the same interface: `is_<site>(url)`, `SELECTORS_LIST`,
 - **`models.py`** — `SearchResult` dataclass (title, url, snippet).
 - **`tools/search.py`** — MCP tool wrapper calling `search()`.
 
+## Bot Challenge Bypass (Botfighter)
+
+`src/fetchaller/botfighter.py` — Transparent bot challenge detection and solving. ACW (Alibaba Cloud WAF) solved inline with pure Python (~1ms). All others (Cloudflare, Akamai, DataDome, PerimeterX, Imperva, Kasada) use PyDoll headful Chrome with Xvfb. Cookies cached per-domain with optional JSON persistence (auto-detects `/app/data/` in Docker). Geo-redirects handled via `final_url` dual-domain caching.
+
+Key rules: cached cookies MUST use pinned UA + impersonate (no rotation). CF detects headless — always use Xvfb or offscreen window. Extract ALL cookies from browser (sites layer multiple protections).
+
 ## Development & Testing
 
 **CRITICAL**: When testing changes to this MCP server, you MUST use the local version, not the production Docker image.
@@ -308,6 +316,8 @@ docker compose up -d
 | `MCP_SERVER_URL` | `http://localhost:$PORT` | Public URL for OAuth redirects |
 | `JWT_SECRET` | (derived) | Secret for OAuth JWTs (set in production) |
 | `RATE_LIMIT_REQUESTS` | 100 | Requests per minute per IP |
+| `CHROME_IDLE_TIMEOUT` | 60 | Minutes before idle Chrome shuts down |
+| `COOKIE_CACHE_PATH` | auto | Cookie persistence path. Auto-detects `/app/data/` in Docker. |
 
 ## Claude.ai Custom Connector (OAuth)
 

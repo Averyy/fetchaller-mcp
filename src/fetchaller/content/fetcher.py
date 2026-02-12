@@ -91,6 +91,7 @@ class ContentFetcher:
         self.retry_config = retry_config or RetryConfig()
         self._browser = random.choice(BROWSER_FINGERPRINTS)
         self._session: AsyncSession | None = None
+        self._identity_pinned: bool = False
 
     async def _get_session(self) -> AsyncSession:
         """Get or create async session."""
@@ -99,9 +100,13 @@ class ContentFetcher:
         return self._session
 
     def rotate_fingerprint(self) -> None:
-        """Rotate to a different browser fingerprint (call after 403/block)."""
+        """Rotate to a different browser fingerprint (call after 403/block).
+
+        Skipped when identity is pinned (using cached botfighter cookies).
+        """
+        if self._identity_pinned:
+            return
         old = self._browser
-        # Pick a different fingerprint
         available = [f for f in BROWSER_FINGERPRINTS if f != old]
         self._browser = random.choice(available) if available else old
 
@@ -227,6 +232,41 @@ class ContentFetcher:
             final_url=str(response.url),
             headers=dict(response.headers),
         )
+
+    async def apply_cookies(self, cookies: list[dict]) -> None:
+        """Set cookies on the session for botfighter replay."""
+        session = await self._get_session()
+        for c in cookies:
+            session.cookies.set(
+                c.get("name", ""),
+                c.get("value", ""),
+                domain=c.get("domain"),
+                path=c.get("path", "/"),
+            )
+
+    async def set_cookie(self, name: str, value: str, domain: str | None = None) -> None:
+        """Set a single cookie on the session."""
+        session = await self._get_session()
+        session.cookies.set(name, value, domain=domain)
+
+    @property
+    def current_impersonate(self) -> str:
+        """Current TLS fingerprint string (public API for botfighter)."""
+        return self._browser
+
+    def pin_identity(self, impersonate: str) -> None:
+        """Pin TLS fingerprint (suppress rotation)."""
+        self._browser = impersonate
+        self._identity_pinned = True
+
+    def unpin_identity(self) -> None:
+        """Allow normal fingerprint rotation again."""
+        self._identity_pinned = False
+
+    async def clear_cookies(self) -> None:
+        """Clear all cookies from the session (call after botfighter handling)."""
+        if self._session:
+            self._session.cookies.clear()
 
     async def close(self) -> None:
         """Close the session."""

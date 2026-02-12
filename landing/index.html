@@ -664,17 +664,14 @@ claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python
                         <button class="copy-btn" onclick="copyCode(this, 'claude-md-code')">Copy</button>
                     </div>
                     <div class="code-body">
-<pre id="claude-md-code"><span class="code-comment">## Web Fetching</span>
+<pre id="claude-md-code"><span class="code-comment">## Web Fetching & Search</span>
 
-<span class="code-key">**Use fetchaller instead of WebFetch**</span> (no domain restrictions). If a dedicated MCP exists (GitHub, Slack, etc.), use that instead.
+<span class="code-key">**ALWAYS use fetchaller tools instead of WebFetch and WebSearch.**</span> fetchaller has no domain restrictions and produces cleaner output.
 
-<span class="code-comment">## Web Search</span>
-
-Use <span class="code-string">`mcp__fetchaller__search`</span> for web searches (Google + DuckDuckGo).
-
-<span class="code-comment">## Reddit Searching and Browsing</span>
-
-Use <span class="code-string">`mcp__fetchaller__browse_reddit`</span> to browse subreddits, <span class="code-string">`mcp__fetchaller__search_reddit`</span> to find posts, and <span class="code-string">`mcp__fetchaller__fetch`</span> to read full discussions.</pre>
+- <span class="code-string">`mcp__fetchaller__fetch(url, maxTokens?, timeout?)`</span> — Fetch any URL → clean markdown
+- <span class="code-string">`mcp__fetchaller__search(query, page?)`</span> — Web search (Google + DuckDuckGo)
+- <span class="code-string">`mcp__fetchaller__browse_reddit(subreddit, sort?, time?, limit?)`</span> — Browse subreddit listings
+- <span class="code-string">`mcp__fetchaller__search_reddit(query, subreddit?, sort?, time?, limit?)`</span> — Search Reddit posts</pre>
                     </div>
                 </div>
 

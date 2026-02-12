@@ -48,6 +48,10 @@ class Config:
     reddit_backoff_rate_limit: int = 60  # After 429
     reddit_backoff_blocked: int = 300  # After 403
 
+    # Botfighter settings
+    chrome_idle_timeout: int = 60  # Minutes before idle Chrome shuts down
+    cookie_cache_path: str | None = None  # Path to persist bot cookies (JSON)
+
     # Retry settings - tuned for fast failure detection
     # With 1 retry, max delay is 0.5s (vs 7s with old defaults)
     retry_max_attempts: int = 1
@@ -103,6 +107,12 @@ def load_config() -> Config:
         reddit_proactive_threshold=_int("REDDIT_PROACTIVE_THRESHOLD", 8),
         reddit_backoff_rate_limit=_int("REDDIT_BACKOFF_RATE_LIMIT", 60),
         reddit_backoff_blocked=_int("REDDIT_BACKOFF_BLOCKED", 300),
+        # Botfighter
+        chrome_idle_timeout=_int("CHROME_IDLE_TIMEOUT", 60),
+        cookie_cache_path=os.environ.get(
+            "COOKIE_CACHE_PATH",
+            "/app/data/cookies.json" if os.path.isdir("/app/data") else None,
+        ),
         # Retry
         retry_max_attempts=_int("RETRY_MAX_ATTEMPTS", 1),
         retry_initial_delay=_float("RETRY_INITIAL_DELAY", 0.5),
