@@ -22,6 +22,11 @@ from .config import Config
 
 logger = logging.getLogger(__name__)
 
+# Suppress expected PyDoll Turnstile timeout errors (JS-only CF challenges
+# never show the visual checkbox, so the Turnstile bypass always times out).
+logging.getLogger("pydoll.elements.mixins.find_elements_mixin").setLevel(logging.CRITICAL)
+logging.getLogger("pydoll.browser.tab").setLevel(logging.CRITICAL)
+
 # Max cookie cache entries (LRU eviction when exceeded) [#27]
 _MAX_CACHE_ENTRIES = 200
 # Default TTL for non-CF entries (24 hours) [#27]
@@ -574,25 +579,44 @@ class ChallengeSolver:
             return None
 
     async def _solve_cloudflare(self, tab, url: str, timeout: float = 30) -> dict | None:
-        """Solve Cloudflare challenge using PyDoll's built-in Turnstile bypass."""
+        """Solve Cloudflare challenge using PyDoll's built-in Turnstile bypass.
+
+        Runs the Turnstile bypass as a cancellable task while polling for
+        cf_clearance concurrently. JS-only challenges (majority) resolve in
+        ~5s without needing the Turnstile bypass; cancelling early avoids
+        a 30s timeout waiting for a checkbox that doesn't exist.
+        """
         _log(f"Solving Cloudflare challenge for {_sanitize_url(url)}")
-        bypass_succeeded = False
-        try:
+
+        async def _run_bypass():
             async with tab.expect_and_bypass_cloudflare_captcha(time_to_wait_captcha=timeout):
                 await tab.go_to(url, timeout=int(timeout))
-            bypass_succeeded = True
-        except Exception:
-            logger.exception("Cloudflare bypass failed")
 
-        # [#24] Only poll if bypass didn't fail; use shorter timeout on failure
-        poll_timeout = timeout if bypass_succeeded else min(5, timeout)
-        deadline = time.monotonic() + poll_timeout
+        # Run Turnstile bypass in background (cancellable)
+        bypass_task = asyncio.create_task(_run_bypass())
+
+        # Poll for cf_clearance concurrently — cancel bypass when found
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            cookies = await tab.get_cookies()
-            if any(c.get("name") == "cf_clearance" for c in cookies):
-                _log("cf_clearance cookie obtained")
+            if bypass_task.done():
                 break
-            await asyncio.sleep(1)
+            try:
+                cookies = await tab.get_cookies()
+                if any(c.get("name") == "cf_clearance" for c in cookies):
+                    _log("cf_clearance cookie obtained")
+                    bypass_task.cancel()
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+
+        # Clean up bypass task
+        if not bypass_task.done():
+            bypass_task.cancel()
+        try:
+            await bypass_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
         return await self._extract_result(tab)
 
