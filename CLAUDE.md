@@ -318,6 +318,8 @@ docker compose up -d
 | `RATE_LIMIT_REQUESTS` | 100 | Requests per minute per IP |
 | `CHROME_IDLE_TIMEOUT` | 60 | Minutes before idle Chrome shuts down |
 | `COOKIE_CACHE_PATH` | auto | Cookie persistence path. Auto-detects `/app/data/` in Docker. |
+| `PUID` | 99 | User ID for file permissions (99 = Unraid `nobody`) |
+| `PGID` | 100 | Group ID for file permissions (100 = Unraid `users`) |
 
 ## Claude.ai Custom Connector (OAuth)
 

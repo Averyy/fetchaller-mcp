@@ -16,6 +16,8 @@ services:
       - MCP_API_KEY=${MCP_API_KEY}
       - MCP_SERVER_URL=${MCP_SERVER_URL:-http://localhost:6000}
       - CHROME_IDLE_TIMEOUT=${CHROME_IDLE_TIMEOUT:-60}
+      - PUID=${PUID:-99}
+      - PGID=${PGID:-100}
     volumes:
       - cookie-data:/app/data
     healthcheck:

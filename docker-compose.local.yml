@@ -21,6 +21,8 @@ services:
       - MCP_API_KEY=test-api-key-local
       - MCP_SERVER_URL=http://localhost:6000
       - CHROME_IDLE_TIMEOUT=60
+      - PUID=99
+      - PGID=100
       # Uncomment to test with separate JWT secret:
       # - JWT_SECRET=test-jwt-secret-local
     healthcheck:

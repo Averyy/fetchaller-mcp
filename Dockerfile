@@ -2,13 +2,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install curl for healthcheck, chromium + xvfb for botfighter, and create non-root user
+# Install curl for healthcheck, chromium + xvfb for botfighter, gosu for entrypoint, and create non-root user
 RUN apt-get update && apt-get install -y \
     curl \
     chromium \
     xvfb \
+    gosu \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -s /bin/false appuser
+    && groupadd -g 100 -o appuser \
+    && useradd -r -s /bin/false -u 99 -g appuser appuser
 
 # Install uv for fast package management
 RUN pip install --no-cache-dir uv
@@ -26,8 +28,10 @@ RUN mkdir -p /app/data
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
 
-# Switch to non-root user
-USER appuser
+# Entrypoint fixes volume permissions then drops to appuser
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Environment variables with defaults
 ENV HTTP_PORT=6000
