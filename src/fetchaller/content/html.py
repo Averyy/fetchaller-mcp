@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
+from . import amazon as _amazon
 from . import forums as _forums
 from . import github as _github
 from . import hackernews as _hackernews
@@ -19,6 +20,7 @@ from . import medium as _medium
 from . import reddit as _reddit
 from . import redflagdeals as _redflagdeals
 from . import stackoverflow as _stackoverflow
+from . import ti as _ti
 from . import wikipedia as _wikipedia
 
 # ---------------------------------------------------------------------------
@@ -82,6 +84,7 @@ _JUNK_SELECTORS_LIST = [
 
 # Pre-combined CSS selectors per site (single-pass removal, much faster)
 _JUNK_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST)
+_JUNK_AND_AMAZON_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _amazon.SELECTORS_LIST)
 _JUNK_AND_REDDIT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _reddit.SELECTORS_LIST)
 _JUNK_AND_HACKERNEWS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _hackernews.SELECTORS_LIST)
 _JUNK_AND_GITHUB_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _github.SELECTORS_LIST)
@@ -177,11 +180,14 @@ def _detect_site(
 ) -> str | None:
     """Detect which site a URL belongs to.
 
-    Returns a site key string ('reddit', 'hackernews', 'github', 'huggingface',
-    'stackoverflow', 'medium', 'wikipedia') or None for generic pages.
+    Returns a site key string ('amazon', 'reddit', 'hackernews', 'github',
+    'huggingface', 'stackoverflow', 'medium', 'wikipedia') or None for
+    generic pages.
     """
     if is_reddit:
         return "reddit"
+    if url and _amazon.is_amazon(url):
+        return "amazon"
     if url and _hackernews.is_hackernews(url):
         return "hackernews"
     if url and _github.is_github(url):
@@ -194,6 +200,8 @@ def _detect_site(
         return "stackoverflow"
     if url and _medium.is_medium(url):
         return "medium"
+    if url and _ti.is_ti(url):
+        return "ti"
     if url and _wikipedia.is_wikipedia(url):
         return "wikipedia"
     # HTML-based fallback for Medium custom domains
@@ -210,6 +218,7 @@ def _detect_site(
 
 # Map site keys to pre-combined CSS selectors
 _SITE_SELECTORS = {
+    "amazon": _JUNK_AND_AMAZON_SELECTOR,
     "reddit": _JUNK_AND_REDDIT_SELECTOR,
     "hackernews": _JUNK_AND_HACKERNEWS_SELECTOR,
     "github": _JUNK_AND_GITHUB_SELECTOR,
@@ -249,6 +258,10 @@ def clean_html(
                 noscript.unwrap()
                 break
 
+    # Amazon: extract related products before CSS selectors remove sims-* sections
+    if site == "amazon":
+        _amazon.extract_related_products(soup)
+
     # Single-pass removal using combined CSS selector
     selector = _SITE_SELECTORS.get(site, _JUNK_SELECTOR)
     for element in soup.select(selector):
@@ -258,7 +271,9 @@ def clean_html(
     _strip_junk_links(soup)
 
     # Site-specific soup-level cleanup
-    if site == "hackernews":
+    if site == "amazon":
+        _amazon.strip_amazon_junk(soup)
+    elif site == "hackernews":
         _hackernews.strip_hn_junk(soup)
     elif site == "github":
         _github.strip_github_junk(soup)
@@ -323,7 +338,9 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
     markdown = _EXCESSIVE_NEWLINES.sub("\n\n", markdown).strip()
 
     # Site-specific markdown post-processing (elif — a URL matches at most one site)
-    if site == "hackernews":
+    if site == "amazon":
+        markdown = _amazon.postprocess_amazon(markdown)
+    elif site == "hackernews":
         markdown = _hackernews.postprocess_hn(markdown)
     elif site == "github":
         markdown = _github.postprocess_github(markdown)
@@ -333,6 +350,8 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _stackoverflow.postprocess_stackoverflow(markdown)
     elif site == "medium":
         markdown = _medium.postprocess_medium(markdown)
+    elif site == "ti":
+        markdown = _ti.postprocess_ti(markdown)
     elif site == "redflagdeals":
         markdown = _redflagdeals.postprocess_rfd(markdown)
     elif site == "forum":

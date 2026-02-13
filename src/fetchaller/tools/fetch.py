@@ -16,6 +16,7 @@ from ..botfighter import (
 )
 from ..cache.response_cache import ResponseCache
 from ..config import Config
+from ..content.amazon import is_amazon_store
 from ..content.fetcher import ContentFetcher, FetchResult, RetryConfig
 from ..content.forums import (
     discover_feed_url,
@@ -30,6 +31,7 @@ from ..content.github import extract_github_file_listing, transform_github_url
 from ..content.html import html_to_markdown
 from ..content.pdf import extract_pdf
 from ..content.reddit import transform_reddit_url
+from ..content.ti import extract_ti_part_from_pdf_url, fetch_document_sections, is_ti_document_viewer
 from ..content.url import normalize_url
 from ..security.ssrf import is_private_host
 
@@ -80,6 +82,14 @@ def _quick_challenge_possible(result: FetchResult) -> bool:
         return True
     # CF header can appear on any status
     if result.headers.get("cf-mitigated") == "challenge":
+        return True
+    # Amazon captcha: status 200 but very small body (normal pages are 1-3M).
+    # Quick byte check avoids full decode for the common case.
+    if result.status_code == 200 and len(result.content) < 50_000 and (
+        b"ontinue shopping" in result.content and (
+            b"amazon" in result.content or b"Amazon" in result.content or b"amzn" in result.content
+        )
+    ):
         return True
     # ACW can appear on 200
     # Check cookie markers for Akamai/DataDome/PerimeterX/Imperva (non-200 with cookies)
@@ -317,6 +327,15 @@ async def fetch_url(
     if await is_private_host(hostname):
         return {"error": "Access to private/internal hosts is not allowed."}
 
+    # Amazon store pages are JS-rendered SPAs — return helpful message
+    if is_amazon_store(url):
+        return {
+            "error": "Amazon store/brand pages are JavaScript-rendered and not supported. "
+            "Use the search tool to find products by brand instead: "
+            "search('Brand Name products site:amazon.ca'). "
+            "Or fetch individual product pages directly (e.g. amazon.ca/dp/ASIN)."
+        }
+
     # Transform Reddit URLs
     reddit_result = transform_reddit_url(url)
     fetch_url_str = reddit_result.url
@@ -508,6 +527,32 @@ async def fetch_url(
 
         # PDF
         if "application/pdf" in content_type:
+            # TI datasheets: try HTML document viewer (much better for LLMs than PDF extraction)
+            ti_part = extract_ti_part_from_pdf_url(fetch_url_str)
+            if not ti_part and result.final_url:
+                ti_part = extract_ti_part_from_pdf_url(result.final_url)
+            if ti_part:
+                viewer_url = f"https://www.ti.com/document-viewer/{ti_part}/datasheet"
+                try:
+                    viewer_result = await active_fetcher.fetch(viewer_url, timeout=float(timeout))
+                    if viewer_result.status_code == 200:
+                        viewer_html = _decode_content(viewer_result.content, viewer_result.content_type.lower())
+                        combined = await fetch_document_sections(active_fetcher, viewer_html, float(timeout))
+                        if combined:
+                            markdown, _ = await html_to_markdown(combined, url=viewer_url)
+                            if cache and cache_key:
+                                cache.set(cache_key, markdown, "markdown",
+                                          cache_control=result.headers.get("cache-control"))
+                            content = truncate(markdown, max_tokens)
+                            _log(f"FETCH {url} -> TI doc viewer upgrade ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                            return {
+                                "content": f"[Upgraded from PDF to HTML datasheet]\n\n{content}",
+                                "content_type": "markdown",
+                                "url": viewer_url,
+                            }
+                except Exception:
+                    pass  # Fall through to PDF extraction
+
             pdf_result = await extract_pdf(result.content, config)
 
             if pdf_result.error:
@@ -588,6 +633,14 @@ async def fetch_url(
                                     return response
                         except Exception:
                             pass  # Fall through to normal HTML pipeline
+
+            # TI document viewer: reconstruct full datasheet from lazy-loaded sections.
+            # The initial HTML is just a TOC shell — actual content is fetched via ?raw=1.
+            effective_url = result.final_url or url
+            if is_ti_document_viewer(effective_url):
+                combined = await fetch_document_sections(active_fetcher, html, float(timeout))
+                if combined:
+                    html = combined
 
             # GitHub tree/repo pages: extract file listing from embedded JSON (additive).
             # The listing is prepended to the normal HTML→markdown result, which provides

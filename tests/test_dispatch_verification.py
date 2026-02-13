@@ -30,6 +30,26 @@ def _wrap(body_content: str, head: str = "") -> str:
 class TestSelectorDispatch:
     """For each site: pass HTML with a known CSS-targeted element, assert it's removed."""
 
+    def test_amazon_sponsored_removed(self):
+        html = _wrap(
+            '<div id="sp_detail">sponsored products junk</div>'
+            '<div id="feature-bullets"><ul><li>Great product</li></ul></div>',
+        )
+        soup, site = clean_html(html, url="https://www.amazon.ca/dp/B0D1XD1ZV3")
+        assert site == "amazon"
+        assert "sponsored products junk" not in soup.get_text()
+        assert "Great product" in soup.get_text()
+
+    def test_amazon_footer_removed(self):
+        html = _wrap(
+            '<div id="feature-bullets"><ul><li>Product feature</li></ul></div>'
+            '<div id="navFooter">footer links</div>',
+        )
+        soup, site = clean_html(html, url="https://www.amazon.com/dp/B123")
+        assert site == "amazon"
+        assert "footer links" not in soup.get_text()
+        assert "Product feature" in soup.get_text()
+
     def test_reddit_sidebar_removed(self):
         html = _wrap('<div class="side">sidebar junk</div><div class="content">real post</div>')
         soup, site = clean_html(html, is_reddit=True)
@@ -134,6 +154,16 @@ class TestSelectorDispatch:
 class TestPostprocessorDispatch:
     """For each site with a postprocessor: pass HTML that produces a pattern
     only the correct postprocessor removes."""
+
+    def test_amazon_feedback_block_removed(self):
+        """Amazon postprocessor removes 'Report an issue' links."""
+        html = _wrap(
+            '<p>Great product features</p>'
+            '<a href="?ref=dp#tellAmazon_feature_div">Report an issue with this product or seller</a>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.amazon.ca/dp/B0D1XD1ZV3")
+        assert "Report an issue" not in md
+        assert "Great product features" in md
 
     def test_github_issue_in_repo_removed(self):
         """GitHub postprocessor removes '#123 In org/repo;' patterns."""

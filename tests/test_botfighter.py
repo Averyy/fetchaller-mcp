@@ -11,6 +11,7 @@ from fetchaller.botfighter import (
     CookieCache,
     detect_challenge,
     is_acw_waf_challenge,
+    is_amazon_captcha,
     solve_acw_sc_v2,
 )
 
@@ -129,9 +130,51 @@ class TestDetectChallenge:
         body = "<html><script>var arg1='x'; acw_sc__v2</script></html>"
         assert detect_challenge(403, {}, body) == "acw"
 
+    def test_detects_amazon_captcha(self):
+        """Amazon rate-limit page: status 200, small body, 'Continue shopping' + Amazon markers."""
+        body = '<html><body>Continue shopping<a href="https://www.amazon.ca/">amazon.ca</a></body></html>'
+        assert detect_challenge(200, {}, body) == "amazon"
+
+    def test_amazon_requires_small_body(self):
+        """Normal Amazon product pages (1-3M chars) must NOT trigger Amazon captcha detection."""
+        body = "Continue shopping amazon.ca " + "x" * 60_000
+        assert detect_challenge(200, {}, body) is None
+
+    def test_amazon_requires_amazon_marker(self):
+        """Small page with 'Continue shopping' but no Amazon markers is not Amazon captcha."""
+        body = "<html><body>Continue shopping on our store</body></html>"
+        assert detect_challenge(200, {}, body) is None
+
     def test_cloudflare_takes_priority_over_unknown(self):
         """CF header detection takes priority over generic JS challenge."""
         assert detect_challenge(403, {"cf-mitigated": "challenge"}, "<script>x</script>") == "cloudflare"
+
+
+# ── Amazon Captcha Detection ─────────────────────────────────────────────────
+
+
+class TestAmazonCaptcha:
+    def test_detects_captcha_with_amazon_domain(self):
+        body = '<html><body>Sorry, we need to make sure you\'re not a robot. <a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+        assert is_amazon_captcha(body) is True
+
+    def test_detects_captcha_with_amzn_marker(self):
+        body = '<html><body>amzn.to<br>Continue shopping</body></html>'
+        assert is_amazon_captcha(body) is True
+
+    def test_detects_validate_captcha_url(self):
+        body = '<html><body><form action="/errors/validateCaptcha">Continue shopping</form></body></html>'
+        assert is_amazon_captcha(body) is True
+
+    def test_rejects_normal_product_page(self):
+        """Normal Amazon pages are > 50K and should not trigger."""
+        body = "Continue shopping amazon " + "x" * 60_000
+        assert is_amazon_captcha(body) is False
+
+    def test_rejects_non_amazon_small_page(self):
+        """Small non-Amazon page with 'continue shopping' should not trigger."""
+        body = "<html><body>Continue shopping at our store</body></html>"
+        assert is_amazon_captcha(body) is False
 
 
 # ── Cookie Cache ──────────────────────────────────────────────────────────────
@@ -376,6 +419,19 @@ class TestChallengeSolver:
         with patch.object(solver, "_ensure_browser", return_value=mock_tab):
             with patch.object(solver, "_solve_akamai", return_value={"cookies": expected_cookies, "user_agent": "UA"}):
                 result = await solver.solve("https://example.com", "akamai")
+                assert result["cookies"] == expected_cookies
+                assert result["impersonate"] == "chrome131"
+
+    @pytest.mark.asyncio
+    async def test_dispatches_amazon(self):
+        """Amazon challenges dispatch to _solve_amazon."""
+        solver = ChallengeSolver()
+        mock_tab = AsyncMock()
+        expected_cookies = [{"name": "session-id", "value": "123"}]
+
+        with patch.object(solver, "_ensure_browser", return_value=mock_tab):
+            with patch.object(solver, "_solve_amazon", return_value={"cookies": expected_cookies, "user_agent": "UA"}):
+                result = await solver.solve("https://www.amazon.ca/dp/B123", "amazon")
                 assert result["cookies"] == expected_cookies
                 assert result["impersonate"] == "chrome131"
 

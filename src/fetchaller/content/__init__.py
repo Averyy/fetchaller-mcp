@@ -3,6 +3,10 @@
 Module layout:
 - html.py       — Generic HTML→markdown pipeline (universal junk selectors,
                    markdownify, whitespace cleanup). Dispatches to site modules.
+- amazon.py    — Amazon: CSS selectors for sponsored products, buy box noise,
+                   quick-view overlay, footer; soup cleanup for form inputs,
+                   translate/report links; regex post-processing for tracking
+                   URLs, feedback blocks, footer sections. All Amazon TLDs.
 - github.py     — GitHub: CSS selectors, soup cleanup, regex post-processing,
                    URL transforms, file tree extraction.
 - reddit.py     — Reddit: CSS selectors, URL transforms, post formatting.

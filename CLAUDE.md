@@ -40,6 +40,7 @@ If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify agai
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
 - `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP
 - `test_botfighter.py` — ACW solver (known arg1, deterministic, edge cases), challenge detection (all 7 WAF types + priority + negative cases), cookie cache (set/get/evict, CF expiry, persistence round-trip, corrupt file handling), solver dispatch (lock busy, browser fail, CF/Akamai/generic routing)
+- `test_amazon_postprocessor.py` — Amazon URL detection and regex postprocessor unit tests
 - Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
 
 Test URLs for benchmarking:
@@ -179,6 +180,7 @@ Reddit allows ~10 unauthenticated API requests per minute. The browse/search too
 
 `src/fetchaller/content/` handles HTML→markdown conversion:
 
+- **`amazon.py`** — Amazon (all TLDs): ~30 CSS selectors (sponsored carousels, buy box noise, quick-view overlay, rating histograms, aspect tags, footer, tracking pixels), soup cleanup (hidden inputs, translate/report links), ~30 regex post-processors for tracking URLs, feedback blocks, footer sections, delivery prompts. Covers amazon.com, .ca, .co.uk, .de, .fr, .it, .es, .co.jp, .com.au, .in, etc.
 - **`html.py`** — Generic pipeline only. Universal junk selectors (nav, footer, ads, cookie banners, modals), markdownify conversion, whitespace cleanup. Dispatches to site modules based on URL.
 - **`github.py`** — GitHub: ~30 CSS selectors, soup cleanup, ~30 regex post-processors, URL transforms, file tree extraction.
 - **`reddit.py`** — Reddit: ~47 CSS selectors for old.reddit.com, URL transforms (www→old), post formatting.

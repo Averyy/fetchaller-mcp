@@ -1,7 +1,8 @@
 """Bot challenge detection, cookie caching, and solving.
 
 Handles Cloudflare, Akamai, DataDome, PerimeterX, Imperva, Kasada,
-Alibaba Cloud WAF (acw_sc__v2), and unknown JS challenges.
+Alibaba Cloud WAF (acw_sc__v2), Amazon rate-limit captcha, and
+unknown JS challenges.
 
 ACW challenges are solved inline with pure Python (~1ms).
 All other challenges use PyDoll (persistent headless Chrome).
@@ -89,12 +90,31 @@ def solve_acw_sc_v2(html: str) -> str | None:
 # ── Challenge Detection ───────────────────────────────────────────────────────
 
 
+def is_amazon_captcha(body: str) -> bool:
+    """Detect Amazon rate-limit / captcha page.
+
+    Amazon serves a 200 OK with a small page (~5-15K) containing just a
+    "Continue shopping" button when it rate-limits or suspects bot activity.
+    Normal product pages are 1-3M chars, so body size is a reliable signal.
+
+    Checks for Amazon-specific markers to avoid false positives on non-Amazon
+    small pages that happen to contain "continue shopping".
+    """
+    if len(body) >= 50_000:
+        return False
+    body_lower = body.lower()
+    if "continue shopping" not in body_lower:
+        return False
+    # Require Amazon-specific markers (any one is sufficient)
+    return "amazon" in body_lower or "amzn" in body_lower or "/errors/validatecaptcha" in body_lower
+
+
 def detect_challenge(status_code: int, headers: dict[str, str], body: str) -> str | None:
     """Detect bot challenge type from HTTP response.
 
     Returns:
         Challenge type string ('acw', 'cloudflare', 'akamai', 'datadome',
-        'perimeterx', 'imperva', 'kasada', 'unknown') or None.
+        'perimeterx', 'imperva', 'kasada', 'amazon', 'unknown') or None.
     """
     set_cookie = headers.get("set-cookie", "")
 
@@ -153,6 +173,10 @@ def detect_challenge(status_code: int, headers: dict[str, str], body: str) -> st
     # Kasada
     if status_code == 429 and any(h.lower().startswith("x-kpsdk") for h in headers):
         return "kasada"
+
+    # Amazon rate-limit / captcha (status 200, small page with "Continue shopping")
+    if status_code == 200 and is_amazon_captcha(body):
+        return "amazon"
 
     # Generic fallback — unidentified 403/429 with JS challenge page
     if status_code in (403, 429) and body_lower is not None and "<script" in body_lower and len(body) < 50_000:
@@ -414,6 +438,8 @@ class ChallengeSolver:
                     result = await self._solve_cloudflare(tab, url)
                 elif challenge_type == "akamai":
                     result = await self._solve_akamai(tab, url)
+                elif challenge_type == "amazon":
+                    result = await self._solve_amazon(tab, url)
                 else:
                     result = await self._solve_generic(tab, url)
 
@@ -638,6 +664,76 @@ class ChallengeSolver:
                 _log("Valid _abck cookie detected")
                 break
             await asyncio.sleep(1)
+
+        return await self._extract_result(tab)
+
+    async def _solve_amazon(self, tab, url: str, timeout: float = 15) -> dict | None:
+        """Solve Amazon rate-limit by clicking 'Continue shopping' and waiting for the real page."""
+        _log(f"Solving Amazon captcha for {_sanitize_url(url)}")
+        try:
+            await tab.go_to(url, timeout=int(timeout))
+        except Exception:
+            logger.exception("Amazon page load failed")
+            return await self._extract_result(tab)
+
+        # Wait for the page to settle
+        await asyncio.sleep(2)
+
+        # Try to click "Continue shopping" link/button
+        try:
+            # Amazon's continue page has an <a> or <input> with "Continue shopping"
+            clicked = await tab.execute_script("""
+                // Try <a> links first
+                for (const a of document.querySelectorAll('a')) {
+                    if (a.textContent.trim().toLowerCase().includes('continue shopping')) {
+                        a.click();
+                        return 'clicked_link';
+                    }
+                }
+                // Try <input type="submit"> buttons
+                for (const btn of document.querySelectorAll('input[type="submit"], button')) {
+                    if ((btn.value || btn.textContent || '').toLowerCase().includes('continue')) {
+                        btn.click();
+                        return 'clicked_button';
+                    }
+                }
+                // Try form submission directly
+                const form = document.querySelector('form');
+                if (form) {
+                    form.submit();
+                    return 'submitted_form';
+                }
+                return 'nothing_found';
+            """, return_by_value=True)
+            action = clicked.get("result", {}).get("result", {}).get("value", "unknown")
+            _log(f"Amazon captcha action: {action}")
+        except Exception:
+            logger.exception("Failed to click Amazon continue button")
+
+        # Wait for navigation to complete and real page to load
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(2)
+            try:
+                # Check if we've navigated to the real page (large HTML)
+                page_len = await tab.execute_script(
+                    "return document.documentElement.outerHTML.length",
+                    return_by_value=True,
+                )
+                html_size = page_len.get("result", {}).get("result", {}).get("value", 0)
+                if html_size > 100_000:
+                    _log(f"Amazon page loaded ({html_size:,} chars)")
+                    break
+                # Also check if "continue shopping" is no longer on the page
+                has_continue = await tab.execute_script(
+                    "return document.body.textContent.toLowerCase().includes('continue shopping')",
+                    return_by_value=True,
+                )
+                if not has_continue.get("result", {}).get("result", {}).get("value", True):
+                    _log("Amazon captcha page cleared")
+                    break
+            except Exception:
+                pass
 
         return await self._extract_result(tab)
 

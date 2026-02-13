@@ -31,6 +31,21 @@ def _empty_soup() -> BeautifulSoup:
 class TestDetectSiteByUrl:
     """Every site must be detected by its URL alone (no soup needed)."""
 
+    def test_amazon_ca(self):
+        assert _detect_site("https://www.amazon.ca/dp/B0D1XD1ZV3", False) == "amazon"
+
+    def test_amazon_com(self):
+        assert _detect_site("https://www.amazon.com/dp/B0D1XD1ZV3", False) == "amazon"
+
+    def test_amazon_co_uk(self):
+        assert _detect_site("https://www.amazon.co.uk/dp/B0D1XD1ZV3", False) == "amazon"
+
+    def test_amazon_de(self):
+        assert _detect_site("https://www.amazon.de/dp/B0D1XD1ZV3", False) == "amazon"
+
+    def test_amazon_gp_product(self):
+        assert _detect_site("https://www.amazon.ca/gp/product/B08KTM4SNY", False) == "amazon"
+
     def test_hackernews(self):
         assert _detect_site("https://news.ycombinator.com/", False) == "hackernews"
 
