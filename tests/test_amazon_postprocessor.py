@@ -153,11 +153,153 @@ class TestPostprocessAmazon:
         assert "VIDEOS" not in result
         assert "360° VIEW" not in result
 
-    def test_removes_tracking_images(self):
-        md = "Content\n![](https://m.media-amazon.com/images/G/15/gno/sprites/abc.png)\nMore"
+    def test_removes_sponsored_products_section(self):
+        """Entire 'Products related to this item' sponsored section is removed."""
+        md = (
+            "## Product Description\n\nGreat product\n\n---\n\n"
+            "## Products related to this item\n\n"
+            "[Sponsored](#sp_detail_feedbackForm)\n"
+            "1. [![Other Product](img.jpg) Other Product](/dp/B123)\n"
+            "   $24.99\n"
+            "2. [![Another](img.jpg) Another Product](/dp/B456)\n"
+            "   $19.99\n\n"
+            "---\n\n## Customer reviews\n\nGreat stuff"
+        )
         result = postprocess_amazon(md)
-        assert "sprites" not in result
-        assert "Content" in result
+        assert "Products related to this item" not in result
+        assert "Other Product" not in result
+        assert "Product Description" in result
+        assert "Customer reviews" in result
+
+    def test_removes_bought_together_section(self):
+        """'BRAND products customers bought together' section is removed."""
+        md = (
+            "Product info\n\n"
+            "## BSEEN products customers bought together\n\n"
+            "This item: Some collar $14.99\n"
+            "+\n"
+            "Another collar $16.99\n\n"
+            "---\n\n## Product Description"
+        )
+        result = postprocess_amazon(md)
+        assert "products customers bought together" not in result
+        assert "Product info" in result
+        assert "Product Description" in result
+
+    def test_removes_lower_price_form(self):
+        """'Found a lower price?' form section is removed."""
+        md = (
+            "Product details\n\n"
+            "Found a lower price? Let us know.\n\n"
+            "## Where did you see a lower price?\n\n"
+            "Price Availability\n"
+            "Website (Online)\n"
+            "URL *:\n"
+            "Store (Offline)\n"
+            "Submit Feedback\n"
+            "More content"
+        )
+        result = postprocess_amazon(md)
+        assert "Found a lower price" not in result
+        assert "Submit Feedback" not in result
+        assert "Product details" in result
+        assert "More content" in result
+
+    def test_deduplicates_price(self):
+        """Doubled prices like '$14.99$14.99' become '$14.99'."""
+        md = "$14.99$14.99\n\nWas: $15.99$15.99"
+        result = postprocess_amazon(md)
+        assert result.count("$14.99") == 1
+        assert result.count("$15.99") == 1
+
+    def test_deduplicates_ships_from(self):
+        """Duplicated 'Ships from' block is collapsed to one."""
+        md = (
+            "Ships from\n\n"
+            "[Amazon](/help)\n\n"
+            " Amazon \n\n"
+            "Ships from\n\n"
+            "[Amazon](/help)\n\n"
+            "More info"
+        )
+        result = postprocess_amazon(md)
+        # Should have exactly one "Ships from"
+        assert result.count("Ships from") == 1
+        assert "More info" in result
+
+    def test_keeps_brief_returns_removes_expanded(self):
+        """Keeps brief 'Eligible for Return...' line, removes expanded paragraph."""
+        md = (
+            "Returns\n\n"
+            "Eligible for Return, Refund or Replacement within 30 days of receipt \n\n"
+            "Eligible for Return, Refund or Replacement within 30 days of receipt\n\n"
+            "This item can be returned in its original condition for a full refund.\n\n"
+            "[Read full return policy](/gp/help/customer/display.html)\n"
+            "Next section"
+        )
+        result = postprocess_amazon(md)
+        assert "Eligible for Return" in result
+        assert "Read full return policy" not in result
+        assert "This item can be returned" not in result
+        assert "Next section" in result
+
+    def test_removes_payment_security_block(self):
+        """Entire Payment/Secure transaction block is removed (just boilerplate)."""
+        md = (
+            "Payment\n\n"
+            "Secure transaction \n\n"
+            "Your transaction is secure\n\n"
+            "We work hard to protect your security and privacy.\n\n"
+            "[Learn more](/gp/help/customer/display.html)\n"
+            "Next section"
+        )
+        result = postprocess_amazon(md)
+        assert "Payment" not in result
+        assert "Secure transaction" not in result
+        assert "We work hard" not in result
+        assert "Next section" in result
+
+    def test_removes_review_quote_blocks(self):
+        """Review aspect expansion quote blocks with [Read more] links are removed."""
+        md = (
+            "### Customers say\n\n"
+            "Great brightness overall.\n\n"
+            '"...so bright and the charge is lasting a long time..." [Read more](/gp/customer-reviews/R1UTM5NUI7BSPC)\n'
+            '"Easy to use. Love that it\'s rechargeable." [Read more](/gp/customer-reviews/R1NXVY32IQBCOC)\n'
+            "Next section"
+        )
+        result = postprocess_amazon(md)
+        assert "Read more" not in result
+        assert "so bright and the charge" not in result
+        assert "Great brightness overall" in result
+        assert "Next section" in result
+
+    def test_removes_helpful_and_report_links(self):
+        md = "Good review content\n[Helpful](/vote)\n[Report](/report)\nAnother review"
+        result = postprocess_amazon(md)
+        assert "[Helpful]" not in result
+        assert "[Report]" not in result
+        assert "Good review content" in result
+
+    def test_removes_rating_histogram(self):
+        md = "4.6 out of 5\n\n- [5 star4 star3 star2 star1 star5 star\n\n  75%14%8%1%2%75%](/product-reviews/B123)\n\nNext"
+        result = postprocess_amazon(md)
+        assert "5 star4 star" not in result
+        assert "4.6 out of 5" in result
+
+    def test_removes_video_descriptions(self):
+        md = "Product description\nThe video showcases the product in use.\nThe video guides you through setup.\nMerchant video\nMore content"
+        result = postprocess_amazon(md)
+        assert "The video showcases" not in result
+        assert "The video guides" not in result
+        assert "Merchant video" not in result
+        assert "Product description" in result
+
+    def test_removes_cardname_templates(self):
+        md = "Price info\n%cardName%\n${cardName} not available for the seller\nMore"
+        result = postprocess_amazon(md)
+        assert "cardName" not in result
+        assert "Price info" in result
 
     def test_preserves_product_content(self):
         """Core product content must survive all cleanup."""
@@ -175,3 +317,31 @@ class TestPostprocessAmazon:
         assert "Brand | Apple" in result
         assert "Great sound quality" in result
         assert "Active noise cancellation" in result
+
+    def test_preserves_delivery_info(self):
+        """Delivery dates and stock status must survive."""
+        md = (
+            "FREE delivery Tuesday, February 17\n\n"
+            "Or fastest delivery Tomorrow, February 14\n\n"
+            "In Stock\n"
+        )
+        result = postprocess_amazon(md)
+        assert "FREE delivery" in result
+        assert "In Stock" in result
+
+    def test_preserves_ships_from_sold_by(self):
+        """Single Ships from / Sold by should survive (only duplicates removed)."""
+        md = (
+            "Ships from\n\n"
+            "[Amazon](/help)\n\n"
+            " Amazon \n\n"
+            "Sold by\n\n"
+            "[bseenled](/seller)\n\n"
+            " bseenled \n\n"
+            "More info"
+        )
+        result = postprocess_amazon(md)
+        assert "Ships from" in result
+        assert "Sold by" in result
+        assert "Amazon" in result
+        assert "bseenled" in result

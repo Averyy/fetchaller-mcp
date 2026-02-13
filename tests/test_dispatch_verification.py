@@ -50,6 +50,48 @@ class TestSelectorDispatch:
         assert "footer links" not in soup.get_text()
         assert "Product feature" in soup.get_text()
 
+    def test_amazon_variant_swatches_removed(self):
+        html = _wrap(
+            '<div id="variation_color_name"><img src="swatch.jpg" />Green</div>'
+            '<div id="productOverview_feature_div">| Colour | Green |</div>',
+        )
+        soup, site = clean_html(html, url="https://www.amazon.ca/dp/B078W5SYLR")
+        assert site == "amazon"
+        assert "swatch.jpg" not in str(soup)
+        assert "Colour" in soup.get_text()
+
+    def test_amazon_breadcrumbs_removed(self):
+        html = _wrap(
+            '<div id="wayfinding-breadcrumbs_feature_div">Pet Supplies > Dogs</div>'
+            '<div id="productTitle">LED Dog Collar</div>',
+        )
+        soup, site = clean_html(html, url="https://www.amazon.ca/dp/B078W5SYLR")
+        assert site == "amazon"
+        assert "Pet Supplies" not in soup.get_text()
+        assert "LED Dog Collar" in soup.get_text()
+
+    def test_amazon_forms_removed(self):
+        """Forms (lower price, sign-in) are removed by soup cleanup."""
+        html = _wrap(
+            '<p>Product info</p>'
+            '<form id="priceForm"><input name="price"/><button>Submit</button></form>',
+        )
+        soup, site = clean_html(html, url="https://www.amazon.ca/dp/B078W5SYLR")
+        assert site == "amazon"
+        assert "Submit" not in soup.get_text()
+        assert "Product info" in soup.get_text()
+
+    def test_amazon_sspa_links_removed(self):
+        """Sponsored /sspa/click links are removed by soup cleanup."""
+        html = _wrap(
+            '<p>Product info</p>'
+            '<a href="/sspa/click?ie=UTF8&spc=abc">Sponsored Product</a>',
+        )
+        soup, site = clean_html(html, url="https://www.amazon.ca/dp/B078W5SYLR")
+        assert site == "amazon"
+        assert "Sponsored Product" not in soup.get_text()
+        assert "Product info" in soup.get_text()
+
     def test_reddit_sidebar_removed(self):
         html = _wrap('<div class="side">sidebar junk</div><div class="content">real post</div>')
         soup, site = clean_html(html, is_reddit=True)

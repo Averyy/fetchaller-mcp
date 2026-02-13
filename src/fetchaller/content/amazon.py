@@ -101,6 +101,23 @@ SELECTORS_LIST = [
     # --- Image block thumbnails (small 40px sprites, not the main image) ---
     "#imageBlock_feature_div",
 
+    # --- Variant picker swatches (thumbnail grids, not the selected value) ---
+    "#variation_color_name",
+    "#variation_size_name",
+    "#variation_style_name",
+
+    # --- Buy box action panel (buttons) ---
+    "#addToCart_feature_div",
+    "#buyNow_feature_div",
+    "#qualityBadge_feature_div",
+
+    # --- Gift options ---
+    "#gift-wrap_feature_div",
+
+    # --- Breadcrumbs (additional IDs on .ca / international) ---
+    "#wayfinding-breadcrumbs_feature_div",
+    '[data-feature-name="wayfinding-breadcrumbs"]',
+
     # --- Misc chrome ---
     "#above-dp-container",
     "#desktop-dp-ilm_feature_div_01",
@@ -112,6 +129,10 @@ SELECTORS_LIST = [
     "#companyCompliancePolicies_feature_div",
     "#fodcx_feature_div",
     "#nav-global-location-toaster-script-container",
+    "#dp-ads-center-promo_feature_div",
+    "#promoGrid_feature_div",
+    "#beautyRecommendations_feature_div",
+    "#browseToSearch_feature_div",
 
     # --- Review noise (histogram, aspect tags, image gallery, review images) ---
     "#cm_cr_dp_d_rating_histogram",
@@ -126,13 +147,6 @@ SELECTORS_LIST = [
     # --- Compatibility finder ---
     "#compatibilityContainerDesktop",
     "#compatibilityFinder_feature_div",
-
-    # --- Tracking pixel and sprite images ---
-    'img[src*="fls-na.amazon"]',
-    'img[src*="fls-eu.amazon"]',
-    'img[src*="/sprites/"]',
-    'img[src*="transparent-pixel"]',
-    'img[src*="grey-pixel"]',
 
     # --- "Report" links for reviews ---
     'a[href*="/hz/reviews-render/report-review"]',
@@ -168,14 +182,32 @@ SELECTORS_LIST = [
     "#sims-consolidated-1_feature_div",
     '[id^="sims-"]',
 
-    # --- Ad tracking images ---
-    'img[src*="aax-us-east"]',
-    'img[src*="aax-eu"]',
-
     # --- "Customers who viewed/bought this" carousels ---
     "#p13n-sims-content-1",
     "#p13n-sims-content-2",
     "#p13n-sims-content-3",
+    "#p13n-sims-content-4",
+    "#p13n-sims-content-5",
+
+    # --- Sponsored brand store ---
+    '[data-component-type="sp-brand-store"]',
+
+    # --- Product videos container ---
+    "#product-videos-container",
+
+    # --- Lower price / Tell-a-friend ---
+    "#tellAFriend_feature_div",
+    "#valuePick_feature_div",
+
+    # --- Review histogram and aspect tags ---
+    "#histogramTable",
+    '[data-hook="cr-summarization-attributes-list"]',
+    '[data-hook="cr-insights-widget-aspects"]',
+
+    # --- Sponsored product ad containers (data-component-type) ---
+    '[data-component-type="sp-detail"]',
+    '[data-component-type="sp-detail-2"]',
+    '[data-ad-details]',
 ]
 
 
@@ -256,6 +288,14 @@ def strip_amazon_junk(soup: BeautifulSoup) -> None:
     for el in soup.find_all("input"):
         el.decompose()
 
+    # Remove all <form> elements (lower price, sign-in, feedback forms)
+    for form in soup.find_all("form"):
+        form.decompose()
+
+    # Remove all <select> elements (quantity pickers, province dropdowns)
+    for sel in soup.find_all("select"):
+        sel.decompose()
+
     # Remove review "Report" links
     for a in soup.find_all("a", href=True):
         if "/hz/reviews-render/report-review" in a["href"]:
@@ -271,16 +311,29 @@ def strip_amazon_junk(soup: BeautifulSoup) -> None:
     for a in soup.find_all("a", string=re.compile(r"^Read more$")):
         a.decompose()
 
-    # Remove junk images (tracking pixels, ad beacons, grey placeholders)
-    for img in soup.find_all("img"):
-        src = img.get("src", "")
-        if any(s in src for s in ("grey-pixel", "transparent-pixel", "aax-us-east", "aax-eu")):
-            img.decompose()
+    # Remove sign-in links (wish list, feedback, etc.)
+    for a in soup.find_all("a", href=True):
+        if "/ap/signin" in a["href"]:
+            a.decompose()
 
     # Remove links with aax tracking URLs (sponsored ad links)
     for a in soup.find_all("a", href=True):
         if "aax-us-east" in a["href"] or "aax-eu" in a["href"]:
             a.decompose()
+
+    # Remove /sspa/click links (sponsored product links)
+    for a in soup.find_all("a", href=True):
+        if "/sspa/click" in a["href"]:
+            a.decompose()
+
+    # Replace images with alt text (variant names etc.) or remove entirely.
+    # LLMs can't view image URLs — pure waste tokens.
+    for img in soup.find_all("img"):
+        alt = (img.get("alt") or "").strip()
+        if alt and alt.lower() not in ("", "icon", "image", "logo"):
+            img.replace_with(alt)
+        else:
+            img.decompose()
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +383,6 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?:^|\n)#### Select to learn more\n"), "\n"),
     # "View Image Gallery" link
     (re.compile(r"(?:^|\n)View Image Gallery\n"), "\n"),
-    # "Customer image" placeholder
-    (re.compile(r"(?:^|\n)!\[Customer image\]\([^\)]*\)\n"), "\n"),
     # "Verified Purchase" labels (redundant noise)
     (re.compile(r"(?:^|\n)\s*Verified Purchase\n"), "\n"),
     # Bare "Back to top" link
@@ -356,8 +407,6 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?:^|\n)-\s*####\s*Image Unavailable\n(?:\s+[^\n]+\n)*"), "\n"),
     # "Currently unavailable" duplicate (keep first occurrence)
     (re.compile(r"(Currently unavailable\..*?\n)(?:.*?Currently unavailable\..*?\n)"), r"\1"),
-    # Amazon tracking/sprite images that survived CSS selectors
-    (re.compile(r"!\[\]\(https://(?:m\.media-amazon|images-na\.ssl-images-amazon)\.com/images/[GS]/[^\)]+\)\n?"), ""),
     # /sspa/click tracking URLs (sponsored product links that survived)
     (re.compile(r"\[([^\]]*)\]\(/sspa/click[^\)]*\)"), ""),
     # "Sign in to continue" prompt
@@ -373,8 +422,6 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?:^|\n)See all photos\n"), "\n"),
     # "Previous/Next slide" carousel navigation
     (re.compile(r"(?:^|\n)\*(?:Previous|Next) slide\*\n"), "\n"),
-    # Customer review thumbnail images (community-reviews)
-    (re.compile(r"\d+\.\s*!\[Customer Image[^\]]*\]\([^\)]+\)\n?"), ""),
     # "AI Generated from the text of customer reviews" label
     (re.compile(r"(?:^|\n)AI Generated from the text of customer reviews[^\n]*\n"), "\n"),
     # Aspect tags like "Quality(174)" on their own line (lookahead to avoid consuming \n)
@@ -391,10 +438,10 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?:^|\n)# Feedback\n"), "\n"),
     # "See more" expand links
     (re.compile(r"(?:^|\n)See more\n"), "\n"),
-    # Empty "Make a Size selection" prompt
-    (re.compile(r"(?:^|\n)Make a (?:Size|Colour|Style) selection\s*\n"), "\n"),
-    # Quantity selector "Quantity: 1  2  3  4  5"
-    (re.compile(r"(?:^|\n)Quantity:\s*(?:\d+\s*)+Quantity:\d+\n"), "\n"),
+    # Empty "Make a Size/Colour/Style Name selection" prompt
+    (re.compile(r"(?:^|\n)Make a (?:Size|Colour|Style)(?: Name)? selection\s*\n"), "\n"),
+    # "Colour Name: Green（70cm）" variant label (info is in specs table)
+    (re.compile(r"(?:^|\n)(?:Colour|Color|Size|Style)(?: Name)?:\s+[^\n]+\n"), "\n"),
     # "Add gift options" link
     (re.compile(r"(?:^|\n)Add gift options\n"), "\n"),
     # "Other sellers on Amazon" section
@@ -405,10 +452,16 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'\{"desktop_buybox_group_1":\[.*?\]\}'), ""),
     # "Purchase options and add-ons" header (empty after JSON removal)
     (re.compile(r"(?:^|\n)### Purchase options and add-ons\n"), "\n"),
-    # "Added to cart" / "Cart" / "Proceed to checkout" UI noise
+    # Buy box action buttons and cart UI noise
+    (re.compile(r"(?:^|\n)Add to cart\n"), "\n"),
+    (re.compile(r"(?:^|\n)Buy Now\n"), "\n"),
     (re.compile(r"(?:^|\n)×\s*\n"), "\n"),
     (re.compile(r"(?:^|\n)# Added to cart\n"), "\n"),
     (re.compile(r"(?:^|\n)Cart\s+Proceed to checkout\n"), "\n"),
+    # "Size chart" link
+    (re.compile(r"(?:^|\n)Size chart(?=\n|$)"), ""),
+    # Bare "Details" label (buy box expandable)
+    (re.compile(r"(?:^|\n)Details(?=\n|$)"), ""),
     # Empty "Safety and product resources" sections (header with no content)
     (re.compile(r"(?:^|\n)##? Safety and product resources\n+(?:###? Safety documents\n)?"), "\n"),
     # "Customers say" section header
@@ -417,13 +470,168 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"Generated from the text of customer reviews\n"), ""),
     # "Brand in this category on Amazon" section (sponsored brand carousel)
     (re.compile(r"(?:^|\n)##? (?:Brand in this category|Brands related to this category) on Amazon\n"), "\n"),
-    # Amazon ad tracking URLs (aax-us-east-retail-direct.amazon.com)
-    (re.compile(r"\[!\[[^\]]*\]\([^\)]*\)\]\(https://aax-[^\)]+\)\n?"), ""),
-    (re.compile(r"!\[[^\]]*\]\(https://aax-[^\)]+\)\n?"), ""),
     # "Sponsored" bare labels (not links)
     (re.compile(r"(?:^|\n)Sponsored\n"), "\n"),
-    # Huge aax tracking URL links (any remaining)
-    (re.compile(r"\[[^\]]*\]\(https://aax-us-east[^\)]+\)\n?"), ""),
+
+    # --- Section-level removals (biggest impact) ---
+
+    # "Products related to this item" sponsored sections (entire block to next --- or ##)
+    (re.compile(
+        r"(?:^|\n)## Products related to this item\n"
+        r"[\s\S]*?"
+        r"(?=\n---\n|\n## |\Z)"
+    ), "\n"),
+
+    # "BRAND products customers bought together" sections (entire block)
+    (re.compile(
+        r"(?:^|\n)## .+? products customers bought together\n"
+        r"[\s\S]*?"
+        r"(?=\n---\n|\n## |\Z)"
+    ), "\n"),
+
+    # "Found a lower price?" / "Where did you see a lower price?" form section
+    (re.compile(
+        r"(?:^|\n)Found a lower price\?[\s\S]*?Submit Feedback\n"
+    ), "\n"),
+
+    # "Where did you see a lower price?" section (variant heading)
+    (re.compile(
+        r"(?:^|\n)## Where did you see a lower price\?\n"
+        r"[\s\S]*?"
+        r"(?:Submit Feedback\n|(?=\n---\n|\n## |\Z))"
+    ), "\n"),
+
+    # --- Buy box chrome ---
+
+    # Duplicated price: "$14.99$14.99" → "$14.99"
+    (re.compile(r"\$(\d+\.\d{2})\$\1"), r"$\1"),
+    # Variant without dot separator: "$$14.9914.99" → "$14.99"
+    (re.compile(r"\$\$(\d+\.\d{2})\d+\.\d{2}"), r"$\1"),
+
+    # Per-count price noise: "($14.99$14.99 / count)" or "$14.99 per count($14.99$14.99 / count)"
+    (re.compile(r"\$\d+\.\d{2} per count\(\$\d+\.\d{2}\$\d+\.\d{2}\s*/\s*count\)"), ""),
+    (re.compile(r"\(\$\d+\.\d{2}\$\d+\.\d{2}\s*/\s*count\)"), ""),
+    # Per-count noise after dedup: "$14.99 per count($14.99 / count)" or bare "($14.99 / count)"
+    (re.compile(r"\$\d+\.\d{2} per count\(\$\d+\.\d{2}\s*/\s*count\)"), ""),
+    (re.compile(r"\(\$\d+\.\d{2}\s*/\s*count\)"), ""),
+    # Empty parens left after per-count removal
+    (re.compile(r"(?:^|\n)\(\)\s*\n"), "\n"),
+
+    # "Includes selected options" / "Includes initial monthly payment"
+    (re.compile(r"(?:^|\n)\s*Includes (?:selected options|initial monthly payment)[^\n]*\n"), "\n"),
+
+    # Ships from / Sold by DUPLICATE blocks (keeps first, removes the repeated copy)
+    (re.compile(
+        r"(Ships from\n+"
+        r"(?:\[[^\]]*\]\([^\)]*\)\n+)?"
+        r"\s*Amazon\s*)\n+"
+        r"Ships from\n+"
+        r"(?:\[[^\]]*\]\([^\)]*\)\n+)?"
+    ), r"\1\n"),
+    (re.compile(
+        r"(Sold by\n+"
+        r"(?:\[[^\]]*\]\([^\)]*\)\n+)?"
+        r"\s*\S+\s*)\n+"
+        r"Sold by\n+"
+        r"(?:\[[^\]]*\]\([^\)]*\)\n+)?"
+    ), r"\1\n"),
+
+    # Returns policy — keep brief "Eligible for Return..." line, remove expanded paragraph
+    (re.compile(
+        r"(Eligible for Return, Refund or Replacement[^\n]*)\n+"
+        r"Eligible for Return, Refund or Replacement[^\n]*\n"
+        r"[\s\S]*?"
+        r"\[Read full return policy\]\([^\)]*\)\n?"
+    ), r"\1\n"),
+
+    # Payment security — remove entire block (just boilerplate "payment is encrypted")
+    # Short form: just "Payment\nSecure transaction"
+    # Long form: includes "Your transaction is secure..." + [Learn more] link
+    (re.compile(
+        r"(?:^|\n)Payment\n+"
+        r"Secure transaction[^\n]*\n"
+        r"(?:[\s\S]*?\[Learn more\]\([^\)]*\)\n?)?"
+    ), "\n"),
+
+    # "%cardName%" template strings
+    (re.compile(r"(?:^|\n)%cardName%\n"), "\n"),
+    (re.compile(r"(?:^|\n)\$\{cardName\}[^\n]*\n"), "\n"),
+
+    # "The enhancements that you chose aren't available" message block
+    (re.compile(
+        r"(?:^|\n)The enhancements that you chose[^\n]*\n"
+        r"(?:\s+[^\n]+\n)*"
+    ), "\n"),
+
+    # "Add both to Cart" / "Choose items to buy together" / "Try again!"
+    (re.compile(r"(?:^|\n)(?:Add both to Cart|Choose items to buy together|Try again!)\n"), "\n"),
+
+    # "Total price:" / "To see our price"
+    (re.compile(r"(?:^|\n)(?:Total price:|To see our price[^\n]*)\n"), "\n"),
+
+    # "Subtotal" lines and price breakdown noise
+    (re.compile(r"(?:^|\n)Subtotal\n"), "\n"),
+    (re.compile(r"(?:^|\n)Initial payment breakdown\n"), "\n"),
+    (re.compile(r"(?:^|\n)Shipping cost, delivery date[^\n]*\n"), "\n"),
+    (re.compile(r"(?:^|\n)Price\s+\(\$\d+\.\d{2}x\)\n"), "\n"),
+
+    # --- Review cleanup ---
+
+    # Review quote blocks from aspect expansions: "...quote..." [Read more](/gp/customer-reviews/...)
+    # Uses \n prefix (not \n?) to avoid consuming trailing newline needed by next match.
+    (re.compile(r'\n"[^"\n]*"\s*\[Read more\]\(/gp/customer-reviews/[^\)]+\)'), ""),
+
+    # "Helpful" links in reviews
+    (re.compile(r"\[Helpful\]\([^\)]*\)\n?"), ""),
+
+    # "Report" links in reviews (another format)
+    (re.compile(r"\[Report\]\([^\)]*\)\n?"), ""),
+
+    # Rating histogram star breakdown lines
+    (re.compile(
+        r"(?:^|\n)-\s*\[5 star4 star3 star2 star1 star[^\]]*\]\([^\)]*\)\n?"
+    ), "\n"),
+
+    # Review profile links with avatar images
+    (re.compile(
+        r"(?:^|\n)-\s*\[!\[\]\([^\)]*\)\n\n\s*[^\]]+\]\(/gp/profile/[^\)]*\)\n?"
+    ), "\n"),
+    # Simpler profile links
+    (re.compile(r"\[!\[\]\([^\)]*\)\n\n\s*[^\]]+\]\(/gp/profile/[^\)]*\)\n?"), ""),
+
+    # "MoreHide" toggle text
+    (re.compile(r"(?:^|\n)MoreHide\n"), "\n"),
+
+    # "All photos" heading (review images section)
+    (re.compile(r"(?:^|\n)All photos\n"), "\n"),
+
+    # Customer review images (numbered list of thumbnails)
+    (re.compile(
+        r"(?:^|\n)\d+\.\s*!\[Customer (?:I|i)mage[^\]]*\]\([^\)]+\)\n?"
+    ), ""),
+
+    # "Please sign in to provide feedback" type prompts
+    (re.compile(r"(?:^|\n)Please \[sign in\]\([^\)]*\)[^\n]*\n"), "\n"),
+
+    # --- Video / A+ content noise ---
+
+    # "The video showcases/guides/compares/shows" descriptions
+    (re.compile(r"\nThe video (?:showcases|guides|compares|shows)[^\n]*"), ""),
+
+    # "Merchant video" label
+    (re.compile(r"\n\s*Merchant video(?=\n|$)"), ""),
+
+    # "Reviewed in ... on ..." date + colour variant lines (keep date, drop variant)
+    (re.compile(
+        r"(Reviewed in \S+ on [^\n]+)\n+"
+        r"\s*Colour Name:[^\n]*"
+    ), r"\1"),
+
+    # Standalone "This item:" label (bought-together remnant)
+    (re.compile(r"(?:^|\n)This item:\s*"), "\n"),
+
+    # "Sold by BRAND and ships from Amazon Fulfillment." (bought-together filler)
+    (re.compile(r"(?:^|\n)Sold by \S+ and ships from Amazon Fulfillment\.\n"), "\n"),
 ]
 
 
@@ -431,6 +639,13 @@ def postprocess_amazon(markdown: str) -> str:
     """Clean up Amazon-specific markdown noise."""
     for pattern, replacement in _POSTPROCESS_PATTERNS:
         markdown = pattern.sub(replacement, markdown)
+
+    # Collapse variant swatch duplicates: "- X\n  ---\n  X" → "- X"
+    # Each swatch has two <img> → two alt texts with an <hr> between them.
+    # Group 1 = "- ", Group 2 = variant text. Second copy is indented without "- ".
+    markdown = re.sub(
+        r"(- )([^\n]+)[\s]+---[\s]+\2(?=\n)", r"\1\2", markdown,
+    )
 
     # Final whitespace cleanup
     markdown = re.sub(r"\n{3,}", "\n\n", markdown).strip()
