@@ -11,6 +11,8 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
+from . import alibaba as _alibaba
+from . import aliexpress as _aliexpress
 from . import amazon as _amazon
 from . import forums as _forums
 from . import github as _github
@@ -19,6 +21,7 @@ from . import huggingface as _huggingface
 from . import medium as _medium
 from . import reddit as _reddit
 from . import redflagdeals as _redflagdeals
+from . import soylent as _soylent
 from . import stackoverflow as _stackoverflow
 from . import ti as _ti
 from . import wikipedia as _wikipedia
@@ -84,6 +87,8 @@ _JUNK_SELECTORS_LIST = [
 
 # Pre-combined CSS selectors per site (single-pass removal, much faster)
 _JUNK_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST)
+_JUNK_AND_ALIBABA_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _alibaba.SELECTORS_LIST)
+_JUNK_AND_ALIEXPRESS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _aliexpress.SELECTORS_LIST)
 _JUNK_AND_AMAZON_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _amazon.SELECTORS_LIST)
 _JUNK_AND_REDDIT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _reddit.SELECTORS_LIST)
 _JUNK_AND_HACKERNEWS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _hackernews.SELECTORS_LIST)
@@ -93,6 +98,7 @@ _JUNK_AND_MEDIUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _medium.SELECTORS_L
 _JUNK_AND_REDFLAGDEALS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST + _redflagdeals.SELECTORS_LIST)
 _JUNK_AND_STACKOVERFLOW_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _stackoverflow.SELECTORS_LIST)
 _JUNK_AND_FORUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST)
+_JUNK_AND_SOYLENT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _soylent.SELECTORS_LIST)
 _JUNK_AND_WIKIPEDIA_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _wikipedia.SELECTORS_LIST)
 
 # Pre-compiled regex for whitespace cleanup
@@ -186,6 +192,10 @@ def _detect_site(
     """
     if is_reddit:
         return "reddit"
+    if url and _alibaba.is_alibaba(url):
+        return "alibaba"
+    if url and _aliexpress.is_aliexpress(url):
+        return "aliexpress"
     if url and _amazon.is_amazon(url):
         return "amazon"
     if url and _hackernews.is_hackernews(url):
@@ -200,6 +210,8 @@ def _detect_site(
         return "stackoverflow"
     if url and _medium.is_medium(url):
         return "medium"
+    if url and _soylent.is_soylent(url):
+        return "soylent"
     if url and _ti.is_ti(url):
         return "ti"
     if url and _wikipedia.is_wikipedia(url):
@@ -218,6 +230,8 @@ def _detect_site(
 
 # Map site keys to pre-combined CSS selectors
 _SITE_SELECTORS = {
+    "alibaba": _JUNK_AND_ALIBABA_SELECTOR,
+    "aliexpress": _JUNK_AND_ALIEXPRESS_SELECTOR,
     "amazon": _JUNK_AND_AMAZON_SELECTOR,
     "reddit": _JUNK_AND_REDDIT_SELECTOR,
     "hackernews": _JUNK_AND_HACKERNEWS_SELECTOR,
@@ -226,6 +240,7 @@ _SITE_SELECTORS = {
     "redflagdeals": _JUNK_AND_REDFLAGDEALS_SELECTOR,
     "stackoverflow": _JUNK_AND_STACKOVERFLOW_SELECTOR,
     "medium": _JUNK_AND_MEDIUM_SELECTOR,
+    "soylent": _JUNK_AND_SOYLENT_SELECTOR,
     "forum": _JUNK_AND_FORUM_SELECTOR,
     "wikipedia": _JUNK_AND_WIKIPEDIA_SELECTOR,
 }
@@ -262,6 +277,10 @@ def clean_html(
     if site == "amazon":
         _amazon.extract_related_products(soup)
 
+    # Soylent: extract inventory from gsf_conversion_data before scripts are removed
+    if site == "soylent":
+        _soylent.extract_inventory(soup)
+
     # Single-pass removal using combined CSS selector
     selector = _SITE_SELECTORS.get(site, _JUNK_SELECTOR)
     for element in soup.select(selector):
@@ -271,7 +290,11 @@ def clean_html(
     _strip_junk_links(soup)
 
     # Site-specific soup-level cleanup
-    if site == "amazon":
+    if site == "alibaba":
+        _alibaba.strip_alibaba_junk(soup)
+    elif site == "aliexpress":
+        _aliexpress.strip_aliexpress_junk(soup)
+    elif site == "amazon":
         _amazon.strip_amazon_junk(soup)
     elif site == "hackernews":
         _hackernews.strip_hn_junk(soup)
@@ -283,6 +306,8 @@ def clean_html(
         _stackoverflow.strip_stackoverflow_junk(soup)
     elif site == "medium":
         _medium.strip_medium_junk(soup)
+    elif site == "soylent":
+        _soylent.strip_soylent_junk(soup)
     elif site == "redflagdeals":
         _redflagdeals.strip_rfd_junk(soup)
     elif site == "forum":
@@ -338,7 +363,11 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
     markdown = _EXCESSIVE_NEWLINES.sub("\n\n", markdown).strip()
 
     # Site-specific markdown post-processing (elif — a URL matches at most one site)
-    if site == "amazon":
+    if site == "alibaba":
+        markdown = _alibaba.postprocess_alibaba(markdown)
+    elif site == "aliexpress":
+        markdown = _aliexpress.postprocess_aliexpress(markdown)
+    elif site == "amazon":
         markdown = _amazon.postprocess_amazon(markdown)
     elif site == "hackernews":
         markdown = _hackernews.postprocess_hn(markdown)
@@ -350,6 +379,8 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _stackoverflow.postprocess_stackoverflow(markdown)
     elif site == "medium":
         markdown = _medium.postprocess_medium(markdown)
+    elif site == "soylent":
+        markdown = _soylent.postprocess_soylent(markdown)
     elif site == "ti":
         markdown = _ti.postprocess_ti(markdown)
     elif site == "redflagdeals":

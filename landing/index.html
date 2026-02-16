@@ -666,12 +666,17 @@ claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python
                     <div class="code-body">
 <pre id="claude-md-code"><span class="code-comment">## Web Fetching & Search</span>
 
-<span class="code-key">**ALWAYS use fetchaller tools instead of WebFetch and WebSearch.**</span> fetchaller has no domain restrictions and produces cleaner output.
+<span class="code-key">**ALWAYS use fetchaller MCP tools instead of WebFetch and WebSearch.**</span>
+fetchaller has no domain restrictions, bypasses bot protection
+(Cloudflare, Akamai, etc.), and produces much cleaner markdown
+with site-specific content cleanup.
 
-- <span class="code-string">`mcp__fetchaller__fetch(url, maxTokens?, timeout?)`</span> — Fetch any URL → clean markdown
-- <span class="code-string">`mcp__fetchaller__search(query, page?)`</span> — Web search (Google + DuckDuckGo)
-- <span class="code-string">`mcp__fetchaller__browse_reddit(subreddit, sort?, time?, limit?)`</span> — Browse subreddit listings
-- <span class="code-string">`mcp__fetchaller__search_reddit(query, subreddit?, sort?, time?, limit?)`</span> — Search Reddit posts</pre>
+- <span class="code-string">**fetch**</span> — Fetch any URL as clean markdown
+- <span class="code-string">**search**</span> — Web search (Google + DuckDuckGo combined)
+- <span class="code-string">**browse_reddit**</span> / <span class="code-string">**search_reddit**</span> — Reddit listings and search
+
+Exception: If a dedicated MCP tool exists for a service
+(e.g., GitHub via <span class="code-string">`gh`</span> CLI), prefer that instead.</pre>
                     </div>
                 </div>
 

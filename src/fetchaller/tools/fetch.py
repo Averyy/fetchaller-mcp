@@ -16,6 +16,13 @@ from ..botfighter import (
 )
 from ..cache.response_cache import ResponseCache
 from ..config import Config
+from ..content.alibaba import (
+    extract_product_id_from_url as extract_alibaba_product_id,
+)
+from ..content.alibaba import (
+    is_alibaba_search_url,
+)
+from ..content.aliexpress import extract_product_id_from_url, extract_search_products, is_aliexpress_search_url
 from ..content.amazon import is_amazon_store
 from ..content.fetcher import ContentFetcher, FetchResult, RetryConfig
 from ..content.forums import (
@@ -31,6 +38,7 @@ from ..content.github import extract_github_file_listing, transform_github_url
 from ..content.html import html_to_markdown
 from ..content.pdf import extract_pdf
 from ..content.reddit import transform_reddit_url
+from ..content.soylent import is_soylent as _is_soylent
 from ..content.ti import extract_ti_part_from_pdf_url, fetch_document_sections, is_ti_document_viewer
 from ..content.url import normalize_url
 from ..security.ssrf import is_private_host
@@ -90,6 +98,11 @@ def _quick_challenge_possible(result: FetchResult) -> bool:
             b"amazon" in result.content or b"Amazon" in result.content or b"amzn" in result.content
         )
     ):
+        return True
+    # Alibaba Cloud WAF TMD punish: status 200 with punish marker.
+    # AliExpress serves this as a rate-limit block page — needs browser solve.
+    # Alibaba punish pages can be ~90KB+ (inline JS/CSS), so use 200KB threshold.
+    if result.status_code == 200 and len(result.content) < 200_000 and b"/_____tmd_____/punish" in result.content:
         return True
     # ACW can appear on 200
     # Check cookie markers for Akamai/DataDome/PerimeterX/Imperva (non-200 with cookies)
@@ -274,6 +287,18 @@ async def _handle_botfighter(
     # Check if still challenged after solve
     body = _decode_content(result.content, result.content_type.lower())
     if detect_challenge(result.status_code, result.headers, body):
+        # Cookie replay failed (common with Akamai TLS fingerprint binding).
+        # Use the HTML we extracted directly from Chrome's DOM if available.
+        chrome_html = solve_result.get("html", "")
+        if chrome_html:
+            _log(f"Cookie replay failed for {challenge}, using Chrome-extracted HTML ({len(chrome_html):,} chars)")
+            return FetchResult(
+                content=chrome_html.encode("utf-8"),
+                content_type="text/html; charset=utf-8",
+                status_code=200,
+                final_url=solve_result.get("final_url", fetch_url_str),
+                headers={},
+            )
         return {"error": f"This page is protected by {challenge} bot detection and could not be bypassed."}
 
     _log(f"{challenge} challenge solved for {domain}")
@@ -290,6 +315,8 @@ async def fetch_url(
     config: Config | None = None,
     cookie_cache: CookieCache | None = None,
     challenge_solver: ChallengeSolver | None = None,
+    _skip_aliexpress_intercept: bool = False,
+    _skip_alibaba_intercept: bool = False,
 ) -> dict:
     """
     Fetch a URL and return its content.
@@ -335,6 +362,137 @@ async def fetch_url(
             "search('Brand Name products site:amazon.ca'). "
             "Or fetch individual product pages directly (e.g. amazon.ca/dp/ASIN)."
         }
+
+    # AliExpress product pages are JS-rendered — use product tool which tries
+    # MTop API first, then falls back to fetching through the full pipeline
+    # (botfighter handles Akamai/TMD). Reviews always appended.
+    # _skip_aliexpress_intercept prevents recursion when get_product calls fetch_url.
+    ae_product_id = extract_product_id_from_url(url) if not _skip_aliexpress_intercept else None
+    if ae_product_id:
+        from ..aliexpress.product import get_product
+
+        result = await get_product(
+            ae_product_id,
+            fetcher=fetcher,
+            cache=cache,
+            config=config,
+            cookie_cache=cookie_cache,
+            challenge_solver=challenge_solver,
+        )
+        if "content" in result:
+            content = truncate(result["content"], max_tokens)
+            if cache:
+                cache_key = normalize_url(url)
+                cache.set(cache_key, content, "text")
+            _log(f"FETCH {url} -> AliExpress product ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "text", "url": url}
+        return result  # Error dict
+
+    # Alibaba.com product pages — SSR with embedded JSON, use dedicated tool
+    # _skip_alibaba_intercept prevents recursion when get_product/search calls fetch_url.
+    alibaba_product_id = extract_alibaba_product_id(url) if not _skip_alibaba_intercept else None
+    if alibaba_product_id:
+        from ..alibaba.product import get_product as get_alibaba_product
+
+        result = await get_alibaba_product(
+            alibaba_product_id,
+            fetcher=fetcher,
+            cache=cache,
+            config=config,
+            cookie_cache=cookie_cache,
+            challenge_solver=challenge_solver,
+        )
+        if "content" in result:
+            content = truncate(result["content"], max_tokens)
+            if cache:
+                cache_key = normalize_url(url)
+                cache.set(cache_key, content, "text")
+            _log(f"FETCH {url} -> Alibaba product ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "text", "url": url}
+        return result  # Error dict
+
+    # Alibaba.com search pages — SSR with embedded JSON, use dedicated tool
+    if not _skip_alibaba_intercept and is_alibaba_search_url(url):
+        # Extract query from URL params
+        from urllib.parse import parse_qs
+
+        from ..alibaba.search import search_alibaba
+        qs = parse_qs(urlparse(url).query)
+        query = qs.get("SearchText", [""])[0]
+        try:
+            page_num = int(qs.get("page", ["1"])[0])
+        except (ValueError, IndexError):
+            page_num = 1
+
+        result = await search_alibaba(
+            query=query or "alibaba",
+            page=page_num,
+            fetcher=fetcher,
+            cache=cache,
+            config=config,
+            cookie_cache=cookie_cache,
+            challenge_solver=challenge_solver,
+        )
+        if "content" in result:
+            content = truncate(result["content"], max_tokens)
+            if cache:
+                cache_key = normalize_url(url)
+                cache.set(cache_key, content, "text")
+            _log(f"FETCH {url} -> Alibaba search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "text", "url": url}
+        return result  # Error dict
+
+    # AliExpress search pages — needs Chrome session warming for TMD bypass.
+    # Route to dedicated search module which handles curl_cffi fast path + Chrome fallback.
+    if not _skip_aliexpress_intercept and is_aliexpress_search_url(url):
+        from urllib.parse import parse_qs
+
+        from ..aliexpress.search import search_aliexpress
+
+        qs = parse_qs(urlparse(url).query)
+        try:
+            page_num = int(qs.get("page", ["1"])[0])
+        except (ValueError, IndexError):
+            page_num = 1
+        sort = qs.get("sortType", ["default"])[0]
+        try:
+            min_price = float(qs["minPrice"][0]) if "minPrice" in qs else None
+        except (ValueError, IndexError):
+            min_price = None
+        try:
+            max_price = float(qs["maxPrice"][0]) if "maxPrice" in qs else None
+        except (ValueError, IndexError):
+            max_price = None
+
+        # Extract query from URL path: /w/wholesale-{query}.html
+        from urllib.parse import unquote
+        path = urlparse(url).path
+        query = "aliexpress"
+        import re
+        m = re.search(r"/w/wholesale-(.+?)\.html", path)
+        if m:
+            query = unquote(m.group(1).replace("-", " "))
+
+        result = await search_aliexpress(
+            query=query,
+            page=page_num,
+            sort=sort,
+            min_price=min_price,
+            max_price=max_price,
+            fetcher=fetcher,
+            cache=cache,
+            config=config,
+            cookie_cache=cookie_cache,
+            challenge_solver=challenge_solver,
+        )
+        if "content" in result:
+            content = truncate(result["content"], max_tokens)
+            if cache:
+                cache_key = normalize_url(url)
+                cache.set(cache_key, content, "text")
+            _log(f"FETCH {url} -> AliExpress search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "text", "url": url}
+        return result  # Error dict
 
     # Transform Reddit URLs
     reddit_result = transform_reddit_url(url)
@@ -408,6 +566,11 @@ async def fetch_url(
 
     # Use dedicated botfighter fetcher if we have cached cookies, else shared fetcher
     active_fetcher = bf_fetcher if bf_fetcher else fetcher
+
+    # Per-domain rate limiting for sites that aggressively block rapid requests
+    if _is_soylent(fetch_url_str):
+        from ..ratelimit import soylent_limiter
+        await soylent_limiter.wait()
 
     # Fetch the URL
     try:
@@ -641,6 +804,17 @@ async def fetch_url(
                 combined = await fetch_document_sections(active_fetcher, html, float(timeout))
                 if combined:
                     html = combined
+
+            # AliExpress search pages: extract structured product list from _init_data_ JSON.
+            # The HTML is mostly JS-rendered noise — the embedded JSON has cleaner data.
+            if not _skip_aliexpress_intercept and is_aliexpress_search_url(effective_url):
+                search_content = extract_search_products(html, effective_url)
+                if search_content:
+                    content = truncate(search_content, max_tokens)
+                    if cache and cache_key:
+                        cache.set(cache_key, search_content, "text")
+                    _log(f"FETCH {url} -> AliExpress search extraction ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                    return {"content": content, "content_type": "text", "url": effective_url}
 
             # GitHub tree/repo pages: extract file listing from embedded JSON (additive).
             # The listing is prepended to the normal HTML→markdown result, which provides

@@ -91,6 +91,18 @@ class TestDetectSiteByUrl:
     def test_stackexchange_subdomain(self):
         assert _detect_site("https://gaming.stackexchange.com/questions/1", False) == "stackoverflow"
 
+    def test_soylent_ca(self):
+        assert _detect_site("https://www.soylent.ca/products/soylent-drink", False) == "soylent"
+
+    def test_soylent_com(self):
+        assert _detect_site("https://www.soylent.com/products/soylent-drink", False) == "soylent"
+
+    def test_soylent_ca_no_www(self):
+        assert _detect_site("https://soylent.ca/collections/all", False) == "soylent"
+
+    def test_soylent_com_no_www(self):
+        assert _detect_site("https://soylent.com/collections/all", False) == "soylent"
+
     def test_medium(self):
         assert _detect_site("https://medium.com/@user/article-slug", False) == "medium"
 

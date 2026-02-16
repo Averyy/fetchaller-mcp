@@ -139,6 +139,14 @@ def load_config() -> Config:
 # Browser fingerprints for TLS impersonation rotation (NEW)
 BROWSER_FINGERPRINTS = ["chrome131", "chrome133a", "chrome136", "chrome142"]
 
+# Sec-Ch-Ua headers must match the TLS fingerprint — mismatches are a detection vector.
+FINGERPRINT_SEC_CH_UA = {
+    "chrome131": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    "chrome133a": '"Google Chrome";v="133", "Chromium";v="133", "Not(A:Brand";v="24"',
+    "chrome136": '"Google Chrome";v="136", "Chromium";v="136", "Not)A;Brand";v="99"',
+    "chrome142": '"Google Chrome";v="142", "Chromium";v="142", "Not:A-Brand";v="99"',
+}
+
 # Tracking params to strip for URL normalization (NEW)
 TRACKING_PARAMS = {
     "utm_source",

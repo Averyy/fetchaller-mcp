@@ -153,6 +153,36 @@ class TestSelectorDispatch:
         assert soup.find(attrs={"data-testid": "headerSignUpButton"}) is None
         assert "article content" in soup.get_text()
 
+    def test_soylent_announcement_banner_removed(self):
+        html = _wrap(
+            '<div id="shopify-section-announcement-banner">free shipping social links</div>'
+            '<div>Product content</div>',
+        )
+        soup, site = clean_html(html, url="https://www.soylent.ca/products/soylent-drink")
+        assert site == "soylent"
+        assert "free shipping social links" not in soup.get_text()
+        assert "Product content" in soup.get_text()
+
+    def test_soylent_footer_removed(self):
+        html = _wrap(
+            '<div>Product content</div>'
+            '<div id="shopify-section-footer">footer links newsletter</div>',
+        )
+        soup, site = clean_html(html, url="https://www.soylent.ca/products/soylent-drink")
+        assert site == "soylent"
+        assert "footer links newsletter" not in soup.get_text()
+        assert "Product content" in soup.get_text()
+
+    def test_soylent_rebuy_cart_removed(self):
+        html = _wrap(
+            '<div>Product content</div>'
+            '<script id="rebuy-cart-template" type="text/template">rebuy cart flyout</script>',
+        )
+        soup, site = clean_html(html, url="https://www.soylent.ca/products/soylent-drink")
+        assert site == "soylent"
+        assert "rebuy cart flyout" not in str(soup)
+        assert "Product content" in soup.get_text()
+
     def test_wikipedia_editsection_removed(self):
         html = _wrap(
             '<span class="mw-editsection">[edit]</span><p>encyclopedia content</p>',
@@ -255,6 +285,29 @@ class TestPostprocessorDispatch:
         assert "Log in" not in md
         assert "Sign up" not in md
         assert "Actual thread content" in md
+
+    def test_soylent_gsf_quantity_extracted(self):
+        """Soylent postprocessor extracts exact quantity from gsf_conversion_data."""
+        html = _wrap(
+            '<h1>Soylent Drink</h1>'
+            '<p>Product description</p>'
+            '<script>gsf_conversion_data = {quantity : "150"};</script>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.soylent.ca/products/soylent-drink")
+        assert "**Stock: 150 units**" in md
+        assert "__SOYLENT_" not in md
+
+    def test_soylent_availability_extracted(self):
+        """Soylent postprocessor extracts available:true/false from Shopify variant JSON."""
+        html = _wrap(
+            '<h1>Soylent Drink</h1>'
+            '<p>Product description</p>'
+            '<script>let variants = [{"id":123,"available":true,"name":"Soylent"}];</script>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.soylent.com/products/soylent-drink")
+        assert "**In stock**" in md
+        assert "__SOYLENT_" not in md
+        assert "Product description" in md
 
     def test_generic_does_not_apply_stackoverflow_postprocessor(self):
         """On a generic page, SO-specific patterns must NOT be removed."""

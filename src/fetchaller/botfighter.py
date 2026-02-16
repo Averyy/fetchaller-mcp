@@ -174,6 +174,13 @@ def detect_challenge(status_code: int, headers: dict[str, str], body: str) -> st
     if status_code == 429 and any(h.lower().startswith("x-kpsdk") for h in headers):
         return "kasada"
 
+    # Alibaba Cloud WAF TMD punish — missing-session block page (status 200).
+    # TMD blocks requests without valid session cookies. Cannot be solved by
+    # extracting cookies like Akamai/CF — requires session warming (visit
+    # homepage first to establish cookies, then navigate to target page).
+    if status_code == 200 and "/_____tmd_____/punish" in body:
+        return "tmd"
+
     # Amazon rate-limit / captcha (status 200, small page with "Continue shopping")
     if status_code == 200 and is_amazon_captcha(body):
         return "amazon"
@@ -400,6 +407,54 @@ class ChallengeSolver:
         self._last_used: float = 0
         self._idle_timeout = (config.chrome_idle_timeout if config else 60) * 60  # Convert minutes to seconds
 
+        # Kill Chrome on exit — even if the MCP server gets SIGTERM'd without
+        # calling close(). Prevents zombie Chrome processes when Claude Code
+        # closes the connection or the server crashes.
+        import atexit
+        import signal
+
+        def _kill_on_exit():
+            self._sync_kill_browser()
+        atexit.register(_kill_on_exit)
+
+        # SIGTERM (sent by Claude Code on session close) and SIGHUP (terminal
+        # closed) don't run atexit handlers by default. Install signal handlers
+        # that clean up Chrome before exiting.
+        def _signal_handler(signum, frame):
+            self._sync_kill_browser()
+            # Re-raise with default handler so the process actually exits
+            signal.signal(signum, signal.SIG_DFL)
+            import os
+            os.kill(os.getpid(), signum)
+
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            try:
+                signal.signal(sig, _signal_handler)
+            except (OSError, ValueError):
+                pass  # Can't set handlers in non-main thread
+
+    def _sync_kill_browser(self) -> None:
+        """Synchronously kill Chrome process. For use in atexit/signal handlers
+        where async is not available.
+
+        Note: We intentionally skip proc.wait() — signal handlers must be fast
+        and non-blocking. The OS reaps the zombie when the parent exits
+        immediately after (via os.kill re-raise in the signal handler).
+        """
+        if self._browser is not None:
+            try:
+                proc = self._browser._browser_process_manager._process
+                if proc and proc.poll() is None:
+                    _log(f"atexit: killing Chrome pid={proc.pid}")
+                    proc.kill()
+            except Exception:
+                pass
+        if self._xvfb is not None:
+            try:
+                self._xvfb.kill()
+            except Exception:
+                pass
+
     async def solve(self, url: str, challenge_type: str) -> dict | None:
         """Solve a browser challenge and return cookies + UA.
 
@@ -434,7 +489,9 @@ class ChallengeSolver:
                     logger.exception(f"SSRF check failed for {url}, blocking as precaution")
                     return {"error": "Could not validate URL safety."}
 
-                if challenge_type == "cloudflare":
+                if challenge_type == "tmd":
+                    result = await self._solve_tmd(tab, url)
+                elif challenge_type == "cloudflare":
                     result = await self._solve_cloudflare(tab, url)
                 elif challenge_type == "akamai":
                     result = await self._solve_akamai(tab, url)
@@ -458,11 +515,84 @@ class ChallengeSolver:
                 return result
             except Exception:
                 logger.exception(f"Challenge solve failed for {url} (type={challenge_type})")
-                # Try to recover browser state
+                # Try to recover browser state; if that fails, Chrome is dead
+                try:
+                    await tab.go_to("about:blank", timeout=5)
+                except Exception:
+                    _log("Chrome unresponsive after solve failure, killing")
+                    await self._stop_browser()
+                return None
+
+    async def with_page(self, url: str, callback, wait: float = 5, timeout: float = 20):
+        """Navigate Chrome to a URL, wait for JS, then call callback(tab).
+
+        The callback receives the PyDoll tab and can do multiple round-trips
+        (execute scripts, get cookies, make fetch() calls) while Chrome is
+        still on the page.
+
+        Args:
+            url: URL to load in Chrome.
+            callback: Async function taking (tab) and returning any value.
+            wait: Seconds to wait after load for SPA rendering.
+            timeout: Page load timeout in seconds.
+
+        Returns:
+            Whatever callback returns, or None if Chrome busy/failed.
+        """
+        if self._lock.locked():
+            _log("with_page: Chrome busy, skipping")
+            return None
+
+        async with self._lock:
+            try:
+                tab = await self._ensure_browser()
+                if tab is None:
+                    return None
+
+                # SSRF check
+                try:
+                    parsed = urlparse(url)
+                    from .security.ssrf import is_private_host
+                    if await is_private_host(parsed.hostname or ""):
+                        return None
+                except Exception:
+                    return None
+
+                _log(f"Loading page in Chrome: {_sanitize_url(url)}")
+                try:
+                    await tab.go_to(url, timeout=int(timeout))
+                except Exception:
+                    logger.exception("Chrome page load failed")
+                    try:
+                        await tab.go_to("about:blank", timeout=5)
+                    except Exception:
+                        _log("Chrome unresponsive after page load failure, killing")
+                        await self._stop_browser()
+                    return None
+
+                # Wait for SPA rendering
+                await asyncio.sleep(wait)
+
+                # Call user callback with the live tab
+                result = await callback(tab)
+
+                self._last_used = time.monotonic()
+
+                # Navigate away to clean state
                 try:
                     await tab.go_to("about:blank", timeout=5)
                 except Exception:
                     pass
+
+                return result
+            except Exception:
+                logger.exception(f"with_page failed for {url}")
+                try:
+                    if tab is not None:
+                        await tab.go_to("about:blank", timeout=5)
+                except Exception:
+                    _log("Chrome unresponsive after with_page failure, killing")
+                    await self._stop_browser()
                 return None
 
     async def _ensure_browser(self):
@@ -479,7 +609,11 @@ class ChallengeSolver:
                 _log(f"Chrome idle for {idle:.0f}s, shutting down")
                 await self._stop_browser()
 
+        if self._browser is not None:
+            _log("Reusing existing Chrome instance")
+
         if self._browser is None:
+            _log("Starting new Chrome (previous instance: none or killed)")
             try:
                 import os
                 import shutil
@@ -551,6 +685,20 @@ class ChallengeSolver:
                 _log("Chrome started")
             except Exception:
                 logger.exception("Failed to start Chrome")
+                # Kill the partially-started browser process if it exists
+                if self._browser is not None:
+                    try:
+                        await self._browser.stop()
+                    except Exception:
+                        pass
+                    # Force-kill if stop() didn't work
+                    try:
+                        proc = self._browser._browser_process_manager._process
+                        if proc and proc.poll() is None:
+                            proc.kill()
+                            proc.wait(timeout=5)
+                    except Exception:
+                        pass
                 self._browser = None
                 self._tab = None
                 return None
@@ -558,12 +706,28 @@ class ChallengeSolver:
         return self._tab
 
     async def _stop_browser(self) -> None:
-        """Stop Chrome and clean up (including Xvfb if started)."""
+        """Stop Chrome and clean up (including Xvfb if started).
+
+        PyDoll's stop() raises BrowserNotRunning if the CDP connection is dead,
+        but the Chrome *process* may still be alive. We always force-kill the
+        process as a fallback to prevent orphan Chrome zombies.
+        """
         import os
 
         if self._browser is not None:
+            # Try graceful shutdown first
             try:
                 await self._browser.stop()
+            except Exception:
+                pass
+            # Force-kill the process even if stop() failed or raised
+            # BrowserNotRunning (CDP dead but process alive = zombie)
+            try:
+                proc = self._browser._browser_process_manager._process
+                if proc and proc.poll() is None:
+                    _log(f"Force-killing Chrome process pid={proc.pid}")
+                    proc.kill()
+                    proc.wait(timeout=5)
             except Exception:
                 pass
             self._browser = None
@@ -603,6 +767,30 @@ class ChallengeSolver:
         except Exception:
             logger.exception("Failed to extract cookies/UA")
             return None
+
+    async def _solve_tmd(self, tab, url: str, timeout: float = 20) -> dict | None:
+        """Solve Alibaba Cloud WAF TMD challenge via session warming.
+
+        TMD blocks requests without valid session cookies. Unlike CF/Akamai
+        where you visit the blocked URL and extract cookies, TMD requires
+        visiting the *homepage* first to establish a session, then cookies
+        work for all subpages and API endpoints.
+        """
+        # Derive homepage from the blocked URL
+        parsed = urlparse(url)
+        homepage = f"{parsed.scheme}://{parsed.hostname}/"
+        _log(f"Solving TMD challenge via session warming: {homepage}")
+
+        try:
+            await tab.go_to(homepage, timeout=int(timeout))
+        except Exception:
+            logger.exception("TMD session warming: homepage load failed")
+            return None
+
+        # Wait for SPA initialization and cookie setting
+        await asyncio.sleep(5)
+
+        return await self._extract_result(tab)
 
     async def _solve_cloudflare(self, tab, url: str, timeout: float = 30) -> dict | None:
         """Solve Cloudflare challenge using PyDoll's built-in Turnstile bypass.
@@ -647,7 +835,13 @@ class ChallengeSolver:
         return await self._extract_result(tab)
 
     async def _solve_akamai(self, tab, url: str, timeout: float = 15) -> dict | None:
-        """Solve Akamai challenge by loading page and polling for valid _abck cookie."""
+        """Solve Akamai challenge by loading page and polling for valid _abck cookie.
+
+        Because Akamai binds _abck cookies to TLS fingerprint, cookie replay
+        via curl_cffi often fails. As a fallback, we extract the fully rendered
+        page HTML from Chrome's DOM so the caller can use it directly without
+        needing cookie replay.
+        """
         _log(f"Solving Akamai challenge for {_sanitize_url(url)}")
         try:
             await tab.go_to(url, timeout=int(timeout))
@@ -665,7 +859,29 @@ class ChallengeSolver:
                 break
             await asyncio.sleep(1)
 
-        return await self._extract_result(tab)
+        # Wait for page content to render (SPA pages need JS execution time)
+        await asyncio.sleep(2)
+
+        result = await self._extract_result(tab)
+        if result is None:
+            return None
+
+        # Extract rendered HTML from Chrome DOM — Akamai cookie replay often
+        # fails due to TLS fingerprint binding, so we grab the page content
+        # while Chrome still has the solved session active.
+        try:
+            html_response = await tab.execute_script(
+                "return document.documentElement.outerHTML",
+                return_by_value=True,
+            )
+            html = html_response.get("result", {}).get("result", {}).get("value", "")
+            if html and len(html) > 1000:
+                result["html"] = html
+                _log(f"Extracted {len(html):,} chars of rendered HTML from Chrome")
+        except Exception:
+            logger.exception("Failed to extract HTML from Chrome DOM")
+
+        return result
 
     async def _solve_amazon(self, tab, url: str, timeout: float = 15) -> dict | None:
         """Solve Amazon rate-limit by clicking 'Continue shopping' and waiting for the real page."""

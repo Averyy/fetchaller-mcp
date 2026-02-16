@@ -145,6 +145,16 @@ class TestDetectChallenge:
         body = "<html><body>Continue shopping on our store</body></html>"
         assert detect_challenge(200, {}, body) is None
 
+    def test_detects_tmd_punish(self):
+        """Alibaba Cloud WAF TMD punish: status 200, body has /_____tmd_____/punish."""
+        body = '<html><script>location.href="/_____tmd_____/punish?x5secdata=abc"</script></html>'
+        assert detect_challenge(200, {}, body) == "tmd"
+
+    def test_tmd_punish_requires_marker(self):
+        """Normal AliExpress page without TMD marker should not trigger."""
+        body = "<html><body>Normal AliExpress content</body></html>"
+        assert detect_challenge(200, {}, body) is None
+
     def test_cloudflare_takes_priority_over_unknown(self):
         """CF header detection takes priority over generic JS challenge."""
         assert detect_challenge(403, {"cf-mitigated": "challenge"}, "<script>x</script>") == "cloudflare"
@@ -447,6 +457,21 @@ class TestChallengeSolver:
                 result = await solver.solve("https://example.com", "unknown")
                 assert result["cookies"] == expected_cookies
 
+    @pytest.mark.asyncio
+    async def test_tmd_solved_via_session_warming(self):
+        """TMD challenges are solved by visiting the homepage (session warming)."""
+        solver = ChallengeSolver()
+        result = await solver.solve("https://www.aliexpress.com/w/wholesale-test.html", "tmd")
+        assert result is not None
+        # TMD solve should return cookies (not an error) via homepage visit
+        if "error" not in result:
+            # Chrome available — solve succeeded
+            assert "cookies" in result
+            assert "user_agent" in result
+            assert isinstance(result["cookies"], list)
+        # If Chrome is not available, _ensure_browser returns None → solve returns None
+        # But if we get a result dict, it should have cookies or error
+
 
 # ── _handle_botfighter Integration Tests [#18] ───────────────────────────────
 
@@ -655,3 +680,93 @@ class TestHandleBotfighter:
         entry = cache.get("example.com")
         assert entry is not None
         assert entry.final_url is None  # Private URL rejected
+
+    @pytest.mark.asyncio
+    async def test_akamai_chrome_html_fallback_on_replay_failure(self):
+        """When Akamai cookie replay fails, use Chrome-extracted HTML instead of error."""
+        from fetchaller.content.fetcher import FetchResult
+        from fetchaller.tools.fetch import _handle_botfighter
+
+        # Initial Akamai challenge response
+        akamai_body = b'<html><script>var _BomA = "1";</script></html>'
+        result = self._make_result(
+            status_code=403, body=akamai_body,
+            headers={"set-cookie": "_abck=~invalid; path=/"},
+        )
+        fetcher = MagicMock()
+        fetcher.current_impersonate = "chrome131"
+
+        # Retry fetcher returns another challenge (cookie replay failed)
+        rechallenge_result = self._make_result(
+            status_code=403, body=akamai_body,
+            headers={"set-cookie": "_abck=~invalid; path=/"},
+        )
+        mock_retry_fetcher = AsyncMock()
+        mock_retry_fetcher.apply_cookies = AsyncMock()
+        mock_retry_fetcher.pin_identity = MagicMock()
+        mock_retry_fetcher.fetch = AsyncMock(return_value=rechallenge_result)
+        mock_retry_fetcher.close = AsyncMock()
+
+        # Solver returns cookies + Chrome-extracted HTML
+        chrome_html = "<html><body><h1>Real Product Page</h1><p>Price: $12.99</p></body></html>"
+        solver = AsyncMock()
+        solver.solve = AsyncMock(return_value={
+            "cookies": [{"name": "_abck", "value": "valid_abck_value"}],
+            "user_agent": "Mozilla/5.0",
+            "final_url": "https://www.aliexpress.com/item/123.html",
+            "impersonate": "chrome131",
+            "html": chrome_html,
+        })
+
+        with patch("fetchaller.tools.fetch.ContentFetcher", return_value=mock_retry_fetcher):
+            bf_result = await _handle_botfighter(
+                result, "https://www.aliexpress.com/item/123.html", 10.0,
+                fetcher, CookieCache(), solver, False,
+            )
+
+        # Should return a FetchResult with the Chrome HTML, not an error dict
+        assert isinstance(bf_result, FetchResult)
+        assert bf_result.status_code == 200
+        assert b"Real Product Page" in bf_result.content
+        assert bf_result.final_url == "https://www.aliexpress.com/item/123.html"
+
+    @pytest.mark.asyncio
+    async def test_akamai_no_html_fallback_returns_error(self):
+        """When Akamai cookie replay fails and no Chrome HTML available, return error."""
+        from fetchaller.tools.fetch import _handle_botfighter
+
+        akamai_body = b'<html><script>var _BomA = "1";</script></html>'
+        result = self._make_result(
+            status_code=403, body=akamai_body,
+            headers={"set-cookie": "_abck=~invalid; path=/"},
+        )
+        fetcher = MagicMock()
+        fetcher.current_impersonate = "chrome131"
+
+        rechallenge_result = self._make_result(
+            status_code=403, body=akamai_body,
+            headers={"set-cookie": "_abck=~invalid; path=/"},
+        )
+        mock_retry_fetcher = AsyncMock()
+        mock_retry_fetcher.apply_cookies = AsyncMock()
+        mock_retry_fetcher.pin_identity = MagicMock()
+        mock_retry_fetcher.fetch = AsyncMock(return_value=rechallenge_result)
+        mock_retry_fetcher.close = AsyncMock()
+
+        # Solver returns cookies but NO html (e.g., extraction failed)
+        solver = AsyncMock()
+        solver.solve = AsyncMock(return_value={
+            "cookies": [{"name": "_abck", "value": "valid"}],
+            "user_agent": "Mozilla/5.0",
+            "final_url": "https://example.com",
+            "impersonate": "chrome131",
+        })
+
+        with patch("fetchaller.tools.fetch.ContentFetcher", return_value=mock_retry_fetcher):
+            bf_result = await _handle_botfighter(
+                result, "https://example.com", 10.0,
+                fetcher, CookieCache(), solver, False,
+            )
+
+        assert isinstance(bf_result, dict)
+        assert "error" in bf_result

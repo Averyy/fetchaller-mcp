@@ -1,12 +1,37 @@
 """Content fetcher with curl_cffi TLS fingerprint impersonation."""
 
 import asyncio
+import os
 import random
+import ssl
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from curl_cffi.requests import AsyncSession, Response
 
-from ..config import BROWSER_FINGERPRINTS, Config
+from ..config import BROWSER_FINGERPRINTS, FINGERPRINT_SEC_CH_UA, Config
+
+
+def _find_ca_bundle() -> str | None:
+    """Find the system CA certificate bundle for SSL verification.
+
+    curl_cffi's built-in CA bundle is incomplete (missing some CAs like
+    Cloudflare's intermediate certs), so we use the system bundle instead.
+
+    Returns path to CA bundle, or None to use curl_cffi's default.
+    """
+    # 1. Respect explicit environment override
+    env_path = os.environ.get("CURL_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    # 2. System CA bundle (works on macOS + Linux)
+    system_ca = ssl.get_default_verify_paths().cafile
+    if system_ca and os.path.isfile(system_ca):
+        return system_ca
+
+    # 3. Fall back to curl_cffi's default
+    return None
 
 
 @dataclass
@@ -54,13 +79,14 @@ class ContentFetcher:
 
     MAX_RESPONSE_SIZE = 20 * 1024 * 1024  # 20MB
 
-    # Chrome 131 on macOS headers
-    DEFAULT_HEADERS = {
+    # Browser navigation headers (Sec-Ch-Ua set dynamically per-request)
+    _DEFAULT_HEADERS_BASE = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-US,en;q=0.9",
         "Cache-Control": "max-age=0",
-        "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "DNT": "1",
+        "Priority": "u=0, i",
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": '"macOS"',
         "Sec-Fetch-Dest": "document",
@@ -70,12 +96,11 @@ class ContentFetcher:
         "Upgrade-Insecure-Requests": "1",
     }
 
-    # JSON API headers
-    JSON_HEADERS = {
+    # JSON API headers (Sec-Ch-Ua set dynamically per-request)
+    _JSON_HEADERS_BASE = {
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-US,en;q=0.9",
-        "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": '"macOS"',
         "Sec-Fetch-Dest": "empty",
@@ -94,9 +119,10 @@ class ContentFetcher:
         self._identity_pinned: bool = False
 
     async def _get_session(self) -> AsyncSession:
-        """Get or create async session."""
+        """Get or create async session with system CA bundle for SSL."""
         if self._session is None:
-            self._session = AsyncSession()
+            ca_bundle = _find_ca_bundle()
+            self._session = AsyncSession(verify=ca_bundle) if ca_bundle else AsyncSession()
         return self._session
 
     def rotate_fingerprint(self) -> None:
@@ -134,8 +160,19 @@ class ContentFetcher:
         session = await self._get_session()
         delay = self.retry_config.initial_delay
 
-        # Build headers
-        base_headers = self.JSON_HEADERS.copy() if use_json_headers else self.DEFAULT_HEADERS.copy()
+        # Build headers with Sec-Ch-Ua matching the active TLS fingerprint
+        base_headers = self._JSON_HEADERS_BASE.copy() if use_json_headers else self._DEFAULT_HEADERS_BASE.copy()
+        sec_ch_ua = FINGERPRINT_SEC_CH_UA.get(self._browser)
+        if sec_ch_ua:
+            base_headers["Sec-Ch-Ua"] = sec_ch_ua
+        # Auto-set Referer to the site origin — real browsers always send this.
+        # Only set if not already provided in custom headers.
+        if not (headers and "Referer" in headers):
+            try:
+                parsed = urlparse(url)
+                base_headers["Referer"] = f"{parsed.scheme}://{parsed.hostname}/"
+            except Exception:
+                pass
         if headers:
             base_headers.update(headers)
 

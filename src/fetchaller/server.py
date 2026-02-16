@@ -15,7 +15,11 @@ from .content.fetcher import ContentFetcher, RetryConfig
 from .queue.reddit_queue import QueueConfig, RedditRequestQueue
 from .tools.browse_reddit import browse_reddit
 from .tools.fetch import fetch_url
+from .tools.get_alibaba_product import get_alibaba_product
+from .tools.get_aliexpress_product import get_aliexpress_product
 from .tools.search import search_web
+from .tools.search_alibaba import search_alibaba_tool
+from .tools.search_aliexpress import search_aliexpress_tool
 from .tools.search_reddit import search_reddit
 
 
@@ -36,6 +40,14 @@ def _summarize_args(tool_name: str, args: dict) -> str:
         return f"query={args.get('query', '?')} r/{args.get('subreddit', 'all')}"
     elif tool_name == "search":
         return f"query={args.get('query', '?')} page={args.get('page', 1)}"
+    elif tool_name == "get_aliexpress_product":
+        return f"product_id={args.get('product_id', '?')}"
+    elif tool_name == "search_aliexpress":
+        return f"query={args.get('query', '?')} page={args.get('page', 1)} sort={args.get('sort', 'default')}"
+    elif tool_name == "get_alibaba_product":
+        return f"product_id={args.get('product_id', '?')}"
+    elif tool_name == "search_alibaba":
+        return f"query={args.get('query', '?')} page={args.get('page', 1)} sort={args.get('sort', 'default')}"
     return str(args)
 
 
@@ -238,6 +250,115 @@ def create_server(
                     "required": ["query"],
                 },
             ),
+            Tool(
+                name="get_aliexpress_product",
+                description=(
+                    "Get AliExpress product details including price, specifications, "
+                    "ratings, and recent reviews. Accepts a numeric product ID or full URL."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "product_id": {
+                            "type": "string",
+                            "description": "Numeric product ID or full AliExpress URL",
+                        },
+                    },
+                    "required": ["product_id"],
+                },
+            ),
+            Tool(
+                name="search_aliexpress",
+                description=(
+                    "Search AliExpress products. Returns product listings with prices, "
+                    "ratings, and links. Best-effort — may fail if anti-bot protection triggers."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query",
+                        },
+                        "page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 1,
+                            "description": "Page number (1-indexed, default: 1)",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["default", "orders", "price_asc", "price_desc"],
+                            "default": "default",
+                            "description": "Sort order",
+                        },
+                        "min_price": {
+                            "type": "number",
+                            "description": "Minimum price filter",
+                        },
+                        "max_price": {
+                            "type": "number",
+                            "description": "Maximum price filter",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="get_alibaba_product",
+                description=(
+                    "Get Alibaba.com B2B product details including tiered pricing, "
+                    "MOQ, lead times, supplier info, and specifications. "
+                    "Accepts a numeric product ID or full URL."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "product_id": {
+                            "type": "string",
+                            "description": "Numeric product ID or full Alibaba.com URL",
+                        },
+                    },
+                    "required": ["product_id"],
+                },
+            ),
+            Tool(
+                name="search_alibaba",
+                description=(
+                    "Search Alibaba.com B2B products. Returns supplier listings with "
+                    "tiered pricing, MOQ, and supplier info."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query",
+                        },
+                        "page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 1,
+                            "description": "Page number (1-indexed, default: 1)",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["default", "price_asc", "price_desc"],
+                            "default": "default",
+                            "description": "Sort order",
+                        },
+                        "min_price": {
+                            "type": "number",
+                            "description": "Minimum price filter (USD)",
+                        },
+                        "max_price": {
+                            "type": "number",
+                            "description": "Maximum price filter (USD)",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
         ]
 
     def _format_result(name: str, result: dict, start_time: float) -> list[TextContent]:
@@ -309,6 +430,58 @@ def create_server(
                 result = await search_web(
                     query=arguments["query"],
                     page=max(1, arguments.get("page", 1)),
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "get_aliexpress_product":
+                result = await get_aliexpress_product(
+                    product_id=arguments["product_id"],
+                    fetcher=fetcher,
+                    cache=cache,
+                    config=config,
+                    cookie_cache=cookie_cache,
+                    challenge_solver=challenge_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_aliexpress":
+                result = await search_aliexpress_tool(
+                    query=arguments["query"],
+                    page=max(1, arguments.get("page", 1)),
+                    sort=arguments.get("sort", "default"),
+                    min_price=arguments.get("min_price"),
+                    max_price=arguments.get("max_price"),
+                    fetcher=fetcher,
+                    cache=cache,
+                    config=config,
+                    cookie_cache=cookie_cache,
+                    challenge_solver=challenge_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "get_alibaba_product":
+                result = await get_alibaba_product(
+                    product_id=arguments["product_id"],
+                    fetcher=fetcher,
+                    cache=cache,
+                    config=config,
+                    cookie_cache=cookie_cache,
+                    challenge_solver=challenge_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_alibaba":
+                result = await search_alibaba_tool(
+                    query=arguments["query"],
+                    page=max(1, arguments.get("page", 1)),
+                    sort=arguments.get("sort", "default"),
+                    min_price=arguments.get("min_price"),
+                    max_price=arguments.get("max_price"),
+                    fetcher=fetcher,
+                    cache=cache,
+                    config=config,
+                    cookie_cache=cookie_cache,
+                    challenge_solver=challenge_solver,
                 )
                 return _format_result(name, result, start_time)
 
