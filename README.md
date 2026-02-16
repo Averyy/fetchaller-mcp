@@ -10,6 +10,10 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 - **`search`**: Web search via Google + DuckDuckGo
 - **`browse_reddit`**: Browse subreddit listings (hot/new/top/rising)
 - **`search_reddit`**: Search Reddit posts globally or within a subreddit
+- **`get_aliexpress_product`**: AliExpress product details (price, specs, ratings, reviews)
+- **`search_aliexpress`**: Search AliExpress products with price filters and sorting
+- **`get_alibaba_product`**: Alibaba.com B2B product details (tiered pricing, MOQ, lead times, supplier info)
+- **`search_alibaba`**: Search Alibaba.com B2B products
 
 ## Quick Start
 
@@ -34,7 +38,11 @@ Add permissions to `~/.claude/settings.json`:
       "mcp__fetchaller__fetch",
       "mcp__fetchaller__search",
       "mcp__fetchaller__browse_reddit",
-      "mcp__fetchaller__search_reddit"
+      "mcp__fetchaller__search_reddit",
+      "mcp__fetchaller__get_aliexpress_product",
+      "mcp__fetchaller__search_aliexpress",
+      "mcp__fetchaller__get_alibaba_product",
+      "mcp__fetchaller__search_alibaba"
     ]
   }
 }
@@ -55,6 +63,10 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 - `mcp__fetchaller__search(query, page?)` — Web search (Google + DuckDuckGo)
 - `mcp__fetchaller__browse_reddit(subreddit, sort?, time?, limit?)` — Browse subreddit listings
 - `mcp__fetchaller__search_reddit(query, subreddit?, sort?, time?, limit?)` — Search Reddit posts
+- `mcp__fetchaller__get_aliexpress_product(product_id)` — AliExpress product details
+- `mcp__fetchaller__search_aliexpress(query, page?, sort?, min_price?, max_price?)` — Search AliExpress
+- `mcp__fetchaller__get_alibaba_product(product_id)` — Alibaba.com product details
+- `mcp__fetchaller__search_alibaba(query, page?, sort?, min_price?, max_price?)` — Search Alibaba.com
 ```
 
 ## Usage
@@ -174,6 +186,36 @@ All Reddit URLs are automatically transformed to `old.reddit.com` for 65-70% tok
 
 Reddit allows ~10 unauthenticated API requests per minute. `browse_reddit` and `search_reddit` each use 1 API call. `fetch` uses HTML (no API call).
 
+## AliExpress & Alibaba Tools
+
+### `get_aliexpress_product(product_id)` - Product Details
+
+Accepts a numeric product ID (e.g., `1005006027485365`) or full URL. Returns price, specifications, ratings, and recent reviews via AliExpress's MTop API.
+
+### `search_aliexpress(query, page?, sort?, min_price?, max_price?)` - Search Products
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| query | string | required | Search query |
+| page | number | 1 | Page number (1-indexed) |
+| sort | string | "default" | default, orders, price_asc, price_desc |
+| min_price | number | — | Minimum price filter |
+| max_price | number | — | Maximum price filter |
+
+### `get_alibaba_product(product_id)` - B2B Product Details
+
+Accepts a numeric product ID or full URL. Returns tiered pricing, MOQ, lead times, supplier info, and specifications.
+
+### `search_alibaba(query, page?, sort?, min_price?, max_price?)` - Search B2B Products
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| query | string | required | Search query |
+| page | number | 1 | Page number (1-indexed) |
+| sort | string | "default" | default, price_asc, price_desc |
+| min_price | number | — | Minimum price filter (USD) |
+| max_price | number | — | Maximum price filter (USD) |
+
 ## How It Works
 
 1. Validates URL (http/https only)
@@ -182,7 +224,7 @@ Reddit allows ~10 unauthenticated API requests per minute. `browse_reddit` and `
 4. Fetches with browser-like TLS fingerprints (curl_cffi)
 5. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
 6. Detects content type
-7. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup for GitHub/Reddit/HN/Wikipedia/Medium/Stack Overflow/forums, converts to markdown
+7. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (20+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, and more), converts to markdown
 8. For JSON/XML/CSV/text: returns raw
 9. For PDF: extracts text
 10. Truncates to token limit
@@ -196,8 +238,10 @@ fetchaller transparently bypasses bot challenges. First requests to protected si
 | Challenge | Method | Speed |
 |-----------|--------|-------|
 | Alibaba Cloud WAF (`acw_sc__v2`) | Pure Python solver (fixed shuffle + XOR) | ~1ms |
+| Alibaba Cloud WAF TMD | Headful Chrome, session warming via homepage | ~5-10s |
 | Cloudflare Managed Challenge | Headful Chrome via PyDoll + Xvfb | ~3-30s |
-| Akamai Bot Manager | Headful Chrome, poll for `_abck` cookie | ~3-15s |
+| Akamai Bot Manager | Headful Chrome, poll for `_abck` cookie + HTML fallback | ~3-15s |
+| Amazon rate-limit/CAPTCHA | Headful Chrome, click "Continue shopping" | ~3-10s |
 | DataDome, PerimeterX, Imperva, Kasada | Headful Chrome, network idle wait | ~3-10s |
 
 ### How It Works
@@ -280,6 +324,9 @@ For Claude.ai web/mobile with cross-platform sync:
 | `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
 | `CHROME_IDLE_TIMEOUT` | 60 | Minutes before idle Chrome shuts down |
 | `COOKIE_CACHE_PATH` | auto | Cookie persistence path (auto-detects `/app/data/` in Docker) |
+| `MOUSER_API_KEY` | — | Mouser Search API key ([free registration](https://www.mouser.com/MyMouser/MouserSearchApplication.aspx)) |
+| `DIGIKEY_CLIENT_ID` | — | DigiKey API client ID ([free registration](https://developer.digikey.com)) |
+| `DIGIKEY_CLIENT_SECRET` | — | DigiKey API client secret |
 
 ## Security
 
@@ -298,9 +345,13 @@ fetchaller-mcp/
 │   ├── config.py            # Configuration
 │   ├── botfighter.py        # Bot challenge detection, solving, cookie cache
 │   ├── http/                # HTTP server (FastAPI)
-│   ├── tools/               # MCP tools (fetch, search, reddit)
+│   ├── tools/               # MCP tools (fetch, search, reddit, aliexpress, alibaba)
 │   ├── content/             # Content processing (HTML→markdown, site-specific cleanup)
 │   ├── search/              # Web search (Google + DuckDuckGo)
+│   ├── aliexpress/          # AliExpress MTop API client, product, search, reviews
+│   ├── alibaba/             # Alibaba.com product and search extraction
+│   ├── mouser/              # Mouser Search API client
+│   ├── digikey/             # DigiKey API client (OAuth2 + product/search)
 │   ├── cache/               # Response caching
 │   ├── queue/               # Reddit rate limiting
 │   └── security/            # SSRF, crypto, XSS

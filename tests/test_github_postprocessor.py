@@ -291,6 +291,28 @@ class TestGitHubSearchResults:
         assert "great library" in md
 
 
+class TestGitHubIssueUINoiseCleanup:
+    """Issue/PR page UI noise that leaks through HTML pipeline is cleaned."""
+
+    async def test_copy_link_stripped(self):
+        html = "<body><p>Real content</p><p>Copy link</p><p>More content</p></body>"
+        md, _ = await html_to_markdown(html, url="https://github.com/owner/repo/issues/1")
+        assert "Copy link" not in md
+        assert "Real content" in md
+
+    async def test_issue_body_actions_stripped(self):
+        html = "<body><p>Bug description</p><p>Issue body actions</p></body>"
+        md, _ = await html_to_markdown(html, url="https://github.com/owner/repo/issues/1")
+        assert "Issue body actions" not in md
+        assert "Bug description" in md
+
+    async def test_reactions_unavailable_stripped(self):
+        html = "<body><p>Comment text</p><p>Reactions are currently unavailable</p></body>"
+        md, _ = await html_to_markdown(html, url="https://github.com/owner/repo/issues/1")
+        assert "Reactions are currently unavailable" not in md
+        assert "Comment text" in md
+
+
 class TestGitHubIsolation:
     """GitHub post-processing must not affect other sites."""
 

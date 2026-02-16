@@ -1,5 +1,6 @@
 """Fetch tool - main URL fetching functionality."""
 
+import os
 import re
 import sys
 import time
@@ -24,6 +25,7 @@ from ..content.alibaba import (
 )
 from ..content.aliexpress import extract_product_id_from_url, extract_search_products, is_aliexpress_search_url
 from ..content.amazon import is_amazon_store
+from ..content.digikey import is_digikey as _is_digikey
 from ..content.fetcher import ContentFetcher, FetchResult, RetryConfig
 from ..content.forums import (
     discover_feed_url,
@@ -34,8 +36,13 @@ from ..content.forums import (
     parse_feed,
     transform_forum_url,
 )
-from ..content.github import extract_github_file_listing, transform_github_url
+from ..content.github import (
+    extract_github_file_listing,
+    extract_github_issue,
+    transform_github_url,
+)
 from ..content.html import html_to_markdown
+from ..content.mouser import is_mouser as _is_mouser
 from ..content.pdf import extract_pdf
 from ..content.reddit import transform_reddit_url
 from ..content.soylent import is_soylent as _is_soylent
@@ -494,6 +501,45 @@ async def fetch_url(
             return {"content": content, "content_type": "text", "url": url}
         return result  # Error dict
 
+    # Mouser product/search pages — use API when key is configured
+    if _is_mouser(url):
+        mouser_key = os.environ.get("MOUSER_API_KEY")
+        if mouser_key:
+            from ..mouser.api import get_product as get_mouser_product
+
+            result = await get_mouser_product(url, api_key=mouser_key)
+            if "content" in result:
+                content = truncate(result["content"], max_tokens)
+                if cache:
+                    cache.set(normalize_url(url), content, "text")
+                _log(f"FETCH {url} -> Mouser API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "text", "url": url}
+            # Unrecognized URL pattern — fall through to HTML pipeline
+            if "Could not extract" not in result.get("error", ""):
+                return result  # Definitive API failure (auth, rate limit, timeout)
+            _log(f"FETCH {url} -> Mouser API couldn't parse URL, falling through to HTML")
+        # No API key or unrecognized URL — fall through to HTML pipeline
+
+    # DigiKey product/search pages — use API when credentials are configured
+    if _is_digikey(url):
+        dk_client_id = os.environ.get("DIGIKEY_CLIENT_ID")
+        dk_client_secret = os.environ.get("DIGIKEY_CLIENT_SECRET")
+        if dk_client_id and dk_client_secret:
+            from ..digikey.api import get_product as get_digikey_product
+
+            result = await get_digikey_product(url, client_id=dk_client_id, client_secret=dk_client_secret)
+            if "content" in result:
+                content = truncate(result["content"], max_tokens)
+                if cache:
+                    cache.set(normalize_url(url), content, "text")
+                _log(f"FETCH {url} -> DigiKey API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "text", "url": url}
+            # Unrecognized URL pattern — fall through to HTML pipeline
+            if "Could not extract" not in result.get("error", ""):
+                return result  # Definitive API failure (auth, rate limit, timeout)
+            _log(f"FETCH {url} -> DigiKey API couldn't parse URL, falling through to HTML")
+        # No credentials or unrecognized URL — fall through to HTML pipeline
+
     # Transform Reddit URLs
     reddit_result = transform_reddit_url(url)
     fetch_url_str = reddit_result.url
@@ -816,12 +862,23 @@ async def fetch_url(
                     _log(f"FETCH {url} -> AliExpress search extraction ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                     return {"content": content, "content_type": "text", "url": effective_url}
 
+            # GitHub issue/PR/discussion pages: extract from embedded JSON directly.
+            # The HTML pipeline strips <script> tags, destroying the comment data.
+            if is_github:
+                issue_content = extract_github_issue(html, effective_url)
+                if issue_content:
+                    content = truncate(issue_content, max_tokens)
+                    if cache and cache_key:
+                        cache.set(cache_key, issue_content, "text")
+                    _log(f"FETCH {url} -> GitHub issue extraction ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                    return {"content": content, "content_type": "text", "url": effective_url}
+
             # GitHub tree/repo pages: extract file listing from embedded JSON (additive).
             # The listing is prepended to the normal HTML→markdown result, which provides
             # the README and any other server-rendered content.
             file_listing = None
             if is_github:
-                file_listing = extract_github_file_listing(html, result.final_url or url)
+                file_listing = extract_github_file_listing(html, effective_url)
 
             markdown, _ = await html_to_markdown(html, is_reddit=is_reddit, url=result.final_url)
 

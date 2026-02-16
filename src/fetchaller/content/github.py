@@ -1,13 +1,14 @@
-"""GitHub-specific HTML cleanup, URL transforms, and file tree extraction.
+"""GitHub-specific HTML cleanup, URL transforms, file tree and issue extraction.
 
 Exports the standard site interface (SELECTORS_LIST, is_github, strip_github_junk,
 postprocess_github) plus GitHub-specific helpers (transform_github_url,
-extract_github_file_listing).
+extract_github_file_listing, extract_github_issue).
 """
 
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -196,6 +197,141 @@ def extract_github_file_listing(html: str, url: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Issue / PR / Discussion extraction from embedded JSON
+# ---------------------------------------------------------------------------
+
+# Regex to extract the react-app.embeddedData JSON without BeautifulSoup
+# (BS4 can mangle control characters in large JSON blobs)
+_EMBEDDED_DATA_RE = re.compile(
+    r'<script[^>]*data-target="react-app\.embeddedData"[^>]*>(.*?)</script>',
+    re.DOTALL,
+)
+
+# Query name → key in data.repository
+_QUERY_MAP = {
+    "IssueViewerViewQuery": "issue",
+    "PullRequestViewerViewQuery": "pullRequest",
+    "DiscussionViewerViewQuery": "discussion",
+}
+
+
+def _format_date(iso_str: str) -> str:
+    """Format ISO 8601 timestamp to 'Jan 27, 2024'."""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%b %-d, %Y")
+    except (ValueError, AttributeError):
+        return iso_str
+
+
+def _format_state(item: dict) -> str:
+    """Format state string from issue/PR data."""
+    state = item.get("state", "")
+    state_reason = item.get("stateReason")
+    if state == "CLOSED" and state_reason == "NOT_PLANNED":
+        return "Closed as not planned"
+    if state == "CLOSED":
+        return "Closed"
+    if state == "MERGED":
+        return "Merged"
+    if state == "OPEN":
+        return "Open"
+    return state.capitalize() if state else ""
+
+
+def _extract_comments(item: dict) -> list[dict]:
+    """Extract IssueComment nodes from front/back timeline items, in order."""
+    comments = []
+    for timeline_key in ("frontTimelineItems", "backTimelineItems"):
+        timeline = item.get(timeline_key, {})
+        for edge in timeline.get("edges", []):
+            node = edge.get("node", {})
+            if node.get("__typename") == "IssueComment":
+                if node.get("isHidden"):
+                    continue
+                comments.append(node)
+    return comments
+
+
+def extract_github_issue(html: str, url: str) -> str | None:
+    """
+    Extract issue/PR/discussion data from GitHub's embedded JSON.
+
+    Returns formatted markdown with title, body, and all comments,
+    or None if this page doesn't have issue/PR/discussion data.
+    """
+    try:
+        # Use regex to extract JSON — BS4 can mangle control chars in body text
+        m = _EMBEDDED_DATA_RE.search(html)
+        if not m:
+            return None
+
+        data = json.loads(m.group(1), strict=False)
+        queries = data.get("payload", {}).get("preloadedQueries", [])
+        if not queries:
+            return None
+
+        # Find a matching query
+        for query in queries:
+            query_name = query.get("queryName", "")
+            repo_key = _QUERY_MAP.get(query_name)
+            if not repo_key:
+                continue
+
+            repo = query.get("result", {}).get("data", {}).get("repository", {})
+            item = repo.get(repo_key)
+            if not item:
+                continue
+
+            # Found it — extract fields
+            title = item.get("title", "")
+            number = item.get("number", "")
+            state = _format_state(item)
+            author = item.get("author", {}).get("login", "unknown")
+            created = _format_date(item.get("createdAt", ""))
+            body = (item.get("body") or "").replace("\r\n", "\n").strip()
+
+            # Labels
+            labels = []
+            for edge in item.get("labels", {}).get("edges", []):
+                name = edge.get("node", {}).get("name")
+                if name:
+                    labels.append(name)
+
+            # Build header line
+            parts = [f"**{author}** opened on {created}"]
+            if state:
+                parts.append(state)
+            if labels:
+                parts.append("Labels: " + ", ".join(labels))
+
+            lines = [f"# {title} #{number}\n"]
+            lines.append(" · ".join(parts))
+            lines.append("")
+            if body:
+                lines.append(body)
+
+            # Comments
+            comments = _extract_comments(item)
+            for comment in comments:
+                c_author = comment.get("author", {}).get("login", "unknown")
+                c_date = _format_date(comment.get("createdAt", ""))
+                c_body = (comment.get("body") or "").replace("\r\n", "\n").strip()
+
+                lines.append("\n---\n")
+                lines.append(f"**{c_author}** on {c_date}:\n")
+                if c_body:
+                    lines.append(c_body)
+
+            return "\n".join(lines)
+
+        return None
+
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # CSS selectors for elements to remove before markdown conversion
 # ---------------------------------------------------------------------------
 
@@ -357,6 +493,12 @@ _CRUFT = [
     "\n## Filter by\n",
     # Org pages
     "- [Sponsor](/sponsors)\n",
+    # Issue/PR page UI noise
+    "\nCopy link\n",
+    "\nIssue body actions\n",
+    "\nIssue body actions",
+    "\nReactions are currently unavailable\n",
+    "\nReactions are currently unavailable",
 ]
 
 # --- Issues ---

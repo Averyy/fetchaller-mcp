@@ -82,6 +82,16 @@ class TestDetectChallenge:
         """Akamai body markers on 200 should NOT trigger false positive. [#19]"""
         assert detect_challenge(200, {"set-cookie": "_abck=abc"}, "bmSz check") is None
 
+    def test_detects_akamai_behavioral_200(self):
+        """Mouser returns 200 with small Akamai behavioral challenge page."""
+        body = '<div id="sec-if-cpt-container"><div class="behavioral-content">challenge</div></div>'
+        assert detect_challenge(200, {"set-cookie": "_abck=abc"}, body) == "akamai"
+
+    def test_akamai_behavioral_200_large_body_no_trigger(self):
+        """Normal Akamai-protected pages (200, large body) must NOT trigger."""
+        body = '<div id="sec-if-cpt-container">' + "x" * 15_000
+        assert detect_challenge(200, {"set-cookie": "_abck=abc"}, body) is None
+
     def test_detects_akamai_keyword(self):
         assert detect_challenge(403, {}, "Akamai Bot Manager") == "akamai"
 
@@ -94,8 +104,16 @@ class TestDetectChallenge:
     def test_detects_perimeterx_cookie(self):
         assert detect_challenge(403, {"set-cookie": "_px3=abc"}, "") == "perimeterx"
 
+    def test_detects_perimeterx_cookie_429(self):
+        """DigiKey returns 429 with _pxhd cookie — PerimeterX must detect on 429 too."""
+        assert detect_challenge(429, {"set-cookie": "_pxhd=abc"}, "") == "perimeterx"
+
     def test_detects_perimeterx_body(self):
         assert detect_challenge(403, {}, "human.security verification") == "perimeterx"
+
+    def test_detects_perimeterx_body_429(self):
+        """DigiKey returns 429 with px-captcha body marker."""
+        assert detect_challenge(429, {}, '<meta name="description" content="px-captcha">') == "perimeterx"
 
     def test_detects_imperva_cookie(self):
         assert detect_challenge(403, {"set-cookie": "reese84=abc"}, "") == "imperva"
@@ -461,16 +479,15 @@ class TestChallengeSolver:
     async def test_tmd_solved_via_session_warming(self):
         """TMD challenges are solved by visiting the homepage (session warming)."""
         solver = ChallengeSolver()
-        result = await solver.solve("https://www.aliexpress.com/w/wholesale-test.html", "tmd")
-        assert result is not None
-        # TMD solve should return cookies (not an error) via homepage visit
-        if "error" not in result:
-            # Chrome available — solve succeeded
-            assert "cookies" in result
-            assert "user_agent" in result
-            assert isinstance(result["cookies"], list)
-        # If Chrome is not available, _ensure_browser returns None → solve returns None
-        # But if we get a result dict, it should have cookies or error
+        mock_tab = AsyncMock()
+        expected_cookies = [{"name": "_m_h5_tk", "value": "abc123"}]
+
+        with patch.object(solver, "_ensure_browser", return_value=mock_tab):
+            with patch.object(solver, "_solve_tmd", return_value={"cookies": expected_cookies, "user_agent": "UA"}):
+                result = await solver.solve("https://www.aliexpress.com/w/wholesale-test.html", "tmd")
+                assert result is not None
+                assert result["cookies"] == expected_cookies
+                assert result["user_agent"] == "UA"
 
 
 # ── _handle_botfighter Integration Tests [#18] ───────────────────────────────

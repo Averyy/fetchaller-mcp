@@ -16,6 +16,9 @@ services:
       - MCP_API_KEY=${MCP_API_KEY}
       - MCP_SERVER_URL=${MCP_SERVER_URL:-http://localhost:6000}
       - CHROME_IDLE_TIMEOUT=${CHROME_IDLE_TIMEOUT:-60}
+      - MOUSER_API_KEY=${MOUSER_API_KEY:-}
+      - DIGIKEY_CLIENT_ID=${DIGIKEY_CLIENT_ID:-}
+      - DIGIKEY_CLIENT_SECRET=${DIGIKEY_CLIENT_SECRET:-}
       - PUID=${PUID:-99}
       - PGID=${PGID:-100}
     volumes:

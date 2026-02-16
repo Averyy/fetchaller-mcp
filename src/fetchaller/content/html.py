@@ -14,11 +14,16 @@ from markdownify import markdownify
 from . import alibaba as _alibaba
 from . import aliexpress as _aliexpress
 from . import amazon as _amazon
+from . import craigslist as _craigslist
+from . import digikey as _digikey
+from . import ebay as _ebay
 from . import forums as _forums
 from . import github as _github
 from . import hackernews as _hackernews
 from . import huggingface as _huggingface
+from . import kijiji as _kijiji
 from . import medium as _medium
+from . import mouser as _mouser
 from . import reddit as _reddit
 from . import redflagdeals as _redflagdeals
 from . import soylent as _soylent
@@ -98,6 +103,11 @@ _JUNK_AND_MEDIUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _medium.SELECTORS_L
 _JUNK_AND_REDFLAGDEALS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST + _redflagdeals.SELECTORS_LIST)
 _JUNK_AND_STACKOVERFLOW_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _stackoverflow.SELECTORS_LIST)
 _JUNK_AND_FORUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST)
+_JUNK_AND_CRAIGSLIST_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _craigslist.SELECTORS_LIST)
+_JUNK_AND_DIGIKEY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _digikey.SELECTORS_LIST)
+_JUNK_AND_EBAY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _ebay.SELECTORS_LIST)
+_JUNK_AND_KIJIJI_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _kijiji.SELECTORS_LIST)
+_JUNK_AND_MOUSER_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _mouser.SELECTORS_LIST)
 _JUNK_AND_SOYLENT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _soylent.SELECTORS_LIST)
 _JUNK_AND_WIKIPEDIA_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _wikipedia.SELECTORS_LIST)
 
@@ -198,6 +208,16 @@ def _detect_site(
         return "aliexpress"
     if url and _amazon.is_amazon(url):
         return "amazon"
+    if url and _craigslist.is_craigslist(url):
+        return "craigslist"
+    if url and _digikey.is_digikey(url):
+        return "digikey"
+    if url and _ebay.is_ebay(url):
+        return "ebay"
+    if url and _kijiji.is_kijiji(url):
+        return "kijiji"
+    if url and _mouser.is_mouser(url):
+        return "mouser"
     if url and _hackernews.is_hackernews(url):
         return "hackernews"
     if url and _github.is_github(url):
@@ -233,6 +253,11 @@ _SITE_SELECTORS = {
     "alibaba": _JUNK_AND_ALIBABA_SELECTOR,
     "aliexpress": _JUNK_AND_ALIEXPRESS_SELECTOR,
     "amazon": _JUNK_AND_AMAZON_SELECTOR,
+    "craigslist": _JUNK_AND_CRAIGSLIST_SELECTOR,
+    "digikey": _JUNK_AND_DIGIKEY_SELECTOR,
+    "ebay": _JUNK_AND_EBAY_SELECTOR,
+    "kijiji": _JUNK_AND_KIJIJI_SELECTOR,
+    "mouser": _JUNK_AND_MOUSER_SELECTOR,
     "reddit": _JUNK_AND_REDDIT_SELECTOR,
     "hackernews": _JUNK_AND_HACKERNEWS_SELECTOR,
     "github": _JUNK_AND_GITHUB_SELECTOR,
@@ -277,6 +302,10 @@ def clean_html(
     if site == "amazon":
         _amazon.extract_related_products(soup)
 
+    # eBay: extract JSON-LD product data before scripts are removed
+    if site == "ebay":
+        _ebay.extract_ebay_jsonld(soup)
+
     # Soylent: extract inventory from gsf_conversion_data before scripts are removed
     if site == "soylent":
         _soylent.extract_inventory(soup)
@@ -296,6 +325,14 @@ def clean_html(
         _aliexpress.strip_aliexpress_junk(soup)
     elif site == "amazon":
         _amazon.strip_amazon_junk(soup)
+    elif site == "digikey":
+        _digikey.strip_digikey_junk(soup)
+    elif site == "ebay":
+        _ebay.strip_ebay_junk(soup)
+    elif site == "kijiji":
+        _kijiji.strip_kijiji_junk(soup)
+    elif site == "mouser":
+        _mouser.strip_mouser_junk(soup)
     elif site == "hackernews":
         _hackernews.strip_hn_junk(soup)
     elif site == "github":
@@ -369,6 +406,16 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _aliexpress.postprocess_aliexpress(markdown)
     elif site == "amazon":
         markdown = _amazon.postprocess_amazon(markdown)
+    elif site == "craigslist":
+        markdown = _craigslist.postprocess_craigslist(markdown)
+    elif site == "digikey":
+        markdown = _digikey.postprocess_digikey(markdown)
+    elif site == "ebay":
+        markdown = _ebay.postprocess_ebay(markdown)
+    elif site == "kijiji":
+        markdown = _kijiji.postprocess_kijiji(markdown)
+    elif site == "mouser":
+        markdown = _mouser.postprocess_mouser(markdown)
     elif site == "hackernews":
         markdown = _hackernews.postprocess_hn(markdown)
     elif site == "github":

@@ -648,7 +648,11 @@ claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python
       <span class="code-string">"mcp__fetchaller__fetch"</span>,
       <span class="code-string">"mcp__fetchaller__search"</span>,
       <span class="code-string">"mcp__fetchaller__browse_reddit"</span>,
-      <span class="code-string">"mcp__fetchaller__search_reddit"</span>
+      <span class="code-string">"mcp__fetchaller__search_reddit"</span>,
+      <span class="code-string">"mcp__fetchaller__get_aliexpress_product"</span>,
+      <span class="code-string">"mcp__fetchaller__search_aliexpress"</span>,
+      <span class="code-string">"mcp__fetchaller__get_alibaba_product"</span>,
+      <span class="code-string">"mcp__fetchaller__search_alibaba"</span>
     ]
   }
 }</pre>
@@ -674,6 +678,8 @@ with site-specific content cleanup.
 - <span class="code-string">**fetch**</span> — Fetch any URL as clean markdown
 - <span class="code-string">**search**</span> — Web search (Google + DuckDuckGo combined)
 - <span class="code-string">**browse_reddit**</span> / <span class="code-string">**search_reddit**</span> — Reddit listings and search
+- <span class="code-string">**get_aliexpress_product**</span> / <span class="code-string">**search_aliexpress**</span> — AliExpress products
+- <span class="code-string">**get_alibaba_product**</span> / <span class="code-string">**search_alibaba**</span> — Alibaba.com B2B products
 
 Exception: If a dedicated MCP tool exists for a service
 (e.g., GitHub via <span class="code-string">`gh`</span> CLI), prefer that instead.</pre>

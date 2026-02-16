@@ -139,6 +139,13 @@ def detect_challenge(status_code: int, headers: dict[str, str], body: str) -> st
             return "akamai"
         if status_code != 200 and ("bmSz" in body or "sensor_data" in body or "_BomA" in body):
             return "akamai"
+        # Akamai behavioral challenge — status 200 with small challenge page.
+        # Normal Akamai-protected pages return 200 with large bodies (real content).
+        # Behavioral challenges return 200 with tiny bodies (< 10KB) containing
+        # Akamai-branded UI for human verification (tile selection, etc.).
+        if status_code == 200 and len(body) < 10_000:
+            if "sec-if-cpt" in body or "behavioral-content" in body:
+                return "akamai"
 
     # [#12] Defer body.lower() — only compute once, only when status is 403/429
     body_lower: str | None = None
@@ -156,11 +163,11 @@ def detect_challenge(status_code: int, headers: dict[str, str], body: str) -> st
         if "datadome" in body_lower or "dd.js" in body_lower:
             return "datadome"
 
-    # PerimeterX / HUMAN
-    if ("_px3" in set_cookie or "_pxhd" in set_cookie) and status_code == 403:
+    # PerimeterX / HUMAN [#26: also detect on 429 — DigiKey returns 429 with PX challenge]
+    if ("_px3" in set_cookie or "_pxhd" in set_cookie) and status_code in (403, 429):
         return "perimeterx"
-    if status_code == 403 and body_lower is not None:
-        if "perimeterx" in body_lower or "human.security" in body_lower or "press & hold" in body_lower:
+    if status_code in (403, 429) and body_lower is not None:
+        if "perimeterx" in body_lower or "human.security" in body_lower or "press & hold" in body_lower or "px-captcha" in body_lower:
             return "perimeterx"
 
     # Imperva / Incapsula

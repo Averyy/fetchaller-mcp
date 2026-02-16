@@ -153,6 +153,56 @@ class TestSelectorDispatch:
         assert soup.find(attrs={"data-testid": "headerSignUpButton"}) is None
         assert "article content" in soup.get_text()
 
+    def test_craigslist_leftbar_removed(self):
+        html = _wrap(
+            '<div id="leftbar">search filters junk</div>'
+            '<div>Actual listing content</div>',
+        )
+        soup, site = clean_html(html, url="https://vancouver.craigslist.org/van/ele/d/post/123.html")
+        assert site == "craigslist"
+        assert "search filters junk" not in soup.get_text()
+        assert "Actual listing content" in soup.get_text()
+
+    def test_ebay_header_removed(self):
+        html = _wrap(
+            '<div id="gh-top">ebay header junk</div>'
+            '<div>Product content</div>',
+        )
+        soup, site = clean_html(html, url="https://www.ebay.com/itm/123456789")
+        assert site == "ebay"
+        assert "ebay header junk" not in soup.get_text()
+        assert "Product content" in soup.get_text()
+
+    def test_kijiji_header_removed(self):
+        html = _wrap(
+            '<div id="MainHeader">kijiji header junk</div>'
+            '<div>Listing content</div>',
+        )
+        soup, site = clean_html(html, url="https://www.kijiji.ca/v-cell-phone/ottawa/iphone/123")
+        assert site == "kijiji"
+        assert "kijiji header junk" not in soup.get_text()
+        assert "Listing content" in soup.get_text()
+
+    def test_digikey_header_removed(self):
+        html = _wrap(
+            '<div id="header">digikey header junk</div>'
+            '<div>Part details content</div>',
+        )
+        soup, site = clean_html(html, url="https://www.digikey.com/en/products/detail/part/12345")
+        assert site == "digikey"
+        assert "digikey header junk" not in soup.get_text()
+        assert "Part details content" in soup.get_text()
+
+    def test_mouser_header_removed(self):
+        html = _wrap(
+            '<div id="header">mouser header junk</div>'
+            '<div>Part details content</div>',
+        )
+        soup, site = clean_html(html, url="https://www.mouser.com/ProductDetail/12345")
+        assert site == "mouser"
+        assert "mouser header junk" not in soup.get_text()
+        assert "Part details content" in soup.get_text()
+
     def test_soylent_announcement_banner_removed(self):
         html = _wrap(
             '<div id="shopify-section-announcement-banner">free shipping social links</div>'
@@ -285,6 +335,65 @@ class TestPostprocessorDispatch:
         assert "Log in" not in md
         assert "Sign up" not in md
         assert "Actual thread content" in md
+
+    def test_craigslist_scam_warning_removed(self):
+        """Craigslist postprocessor removes scam warning boilerplate."""
+        html = _wrap(
+            '<p>Great turntable for sale</p>'
+            '<a href="https://www.craigslist.org/about/help/safety/scams/">'
+            'Avoid scams, deal locally</a>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://vancouver.craigslist.org/van/ele/d/post/123.html")
+        assert "Avoid scams" not in md
+        assert "turntable for sale" in md
+
+    def test_ebay_jsonld_extracted(self):
+        """eBay postprocessor extracts JSON-LD product data."""
+        html = _wrap(
+            '<script type="application/ld+json">'
+            '{"@type": "Product", "brand": {"name": "Acme"}, '
+            '"offers": {"price": "29.99", "priceCurrency": "USD"}}'
+            '</script>'
+            '<h1>Test Widget</h1>'
+            '<p>Great product</p>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.ebay.com/itm/123456789")
+        assert "**Brand:** Acme" in md
+        assert "**Price:** USD 29.99" in md
+        assert "Great product" in md
+
+    def test_kijiji_sponsored_removed(self):
+        """Kijiji postprocessor removes 'Sponsored' labels."""
+        html = _wrap(
+            '<p>Great product listing</p>'
+            '<p>Sponsored</p>'
+            '<p>Another listing</p>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.kijiji.ca/v-buy-sell/ottawa/item/123")
+        assert "Sponsored" not in md
+        assert "Great product listing" in md
+
+    def test_digikey_add_to_cart_removed(self):
+        """DigiKey postprocessor removes 'Add to Cart' buttons."""
+        html = _wrap(
+            '<p>STM32F103C8T6</p>'
+            '<p>Add to Cart</p>'
+            '<p>ARM Cortex-M3 72MHz</p>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.digikey.com/en/products/detail/part/12345")
+        assert "Add to Cart" not in md
+        assert "STM32F103C8T6" in md
+
+    def test_mouser_add_to_cart_removed(self):
+        """Mouser postprocessor removes 'Add to Cart' buttons."""
+        html = _wrap(
+            '<p>ESP32-S3-WROOM-1</p>'
+            '<p>Add to Cart</p>'
+            '<p>Wi-Fi + BLE Module</p>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.mouser.com/ProductDetail/12345")
+        assert "Add to Cart" not in md
+        assert "ESP32-S3-WROOM-1" in md
 
     def test_soylent_gsf_quantity_extracted(self):
         """Soylent postprocessor extracts exact quantity from gsf_conversion_data."""

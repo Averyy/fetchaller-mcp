@@ -91,6 +91,39 @@ class TestDetectSiteByUrl:
     def test_stackexchange_subdomain(self):
         assert _detect_site("https://gaming.stackexchange.com/questions/1", False) == "stackoverflow"
 
+    def test_craigslist_city(self):
+        assert _detect_site("https://vancouver.craigslist.org/van/ele/d/post/123.html", False) == "craigslist"
+
+    def test_craigslist_search(self):
+        assert _detect_site("https://newyork.craigslist.org/search/sss", False) == "craigslist"
+
+    def test_digikey_com(self):
+        assert _detect_site("https://www.digikey.com/en/products/detail/part/12345", False) == "digikey"
+
+    def test_digikey_ca(self):
+        assert _detect_site("https://www.digikey.ca/en/products/detail/part/12345", False) == "digikey"
+
+    def test_ebay_com(self):
+        assert _detect_site("https://www.ebay.com/itm/123456789", False) == "ebay"
+
+    def test_ebay_ca(self):
+        assert _detect_site("https://www.ebay.ca/itm/123456789", False) == "ebay"
+
+    def test_ebay_co_uk(self):
+        assert _detect_site("https://www.ebay.co.uk/itm/123456789", False) == "ebay"
+
+    def test_kijiji_ca(self):
+        assert _detect_site("https://www.kijiji.ca/b-buy-sell/ottawa/c10l1700185", False) == "kijiji"
+
+    def test_kijiji_listing(self):
+        assert _detect_site("https://www.kijiji.ca/v-cell-phone/ottawa/iphone/1701831111", False) == "kijiji"
+
+    def test_mouser_com(self):
+        assert _detect_site("https://www.mouser.com/ProductDetail/12345", False) == "mouser"
+
+    def test_mouser_ca(self):
+        assert _detect_site("https://www.mouser.ca/ProductDetail/12345", False) == "mouser"
+
     def test_soylent_ca(self):
         assert _detect_site("https://www.soylent.ca/products/soylent-drink", False) == "soylent"
 

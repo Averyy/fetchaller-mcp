@@ -35,6 +35,16 @@ Rules for live testing:
 - **When blocked, stop.** Don't retry — you'll make it worse. Switch to saved HTML, fix the code, and try again after 10+ minutes.
 - **Test against the MCP tool** (not direct Python) when checking end-to-end — the MCP tool goes through botfighter and has proper cookie caching.
 
+### Manual Testing Required
+
+**ALWAYS manually test every new feature, site, or support added.** Before committing, fetch real pages through the pipeline and verify the output is clean. Unit tests alone are not sufficient — real HTML varies wildly from test fixtures.
+
+For each new site module:
+1. Fetch at least one real page through `fetch_url()` or the MCP tool
+2. Verify the output is clean (no leaked nav, ads, or boilerplate)
+3. Fix any noise that leaks through, then re-test
+4. Only commit after manual verification passes
+
 ### Writing Tests
 
 **Every test must assert a meaningful outcome.** No useless tests.
@@ -53,8 +63,24 @@ Rules for live testing:
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
 - `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP
-- `test_botfighter.py` — ACW solver (known arg1, deterministic, edge cases), challenge detection (all 7 WAF types + priority + negative cases), cookie cache (set/get/evict, CF expiry, persistence round-trip, corrupt file handling), solver dispatch (lock busy, browser fail, CF/Akamai/generic routing)
+- `test_botfighter.py` — ACW solver (known arg1, deterministic, edge cases), challenge detection (all WAF types + TMD + priority + negative cases), cookie cache (set/get/evict, CF expiry, persistence round-trip, corrupt file handling), solver dispatch (lock busy, browser fail, CF/Akamai/TMD/generic routing), Akamai HTML fallback
 - `test_amazon_postprocessor.py` — Amazon URL detection and regex postprocessor unit tests
+- `test_alibaba_postprocessor.py` — Alibaba.com URL detection and regex postprocessor unit tests
+- `test_alibaba_product.py` — Alibaba product JSON extraction (detailData, SSE data, tiered pricing, supplier info)
+- `test_alibaba_search.py` — Alibaba search extraction (embedded JSON, product listing formatting)
+- `test_aliexpress_postprocessor.py` — AliExpress URL detection and regex postprocessor unit tests
+- `test_aliexpress_product.py` — AliExpress MTop product API extraction (pricing, specs, reviews)
+- `test_aliexpress_search.py` — AliExpress search extraction (HTML parsing, Chrome fallback)
+- `test_aliexpress_mtop.py` — MTop client unit tests (token lifecycle, MD5 signing, JSONP stripping)
+- `test_soylent_postprocessor.py` — Soylent URL detection, inventory extraction, regex postprocessor tests
+- `test_craigslist_postprocessor.py` — Craigslist URL detection and regex postprocessor unit tests
+- `test_kijiji_postprocessor.py` — Kijiji URL detection and regex postprocessor unit tests
+- `test_ebay_postprocessor.py` — eBay URL detection, JSON-LD extraction, regex postprocessor unit tests
+- `test_digikey_postprocessor.py` — DigiKey URL detection and regex postprocessor unit tests
+- `test_digikey_api.py` — DigiKey API client: URL parsing, token manager, product formatting, search, error handling
+- `test_mouser_postprocessor.py` — Mouser URL detection and regex postprocessor unit tests
+- `test_mouser_api.py` — Mouser API client: URL parsing, part formatting, search, error handling
+- `test_ratelimit.py` — Per-domain rate limiter (DomainRateLimiter) unit tests
 - Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
 
 Test URLs for benchmarking:
@@ -80,7 +106,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` C
 
 - **`html.py`** — Generic pipeline + dispatch. Universal junk selectors (nav, footer, ads, cookie banners, modals), markdownify conversion, whitespace cleanup. Dispatches to site modules based on URL.
 - **`amazon.py`** — Amazon (all TLDs): CSS selectors, soup cleanup, regex post-processors. Covers .com, .ca, .co.uk, .de, .fr, .it, .es, .co.jp, .com.au, .in, etc.
-- **`github.py`** — GitHub: CSS selectors, soup cleanup, regex post-processors, URL transforms, file tree extraction.
+- **`github.py`** — GitHub: CSS selectors, soup cleanup, regex post-processors, URL transforms, file tree extraction, issue/PR/discussion extraction from embedded JSON.
 - **`reddit.py`** — Reddit: CSS selectors for old.reddit.com, URL transforms (www→old), post formatting.
 - **`hackernews.py`** — Hacker News: CSS selectors, table unwrapping, story block reformatter.
 - **`medium.py`** — Medium: CSS selectors (data-testid), source param stripping, post-article block removal. HTML-based detection for unknown custom domains.
@@ -91,6 +117,13 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` C
 - **`wikipedia.py`** — Wikipedia: CSS selectors for edit buttons, navboxes, TOC, reference lists.
 - **`alibaba.py`** — Alibaba.com: CSS selectors, embedded JSON extraction (`window.detailData`, `window.__page__data_sse10`), soup cleanup.
 - **`aliexpress.py`** — AliExpress: CSS selectors, soup cleanup, regex post-processors.
+- **`craigslist.py`** — Craigslist (all city subdomains): CSS selectors, regex post-processors for nav/safety/loading noise.
+- **`digikey.py`** — DigiKey (all TLDs): CSS selectors, soup cleanup, regex post-processors. Behind Akamai (botfighter handles). HTML fallback when no API key configured.
+- **`ebay.py`** — eBay (all TLDs): CSS selectors, JSON-LD product data extraction, soup cleanup, regex post-processors.
+- **`kijiji.py`** — Kijiji (kijiji.ca): CSS selectors, soup cleanup, regex post-processors for sponsored/filter/nav noise.
+- **`mouser.py`** — Mouser (all TLDs): CSS selectors, soup cleanup, regex post-processors. Behind Akamai (botfighter handles). HTML fallback when no API key configured.
+- **`soylent.py`** — Soylent (soylent.com, soylent.ca): Shopify store cleanup, inventory extraction from `gsf_conversion_data`.
+- **`ti.py`** — Texas Instruments (ti.com): CSS selectors, document viewer support for lazy-loaded datasheets, inventory placeholder extraction.
 
 Each site module exports the same interface: `is_<site>(url)`, `SELECTORS_LIST`, and optionally `strip_<site>_junk(soup)` / `postprocess_<site>(markdown)`. To add cleanup for a new site, create a new module following this pattern.
 
@@ -115,6 +148,15 @@ Key rules: cached cookies MUST use pinned UA + impersonate (no rotation). CF det
 - **Alibaba.com**: SSR HTML only — no MTop API exists for the international site (`h5api.m.alibaba.com` serves 1688.com domestic China only). Extract embedded JSON from `window.detailData` (product) and `window.__page__data_sse10._offer_list` (search).
 - **AliExpress**: MTop API at `acs.aliexpress.com` for product details (token bootstrap + MD5 signing). SSR HTML fallback for search. Chrome fallback when TMD blocks curl_cffi. Separate reviews API at `feedback.aliexpress.com/pc/searchEvaluation.do`.
 - **MTop client**: `src/fetchaller/aliexpress/mtop.py` — token lifecycle, request signing, auto-refresh.
+
+## Mouser/DigiKey API Architecture
+
+Both Mouser and DigiKey block HTML scraping even with botfighter. When API keys are configured, `fetch_url()` intercepts their URLs and routes to dedicated API modules. Without keys, falls through to HTML pipeline.
+
+- **`src/fetchaller/mouser/api.py`** — Mouser Search API client. Simple API key auth (`?apiKey=KEY`). Keyword search + part number lookup. Extracts MPN from URL path. Rate limited (30 req/min).
+- **`src/fetchaller/digikey/api.py`** — DigiKey API client with OAuth2 `client_credentials` token manager. Keyword search + product details lookup. Extracts part info from URL path. Rate limited (120 req/min burst).
+
+Env vars: `MOUSER_API_KEY`, `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET`.
 
 ## Development & Testing
 

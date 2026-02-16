@@ -66,3 +66,11 @@ aliexpress_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
 # Shopify rate-limits cart/add.js and products.json aggressively (429 after ~15 fast requests).
 # 2s base is conservative enough for sequential product page fetches.
 soylent_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
+
+# Mouser: api.mouser.com (official API)
+# 30 req/min API limit → 2s base interval.
+mouser_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
+
+# DigiKey: api.digikey.com (official API)
+# 120 req/min burst, 1000/day → 0.5s base interval.
+digikey_limiter = DomainRateLimiter(min_interval=0.5, jitter=(0.1, 0.3))
