@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller</title>
-    <meta name="description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 10+ sites. No permission prompts. WebFetch alternative for Claude Code.">
+    <meta name="description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 15+ sites. No permission prompts. WebFetch alternative for Claude Code.">
     <meta name="keywords" content="Claude Code fetch websites, Claude Code MCP server, WebFetch alternative, Claude Code Reddit, web search Claude Code, Google search Claude Code, DuckDuckGo Claude Code, browse reddit Claude Code, search reddit Claude Code, fetch Reddit posts, Claude AI fetch URL, Claude Code PDF, site-specific cleanup, no permission prompts, no domain restrictions">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://fetchaller.dev/">
@@ -13,14 +13,14 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://fetchaller.dev/">
     <meta property="og:title" content="Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller">
-    <meta property="og:description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 10+ sites. No permission prompts.">
+    <meta property="og:description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 15+ sites. No permission prompts.">
     <meta property="og:site_name" content="fetchaller">
     <meta property="og:locale" content="en_US">
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller">
-    <meta name="twitter:description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 10+ sites. No permission prompts.">
+    <meta name="twitter:description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 15+ sites. No permission prompts.">
 
     <!-- Favicons -->
     <link rel="icon" type="image/png" href="favicon-96x96.png" sizes="96x96">
@@ -30,972 +30,891 @@
     <meta name="apple-mobile-web-app-title" content="Fetchaller">
     <link rel="manifest" href="site.webmanifest">
 
-    <meta name="theme-color" content="#62007f">
+    <meta name="theme-color" content="#D5CCAF">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-primary: #000000;
-            --bg-secondary: #0a0a0a;
-            --bg-tertiary: #141414;
-            --bg-card: rgba(255, 255, 255, 0.03);
-            --bg-card-hover: rgba(255, 255, 255, 0.06);
-            --border-color: rgba(255, 255, 255, 0.08);
-            --border-color-hover: rgba(255, 255, 255, 0.15);
-            --text-primary: #f5f5f7;
-            --text-secondary: #a1a1a6;
-            --text-tertiary: #6e6e73;
-            --accent: #ff2300;
-            --accent-hover: #cc1c00;
-            --accent-glow: rgba(255, 35, 0, 0.2);
-            --purple: #62007f;
-            --purple-glow: rgba(98, 0, 127, 0.2);
-            --green: #30d158;
-            --red: #ff453a;
-            --code-bg: #1a1a1a;
+            --bg: #D5CCAF;
+            --bg-raised: #DED7BC;
+            --bg-recessed: #C9BFA2;
+            --text: #2A1F14;
+            --muted: #695C47;
+            --purple: #62007F;
+            --purple-light: #8B2CB0;
+            --red: #FF2300;
+            --red-dark: #CC1C00;
+            --border: #B5A888;
+            --border-light: #E8E2CE;
+            --border-dark: #928668;
+            --screen-bg: #1A0826;
+            --screen-text: #CBA4E8;
+            --screen-dim: #5E3D78;
+            --screen-string: #FF8A6A;
+            --screen-key: #A78DC4;
+            --screen-green: #7ECC8E;
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        html {
-            scroll-behavior: smooth;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
 
         body {
-            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.5;
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
+            font-family: 'IBM Plex Mono', 'SF Mono', 'Menlo', monospace;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            font-size: 0.9375rem;
+            /* Subtle stipple texture */
+            background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
+            background-size: 10px 10px;
         }
 
-        .gradient-bg {
-            position: fixed;
+        /* Top stripe — logo gradient */
+        .stripe {
+            height: 6px;
+            background: linear-gradient(90deg, var(--purple) 0%, var(--red) 100%);
+            box-shadow: 0 1px 0 var(--border-dark);
+        }
+
+        /* Nav — menu bar */
+        nav {
+            position: sticky;
             top: 0;
-            left: 0;
-            right: 0;
-            height: 100vh;
-            background:
-                radial-gradient(ellipse 60% 40% at 25% -10%, rgba(98, 0, 127, 0.15), transparent),
-                radial-gradient(ellipse 50% 35% at 75% 20%, rgba(255, 35, 0, 0.12), transparent),
-                radial-gradient(ellipse 40% 30% at 85% 70%, rgba(98, 0, 127, 0.08), transparent);
-            pointer-events: none;
-            z-index: -1;
+            z-index: 100;
+            background: var(--bg-raised);
+            background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
+            background-size: 10px 10px;
+            border-bottom: 3px solid;
+            border-bottom-color: var(--border-dark);
+            border-top: 1px solid var(--border-light);
+            padding: 8px 0;
+            box-shadow: 0 2px 0 rgba(0,0,0,0.08);
         }
 
-        .container {
-            max-width: 900px;
+        .wrap {
+            max-width: 740px;
             margin: 0 auto;
             padding: 0 24px;
         }
 
-        /* Navigation */
-        nav {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            z-index: 100;
-            padding: 16px 0;
-            background: rgba(0, 0, 0, 0.72);
-            backdrop-filter: saturate(180%) blur(20px);
-            -webkit-backdrop-filter: saturate(180%) blur(20px);
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        nav .container {
+        nav .wrap {
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
-        .nav-logo {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1.25rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .nav-links {
-            display: flex;
-            gap: 32px;
-            align-items: center;
-        }
-
-        .nav-links a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            font-size: 0.875rem;
-            font-weight: 500;
-            transition: color 0.2s;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .nav-links a:hover {
-            color: var(--text-primary);
-        }
-
-        /* Hero */
-        .hero {
-            padding: 140px 0 60px;
-            text-align: center;
-        }
-
-        .hero-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 14px;
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 100px;
-            font-size: 0.8125rem;
-            color: var(--text-secondary);
-            margin-bottom: 32px;
-        }
-
-        .hero h1 {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: clamp(1.75rem, 4.5vw, 2.5rem);
-            font-weight: 600;
-            letter-spacing: -0.02em;
-            line-height: 1.2;
-            margin-bottom: 16px;
-            color: var(--text-primary);
-        }
-
-        .hero h1 .highlight {
-            background: linear-gradient(135deg, var(--purple) 0%, var(--accent) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .hero p {
-            font-size: 1.125rem;
-            color: var(--text-secondary);
-            max-width: 580px;
-            margin: 0 auto 32px;
-            line-height: 1.6;
-        }
-
-        .hero-cta {
-            display: flex;
-            gap: 16px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 14px 28px;
-            border-radius: 12px;
+        .logo {
+            font-weight: 700;
             font-size: 1rem;
-            font-weight: 500;
+            color: var(--purple);
             text-decoration: none;
-            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo::after {
+            content: "_";
+            animation: blink 1s step-end infinite;
+            color: var(--red);
+        }
+
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
+        .nav-right {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+
+        .nav-right a {
+            color: var(--text);
+            text-decoration: none;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            padding: 3px 10px;
+            border: 2px solid transparent;
+        }
+
+        .nav-right a:hover {
+            background: var(--bg-recessed);
+            border: 2px solid;
+            border-color: var(--border-dark) var(--border-light) var(--border-light) var(--border-dark);
+        }
+
+        /* Typography */
+        h1 {
+            font-size: clamp(1.75rem, 4.5vw, 2.5rem);
+            font-weight: 700;
+            line-height: 1.2;
+            letter-spacing: -0.02em;
+            margin-bottom: 16px;
+            color: var(--purple);
+        }
+
+        h2 {
+            font-size: 1.375rem;
+            font-weight: 700;
+            line-height: 1.25;
+            margin-bottom: 12px;
+            color: var(--purple);
+        }
+
+        .lead {
+            font-size: 0.9375rem;
+            color: var(--muted);
+            line-height: 1.65;
+            max-width: 560px;
+        }
+
+        .desc {
+            color: var(--muted);
+            line-height: 1.6;
+            margin-bottom: 24px;
+            font-size: 0.875rem;
+        }
+
+        /* Sections */
+        section {
+            padding: 56px 0;
+        }
+
+        section + section {
+            border-top: 2px solid var(--border);
+        }
+
+        .hero {
+            padding: 80px 0 40px;
+        }
+
+        .hero + section {
+            border-top: none;
+        }
+
+        /* Hero animation */
+        .hero .wrap > * {
+            opacity: 0;
+            transform: translateY(12px);
+            animation: fadeUp 0.4s ease forwards;
+        }
+        .hero .wrap > :nth-child(2) { animation-delay: 0.06s; }
+        .hero .wrap > :nth-child(3) { animation-delay: 0.12s; }
+
+        @keyframes fadeUp {
+            to { opacity: 1; transform: none; }
+        }
+
+        /* Buttons — chunky beveled retro */
+        .cta {
+            display: flex;
+            gap: 12px;
+            margin-top: 28px;
+            flex-wrap: wrap;
         }
 
         .btn-primary {
-            background: var(--accent);
+            display: inline-flex;
+            align-items: center;
+            padding: 8px 20px;
+            background: var(--red);
             color: white;
+            border: 3px solid;
+            border-color: #FF6644 #990E00 #990E00 #FF6644;
+            box-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+            font-family: inherit;
+            font-size: 0.875rem;
+            font-weight: 700;
+            text-decoration: none;
+            cursor: pointer;
         }
 
         .btn-primary:hover {
-            background: var(--accent-hover);
-            transform: translateY(-1px);
+            background: #E62000;
+            border-color: #FF7755 #880D00 #880D00 #FF7755;
+            box-shadow: 3px 3px 0 rgba(0,0,0,0.3);
         }
 
-        .btn-secondary {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
+        .btn-primary:active {
+            border-color: #990E00 #FF6644 #FF6644 #990E00;
+            box-shadow: none;
+            transform: translate(1px, 1px);
         }
 
-        .btn-secondary:hover {
-            background: var(--bg-card-hover);
-            border-color: var(--border-color-hover);
-        }
-
-        /* Problem/Solution */
-        .comparison {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
-            margin: 48px 0;
-        }
-
-        .comparison-card {
-            padding: 24px;
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-        }
-
-        .comparison-card.problem {
-            border-color: rgba(255, 69, 58, 0.3);
-        }
-
-        .comparison-card.solution {
-            border-color: rgba(255, 35, 0, 0.3);
-        }
-
-        .comparison-card h3 {
-            font-family: 'JetBrains Mono', monospace;
+        .btn-ghost {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 20px;
+            background: var(--bg-raised);
+            color: var(--text);
+            border: 3px solid;
+            border-color: var(--border-light) var(--border-dark) var(--border-dark) var(--border-light);
+            box-shadow: 2px 2px 0 rgba(0,0,0,0.15);
+            font-family: inherit;
             font-size: 0.875rem;
-            font-weight: 600;
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            font-weight: 700;
+            text-decoration: none;
+            cursor: pointer;
         }
 
-        .comparison-card.problem h3 {
-            color: var(--red);
+        .btn-ghost:hover {
+            background: var(--bg);
+            border-color: #F0EAD6 var(--border-dark) var(--border-dark) #F0EAD6;
+            box-shadow: 3px 3px 0 rgba(0,0,0,0.2);
+            color: var(--purple);
         }
 
-        .comparison-card.solution h3 {
-            color: var(--accent);
+        .btn-ghost:active {
+            border-color: var(--border-dark) var(--border-light) var(--border-light) var(--border-dark);
+            box-shadow: none;
+            transform: translate(1px, 1px);
         }
 
-        .comparison-card ul {
-            list-style: none;
-            color: var(--text-secondary);
-            font-size: 0.9375rem;
-        }
-
-        .comparison-card li {
-            padding: 6px 0;
-            padding-left: 20px;
+        /* Shared CRT screen styles */
+        .crt-screen {
             position: relative;
+            background: var(--screen-bg);
+            border: 2px solid #0D0514;
+            box-shadow: inset 0 0 50px rgba(98, 0, 127, 0.15);
         }
 
-        .comparison-card.problem li::before {
-            content: "✕";
+        .crt-screen::after {
+            content: "";
             position: absolute;
-            left: 0;
-            color: var(--red);
-            font-size: 0.75rem;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 3px,
+                rgba(0, 0, 0, 0.07) 3px,
+                rgba(0, 0, 0, 0.07) 4px
+            );
+            pointer-events: none;
         }
 
-        .comparison-card.solution li::before {
-            content: "✓";
-            position: absolute;
-            left: 0;
-            color: var(--accent);
+        /* Window frame — wraps CRT screens */
+        .window {
+            margin: 20px 0;
+            border: 3px solid;
+            border-color: var(--border-light) var(--border-dark) var(--border-dark) var(--border-light);
+            box-shadow: 3px 3px 0 rgba(0,0,0,0.15);
+            background: var(--bg-raised);
         }
 
-        /* Section */
-        section {
-            padding: 48px 0;
-        }
-
-        .section-title {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1.5rem;
-            font-weight: 600;
-            letter-spacing: -0.02em;
-            margin-bottom: 24px;
-        }
-
-        /* Code block */
-        .code-window {
-            background: var(--code-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            overflow: hidden;
-            margin: 24px 0;
-        }
-
-        .code-header {
+        .window-title {
+            background: linear-gradient(90deg, var(--purple) 0%, var(--purple-light) 100%);
+            color: #E0C0F0;
+            font-size: 0.6875rem;
+            font-weight: 700;
+            padding: 3px 8px;
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 8px;
-            padding: 14px 20px;
-            background: rgba(255, 255, 255, 0.02);
-            border-bottom: 1px solid var(--border-color);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            border-bottom: 2px solid;
+            border-bottom-color: #3A004D;
+        }
+
+        .window-body {
+            padding: 3px;
+        }
+
+        /* Diff comparison */
+        .diff {
+            font-size: 0.8125rem;
+            padding: 14px 16px;
+        }
+
+        .diff-row {
             position: relative;
+            z-index: 1;
+            display: flex;
+            gap: 0;
+        }
+
+        .diff-row + .diff-row {
+            margin-top: 2px;
+        }
+
+        .diff-old, .diff-new {
+            padding: 2px 0;
+        }
+
+        .diff-old {
+            color: var(--screen-string);
+            text-decoration: line-through;
+            text-decoration-color: rgba(255, 138, 106, 0.4);
+            flex: 1;
+        }
+
+        .diff-new {
+            color: var(--screen-green);
+            flex: 1;
+        }
+
+        .diff-old::before { content: "- "; color: var(--screen-string); opacity: 0.6; }
+        .diff-new::before { content: "+ "; color: var(--screen-green); opacity: 0.6; }
+
+        /* Code blocks */
+        .crt-screen pre {
+            padding: 14px;
+            overflow-x: auto;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.8125rem;
+            line-height: 1.7;
+            color: var(--screen-text);
+            margin: 0;
+            position: relative;
+            z-index: 1;
         }
 
         .copy-btn {
-            position: absolute;
-            right: 16px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: rgba(255, 255, 255, 0.06);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            padding: 6px 12px;
-            color: var(--text-secondary);
-            font-size: 12px;
-            font-family: 'Space Grotesk', sans-serif;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid;
+            border-color: #9940C0 #3A004D #3A004D #9940C0;
+            color: #D4A0FF;
+            font-family: inherit;
+            font-size: 0.5625rem;
             cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            transition: all 0.2s;
+            padding: 1px 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
         }
 
-        .copy-btn:hover {
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--text-primary);
+        .copy-btn:hover { background: rgba(0,0,0,0.5); }
+
+        .copy-btn:active {
+            border-color: #3A004D #9940C0 #9940C0 #3A004D;
         }
 
-        .copy-btn.copied {
-            background: rgba(255, 35, 0, 0.15);
-            border-color: var(--accent);
-            color: var(--accent);
+        .copy-btn.copied { color: var(--screen-green); }
+
+        .c { color: var(--screen-dim); }
+        .s { color: var(--screen-string); }
+        .k { color: var(--screen-key); }
+
+        /* Tool sub-sections */
+        .tool-block {
+            margin-bottom: 36px;
         }
 
-        .code-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
+        .tool-block:last-child { margin-bottom: 0; }
+
+        .tool-name {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+            color: var(--red);
         }
 
-        .code-dot.red { background: #ff5f57; }
-        .code-dot.yellow { background: #febc2e; }
-        .code-dot.green { background: #28c840; }
-
-        .code-title {
-            margin-left: 12px;
-            font-size: 0.8125rem;
-            color: var(--text-tertiary);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .code-body {
-            padding: 24px;
-            overflow-x: auto;
-        }
-
-        pre {
-            margin: 0;
-            font-family: 'JetBrains Mono', monospace;
+        .tool-desc {
+            color: var(--muted);
             font-size: 0.875rem;
-            line-height: 1.7;
-        }
-
-        .code-comment { color: #6e6e73; }
-        .code-string { color: #86efac; }
-        .code-key { color: #7dd3fc; }
-
-        /* How it works */
-        .workflow {
-            display: flex;
-            gap: 16px;
-            margin: 32px 0;
-            flex-wrap: wrap;
-        }
-
-        .workflow-step {
-            flex: 1;
-            min-width: 200px;
-            padding: 20px;
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 14px;
-            text-align: center;
-        }
-
-        .workflow-step .number {
-            width: 32px;
-            height: 32px;
-            background: var(--accent-glow);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 12px;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 600;
-            color: var(--accent);
-        }
-
-        .workflow-step h4 {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.875rem;
-            margin-bottom: 6px;
-        }
-
-        .workflow-step p {
-            font-size: 0.8125rem;
-            color: var(--text-secondary);
-        }
-
-        .workflow-step code {
-            background: var(--code-bg);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 0.75rem;
-        }
-
-        /* Features */
-        .features-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 16px;
-            margin-top: 24px;
-        }
-
-        .feature-card {
-            padding: 20px;
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 14px;
-        }
-
-        .feature-card h4 {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.875rem;
-            margin-bottom: 6px;
-        }
-
-        .feature-card p {
-            font-size: 0.8125rem;
-            color: var(--text-secondary);
-        }
-
-        /* FAQ */
-        .faq-list {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .faq-item {
-            padding: 20px;
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 14px;
-        }
-
-        .faq-item h4 {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.9375rem;
-            margin-bottom: 8px;
-            color: var(--text-primary);
-        }
-
-        .faq-item p {
-            font-size: 0.875rem;
-            color: var(--text-secondary);
+            margin-bottom: 14px;
             line-height: 1.6;
         }
 
-        .faq-item code {
-            background: var(--code-bg);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: 'JetBrains Mono', monospace;
+        /* Site grid — recessed panel */
+        .sites {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            border: 3px solid;
+            border-color: var(--border-dark) var(--border-light) var(--border-light) var(--border-dark);
+            overflow: hidden;
+            margin: 20px 0;
+            background: var(--bg-recessed);
+            box-shadow: inset 2px 2px 0 rgba(0,0,0,0.08);
+        }
+
+        .site {
+            padding: 10px 14px;
+        }
+
+        .site:nth-child(odd) {
+            border-right: 1px solid var(--border);
+        }
+
+        .site:nth-child(-n+6) {
+            border-bottom: 1px solid var(--border);
+        }
+
+        .site-name {
+            font-size: 0.8125rem;
+            font-weight: 700;
+            margin-bottom: 1px;
+            color: var(--purple);
+        }
+
+        .site-desc {
+            font-size: 0.75rem;
+            color: var(--muted);
+            line-height: 1.45;
+        }
+
+        /* FAQ */
+        .faq details {
+            border-bottom: 2px solid var(--border);
+        }
+
+        .faq details:first-child {
+            border-top: 2px solid var(--border);
+        }
+
+        .faq summary {
+            padding: 10px 0;
+            font-weight: 600;
+            font-size: 0.875rem;
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            color: var(--text);
+        }
+
+        .faq summary:hover { color: var(--purple); }
+
+        .faq summary::-webkit-details-marker { display: none; }
+
+        .faq summary::after {
+            content: "[+]";
+            color: var(--purple);
+            font-size: 0.75rem;
+            flex-shrink: 0;
+        }
+
+        .faq details[open] summary::after {
+            content: "[-]";
+        }
+
+        .faq details p {
+            padding-bottom: 12px;
+            color: var(--muted);
+            line-height: 1.6;
+            font-size: 0.875rem;
+        }
+
+        .faq code {
+            background: var(--bg-recessed);
+            color: var(--purple);
+            padding: 1px 5px;
+            border: 1px solid var(--border);
             font-size: 0.8125rem;
         }
 
-        /* Footer */
-        footer {
-            padding: 48px 0;
-            border-top: 1px solid var(--border-color);
-            text-align: center;
+        /* Inline note */
+        .note {
+            color: var(--muted);
+            font-size: 0.8125rem;
+            margin-top: 14px;
         }
 
-        .footer-content {
-            color: var(--text-tertiary);
-            font-size: 0.875rem;
+        /* Power LED */
+        .power-led {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #30d158;
+            border-radius: 50%;
+            box-shadow: 0 0 6px rgba(48, 209, 88, 0.6);
+            margin-right: 2px;
+            vertical-align: middle;
+        }
+
+        /* Footer — status bar */
+        footer {
+            background: var(--bg-raised);
+            background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
+            background-size: 10px 10px;
+            padding: 6px 0;
+            border-top: 3px solid;
+            border-top-color: var(--border-light);
+            box-shadow: inset 0 -1px 0 var(--border-dark);
+            font-size: 0.6875rem;
+            color: var(--muted);
+        }
+
+        footer .wrap {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        footer a {
+            color: var(--muted);
+            text-decoration: none;
+            padding: 1px 6px;
+            border: 1px solid transparent;
+        }
+
+        footer a:hover {
+            color: var(--purple);
+            border: 1px solid var(--border);
         }
 
         .footer-links {
             display: flex;
-            gap: 24px;
-            justify-content: center;
-            margin-bottom: 16px;
+            gap: 4px;
         }
 
-        .footer-links a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            font-size: 0.875rem;
-            transition: color 0.2s;
+        /* Reveal animation */
+        .reveal {
+            opacity: 0;
+            transform: translateY(8px);
+            transition: opacity 0.4s ease, transform 0.4s ease;
         }
 
-        .footer-links a:hover {
-            color: var(--text-primary);
+        .reveal.visible {
+            opacity: 1;
+            transform: none;
         }
 
         /* Mobile */
-        @media (max-width: 768px) {
-            .hero {
-                padding: 120px 0 40px;
-            }
-
-            .hero h1 {
-                font-size: 1.5rem;
-            }
-
-            .comparison {
-                grid-template-columns: 1fr;
-            }
-
-            .features-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .nav-links {
-                display: none;
-            }
-
-            .workflow {
-                flex-direction: column;
-            }
-        }
-
-        @media (max-width: 480px) {
-            .hero-cta {
-                flex-direction: column;
-            }
-
-            .btn {
-                justify-content: center;
-            }
+        @media (max-width: 640px) {
+            .hero { padding: 60px 0 32px; }
+            h1 { font-size: 1.5rem; }
+            section { padding: 40px 0; }
+            .diff-row { flex-direction: column; }
+            .diff-new { padding-left: 16px; }
+            .sites { grid-template-columns: 1fr; }
+            .site:nth-child(odd) { border-right: none; }
+            .site { border-bottom: 1px solid var(--border); }
+            .site:last-child { border-bottom: none; }
+            .cta { flex-direction: column; }
+            .cta a { text-align: center; justify-content: center; }
+            .nav-right { gap: 2px; }
         }
     </style>
 </head>
 <body>
-    <div class="gradient-bg"></div>
+    <div class="stripe"></div>
 
     <nav>
-        <div class="container">
-            <a href="./" class="nav-logo">
-                <img src="icon.svg" alt="fetchaller" width="28" height="28" style="border-radius: 6px;">
+        <div class="wrap">
+            <a href="./" class="logo">
+                <img src="icon.svg" alt="fetchaller" width="22" height="22" style="border-radius: 4px;">
                 fetchaller
             </a>
-            <div class="nav-links">
+            <div class="nav-right">
                 <a href="#setup">Setup</a>
                 <a href="#faq">FAQ</a>
-                <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener">
-                    <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-                    GitHub
-                </a>
+                <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener">GitHub</a>
             </div>
         </div>
     </nav>
 
     <main>
         <section class="hero">
-            <div class="container">
-                <div class="hero-badge">MCP Server for Claude Code</div>
-                <h1><span class="highlight">Search, fetch & read</span> any website in Claude Code</h1>
-                <p>Web search, Reddit tools, and smart site-specific cleanup for 10+ sites. No permission prompts, no domain restrictions.</p>
-                <div class="hero-cta">
-                    <a href="#setup" class="btn btn-primary">Get Started</a>
-                    <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener" class="btn btn-secondary">
-                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-                        View on GitHub
+            <div class="wrap">
+                <h1>Search, fetch &amp; read<br>any website in Claude Code</h1>
+                <p class="lead">An MCP server with web search, Reddit tools, and smart site-specific cleanup for 15+ sites. No permission prompts, no domain restrictions.</p>
+                <div class="cta">
+                    <a href="#setup" class="btn-primary">Get started</a>
+                    <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener" class="btn-ghost">
+                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+                        View source
                     </a>
                 </div>
             </div>
         </section>
 
-        <section id="setup">
-            <div class="container">
-                <h2 class="section-title">Run Locally</h2>
+        <section>
+            <div class="wrap reveal">
+                <h2>Why not WebFetch?</h2>
+                <div class="window">
+                    <div class="window-title"><span>diff --fetchaller</span></div>
+                    <div class="window-body">
+                        <div class="crt-screen diff">
+                            <div class="diff-row">
+                                <div class="diff-old">Approve each domain manually</div>
+                                <div class="diff-new">One permission rule, all domains</div>
+                            </div>
+                            <div class="diff-row">
+                                <div class="diff-old">Reddit completely blocked</div>
+                                <div class="diff-new">Browse, search, read full threads</div>
+                            </div>
+                            <div class="diff-row">
+                                <div class="diff-old">No web search built in</div>
+                                <div class="diff-new">Google + DuckDuckGo in parallel</div>
+                            </div>
+                            <div class="diff-row">
+                                <div class="diff-old">Raw HTML with all the noise</div>
+                                <div class="diff-new">65&ndash;98% cleaner with smart cleanup</div>
+                            </div>
+                            <div class="diff-row">
+                                <div class="diff-old">Research constantly interrupted</div>
+                                <div class="diff-new">Seamless research workflows</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
 
-                <div class="code-window">
-                    <div class="code-header">
-                        <div class="code-dot red"></div>
-                        <div class="code-dot yellow"></div>
-                        <div class="code-dot green"></div>
-                        <span class="code-title">Terminal</span>
+        <section id="setup">
+            <div class="wrap reveal">
+                <h2>Run locally</h2>
+
+                <div class="window">
+                    <div class="window-title">
+                        <span>Terminal</span>
                         <button class="copy-btn" onclick="copyCode(this, 'install-code')">Copy</button>
                     </div>
-                    <div class="code-body">
-<pre id="install-code"><span class="code-comment"># Clone and install</span>
+                    <div class="window-body"><div class="crt-screen">
+<pre id="install-code"><span class="c"># Clone and install</span>
 git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
 uv venv && uv pip install -e .
 
-<span class="code-comment"># Add to Claude Code (choose one)</span>
-claude mcp add fetchaller -s user -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main    <span class="code-comment"># all projects</span>
-claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main <span class="code-comment"># this project only</span></pre>
-                    </div>
+<span class="c"># Add to Claude Code (choose one)</span>
+claude mcp add fetchaller -s user -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main    <span class="c"># all projects</span>
+claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main <span class="c"># this project only</span></pre>
+                    </div></div>
                 </div>
 
-                <div class="code-window">
-                    <div class="code-header">
-                        <div class="code-dot red"></div>
-                        <div class="code-dot yellow"></div>
-                        <div class="code-dot green"></div>
-                        <span class="code-title">~/.claude/settings.json</span>
+                <div class="window">
+                    <div class="window-title">
+                        <span>~/.claude/settings.json</span>
                         <button class="copy-btn" onclick="copyCode(this, 'settings-code')">Copy</button>
                     </div>
-                    <div class="code-body">
+                    <div class="window-body"><div class="crt-screen">
 <pre id="settings-code">{
-  <span class="code-key">"permissions"</span>: {
-    <span class="code-key">"allow"</span>: [
-      <span class="code-string">"mcp__fetchaller__fetch"</span>,
-      <span class="code-string">"mcp__fetchaller__search"</span>,
-      <span class="code-string">"mcp__fetchaller__browse_reddit"</span>,
-      <span class="code-string">"mcp__fetchaller__search_reddit"</span>,
-      <span class="code-string">"mcp__fetchaller__get_aliexpress_product"</span>,
-      <span class="code-string">"mcp__fetchaller__search_aliexpress"</span>,
-      <span class="code-string">"mcp__fetchaller__get_alibaba_product"</span>,
-      <span class="code-string">"mcp__fetchaller__search_alibaba"</span>
+  <span class="k">"permissions"</span>: {
+    <span class="k">"allow"</span>: [
+      <span class="s">"mcp__fetchaller__fetch"</span>,
+      <span class="s">"mcp__fetchaller__search"</span>,
+      <span class="s">"mcp__fetchaller__browse_reddit"</span>,
+      <span class="s">"mcp__fetchaller__search_reddit"</span>,
+      <span class="s">"mcp__fetchaller__get_aliexpress_product"</span>,
+      <span class="s">"mcp__fetchaller__search_aliexpress"</span>,
+      <span class="s">"mcp__fetchaller__get_alibaba_product"</span>,
+      <span class="s">"mcp__fetchaller__search_alibaba"</span>
     ]
   }
 }</pre>
-                    </div>
+                    </div></div>
                 </div>
 
-                <div class="code-window">
-                    <div class="code-header">
-                        <div class="code-dot red"></div>
-                        <div class="code-dot yellow"></div>
-                        <div class="code-dot green"></div>
-                        <span class="code-title">CLAUDE.md (recommended)</span>
+                <div class="window">
+                    <div class="window-title">
+                        <span>CLAUDE.md (recommended)</span>
                         <button class="copy-btn" onclick="copyCode(this, 'claude-md-code')">Copy</button>
                     </div>
-                    <div class="code-body">
-<pre id="claude-md-code"><span class="code-comment">## Web Fetching & Search</span>
+                    <div class="window-body"><div class="crt-screen">
+<pre id="claude-md-code"><span class="c">## Web Fetching & Search</span>
 
-<span class="code-key">**ALWAYS use fetchaller MCP tools instead of WebFetch and WebSearch.**</span>
+<span class="k">**ALWAYS use fetchaller MCP tools instead of WebFetch and WebSearch.**</span>
 fetchaller has no domain restrictions, bypasses bot protection
 (Cloudflare, Akamai, etc.), and produces much cleaner markdown
 with site-specific content cleanup.
 
-- <span class="code-string">**fetch**</span> — Fetch any URL as clean markdown
-- <span class="code-string">**search**</span> — Web search (Google + DuckDuckGo combined)
-- <span class="code-string">**browse_reddit**</span> / <span class="code-string">**search_reddit**</span> — Reddit listings and search
-- <span class="code-string">**get_aliexpress_product**</span> / <span class="code-string">**search_aliexpress**</span> — AliExpress products
-- <span class="code-string">**get_alibaba_product**</span> / <span class="code-string">**search_alibaba**</span> — Alibaba.com B2B products
+- <span class="s">**fetch**</span> — Fetch any URL as clean markdown
+- <span class="s">**search**</span> — Web search (Google + DuckDuckGo combined)
+- <span class="s">**browse_reddit**</span> / <span class="s">**search_reddit**</span> — Reddit listings and search
+- <span class="s">**get_aliexpress_product**</span> / <span class="s">**search_aliexpress**</span> — AliExpress products
+- <span class="s">**get_alibaba_product**</span> / <span class="s">**search_alibaba**</span> — Alibaba.com B2B products
 
 Exception: If a dedicated MCP tool exists for a service
-(e.g., GitHub via <span class="code-string">`gh`</span> CLI), prefer that instead.</pre>
-                    </div>
+(e.g., GitHub via <span class="s">`gh`</span> CLI), prefer that instead.</pre>
+                    </div></div>
                 </div>
 
-                <p style="color: var(--text-secondary); margin-top: 16px;">Restart Claude Code after setup. That's it!</p>
+                <p class="note"><span class="power-led"></span> Restart Claude Code after setup. That's it.</p>
             </div>
         </section>
 
         <section id="self-host">
-            <div class="container">
-                <h2 class="section-title">Host at Home</h2>
-                <p style="color: var(--text-secondary); margin-bottom: 24px;">Run fetchaller on your home server with Docker and a reverse proxy. All your Claude clients can connect, and your home IP won't get blocked by Reddit like cloud servers do.</p>
+            <div class="wrap reveal">
+                <h2>Host at home</h2>
+                <p class="desc">Run fetchaller on your home server with Docker and a reverse proxy. All your Claude clients can connect, and your home IP won't get blocked by Reddit like cloud servers do.</p>
 
-                <div class="code-window">
-                    <div class="code-header">
-                        <div class="code-dot red"></div>
-                        <div class="code-dot yellow"></div>
-                        <div class="code-dot green"></div>
-                        <span class="code-title">Deploy with Docker</span>
+                <div class="window">
+                    <div class="window-title">
+                        <span>Deploy with Docker</span>
                         <button class="copy-btn" onclick="copyCode(this, 'server-code')">Copy</button>
                     </div>
-                    <div class="code-body">
+                    <div class="window-body"><div class="crt-screen">
 <pre id="server-code">git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
 
-<span class="code-comment"># Configure your server</span>
+<span class="c"># Configure your server</span>
 cp .env.sample .env
-<span class="code-comment"># Edit .env: set MCP_API_KEY and MCP_SERVER_URL (your domain)</span>
+<span class="c"># Edit .env: set MCP_API_KEY and MCP_SERVER_URL (your domain)</span>
 
-<span class="code-comment"># Start with Docker</span>
+<span class="c"># Start with Docker</span>
 docker compose up -d
 
-<span class="code-comment"># Set up your reverse proxy to point to localhost:6000</span></pre>
-                    </div>
+<span class="c"># Set up your reverse proxy to point to localhost:6000</span></pre>
+                    </div></div>
                 </div>
 
-                <div class="code-window">
-                    <div class="code-header">
-                        <div class="code-dot red"></div>
-                        <div class="code-dot yellow"></div>
-                        <div class="code-dot green"></div>
-                        <span class="code-title">Claude Code</span>
+                <div class="window">
+                    <div class="window-title">
+                        <span>Claude Code</span>
                         <button class="copy-btn" onclick="copyCode(this, 'claude-code-config')">Copy</button>
                     </div>
-                    <div class="code-body">
+                    <div class="window-body"><div class="crt-screen">
 <pre id="claude-code-config">claude mcp add --transport http fetchaller https://your-domain.com/mcp</pre>
-                    </div>
+                    </div></div>
                 </div>
 
-                <div class="code-window">
-                    <div class="code-header">
-                        <div class="code-dot red"></div>
-                        <div class="code-dot yellow"></div>
-                        <div class="code-dot green"></div>
-                        <span class="code-title">Claude Desktop</span>
-                    </div>
-                    <div class="code-body">
+                <div class="window">
+                    <div class="window-title"><span>Claude Desktop</span></div>
+                    <div class="window-body"><div class="crt-screen">
 <pre>1. Open Claude Desktop
-2. Go to Settings → Connectors
+2. Go to Settings &rarr; Connectors
 3. Click "Add custom connector"
-4. Enter name: <span class="code-string">fetchaller</span>
-5. Set URL: <span class="code-string">https://your-domain.com/mcp</span>
+4. Enter name: <span class="s">fetchaller</span>
+5. Set URL: <span class="s">https://your-domain.com/mcp</span>
 6. Click "Add" and enter your API key when prompted</pre>
-                    </div>
+                    </div></div>
                 </div>
 
-                <p style="color: var(--text-secondary); margin-top: 16px;">For personal use only.</p>
+                <p class="note">For personal use only.</p>
             </div>
         </section>
 
-        <section id="why">
-            <div class="container">
-                <h2 class="section-title">Why fetchaller?</h2>
-                <div class="comparison">
-                <div class="comparison-card problem">
-                    <h3>
-                        <span>The Problem with WebFetch</span>
-                    </h3>
-                    <ul>
-                        <li>Permission prompt for every new domain</li>
-                        <li>No wildcard domain support</li>
-                        <li>Reddit is completely blocked</li>
-                        <li>No built-in web search</li>
-                        <li>Interrupts research workflows constantly</li>
-                    </ul>
-                </div>
-                <div class="comparison-card solution">
-                    <h3>
-                        <span>The fetchaller Solution</span>
-                    </h3>
-                    <ul>
-                        <li>One permission rule, all domains work</li>
-                        <li>Built-in web search (Google + DuckDuckGo)</li>
-                        <li>Reddit works with full comments</li>
-                        <li>Smart site-specific cleanup saves 65-98% tokens</li>
-                        <li>Seamless research workflows</li>
-                    </ul>
-                </div>
-                </div>
-            </div>
-        </section>
+        <section id="tools">
+            <div class="wrap reveal">
+                <h2>What's included</h2>
 
-        <section id="search">
-            <div class="container">
-                <h2 class="section-title">Web Search</h2>
-                <p style="color: var(--text-secondary); margin-bottom: 24px;">Search Google and DuckDuckGo in parallel. Results are deduplicated, cached, and returned as clean text.</p>
+                <div class="tool-block">
+                    <h3 class="tool-name">Web search</h3>
+                    <p class="tool-desc">Search Google and DuckDuckGo in parallel. Results are deduplicated, cached for 5 minutes, and returned as clean text. Search to find URLs, then fetch to read them.</p>
 
-                <div class="features-grid" style="grid-template-columns: repeat(3, 1fr);">
-                    <div class="feature-card" style="border-color: rgba(98, 0, 127, 0.3);">
-                        <h4>Google + DDG</h4>
-                        <p>Queries both engines in parallel for broader coverage. DuckDuckGo supplements Google results.</p>
-                    </div>
-                    <div class="feature-card" style="border-color: rgba(98, 0, 127, 0.3);">
-                        <h4>Dedup & Cache</h4>
-                        <p>Duplicate results are merged automatically. 5-minute query cache prevents redundant requests.</p>
-                    </div>
-                    <div class="feature-card" style="border-color: rgba(98, 0, 127, 0.3);">
-                        <h4>Search + Fetch</h4>
-                        <p>Search to find URLs, then fetch to read them. A complete research workflow in two tools.</p>
+                    <div class="window">
+                        <div class="window-title"><span>Example: research a topic</span></div>
+                        <div class="window-body"><div class="crt-screen">
+<pre><span class="c"># Step 1: Search the web</span>
+<span class="k">search</span>({ query: <span class="s">"python asyncio best practices 2025"</span> })
+
+<span class="c"># Returns titles, URLs, and snippets from Google + DuckDuckGo</span>
+<span class="c"># Step 2: Read the most relevant results</span>
+<span class="k">fetch</span>({ url: <span class="s">"https://realpython.com/async-io-python/"</span> })</pre>
+                        </div></div>
                     </div>
                 </div>
 
-                <div class="code-window" style="margin-top: 24px;">
-                    <div class="code-header">
-                        <div class="code-dot red"></div>
-                        <div class="code-dot yellow"></div>
-                        <div class="code-dot green"></div>
-                        <span class="code-title">Example: Research a topic</span>
-                    </div>
-                    <div class="code-body">
-<pre><span class="code-comment"># Step 1: Search the web</span>
-<span class="code-key">search</span>({ query: <span class="code-string">"python asyncio best practices 2025"</span> })
+                <div class="tool-block">
+                    <h3 class="tool-name">Reddit tools</h3>
+                    <p class="tool-desc">Three specialized tools: <strong>browse_reddit</strong> for subreddit listings by hot/new/top/rising, <strong>search_reddit</strong> for searching posts across all of Reddit or within a subreddit, and <strong>fetch</strong> for reading full discussions with all comments. Auto-converts to old.reddit.com for 65&ndash;70% token savings.</p>
 
-<span class="code-comment"># Returns titles, URLs, and snippets from Google + DuckDuckGo</span>
-<span class="code-comment"># Step 2: Read the most relevant results</span>
-<span class="code-key">fetch</span>({ url: <span class="code-string">"https://realpython.com/async-io-python/"</span> })</pre>
-                    </div>
-                </div>
-            </div>
-        </section>
+                    <div class="window">
+                        <div class="window-title"><span>Example: research headphones on Reddit</span></div>
+                        <div class="window-body"><div class="crt-screen">
+<pre><span class="c"># Search Reddit for relevant posts</span>
+<span class="k">search_reddit</span>({ query: <span class="s">"best over ear headphones 2025"</span>, limit: 10 })
 
-        <section id="reddit">
-            <div class="container">
-                <h2 class="section-title">Reddit Tools</h2>
-                <p style="color: var(--text-secondary); margin-bottom: 24px;">Three specialized tools for researching Reddit. Browse subreddits, search posts, and read full discussions.</p>
+<span class="c"># Read the most relevant posts</span>
+<span class="k">fetch</span>({ url: <span class="s">"https://reddit.com/r/HeadphoneAdvice/comments/..."</span> })
 
-                <div class="features-grid">
-                    <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
-                        <h4>browse_reddit</h4>
-                        <p>Browse any subreddit by hot, new, top, or rising. Get post metadata without reading every page.</p>
-                    </div>
-                    <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
-                        <h4>search_reddit</h4>
-                        <p>Search all of Reddit or within a specific subreddit. Filter by relevance, time, and sort order.</p>
-                    </div>
-                    <div class="feature-card" style="border-color: rgba(255, 69, 0, 0.3);">
-                        <h4>fetch</h4>
-                        <p>Read full posts with all comments. Auto-converts to old.reddit.com for 65-70% token savings.</p>
+<span class="c"># Or browse a specific subreddit</span>
+<span class="k">browse_reddit</span>({ subreddit: <span class="s">"HeadphoneAdvice"</span>, sort: <span class="s">"top"</span>, time: <span class="s">"month"</span> })</pre>
+                        </div></div>
                     </div>
                 </div>
 
-                <div class="code-window" style="margin-top: 24px;">
-                    <div class="code-header">
-                        <div class="code-dot red"></div>
-                        <div class="code-dot yellow"></div>
-                        <div class="code-dot green"></div>
-                        <span class="code-title">Example: Research headphones on Reddit</span>
-                    </div>
-                    <div class="code-body">
-<pre><span class="code-comment"># Step 1: Search Reddit for relevant posts</span>
-<span class="code-key">search_reddit</span>({ query: <span class="code-string">"best over ear headphones 2025"</span>, limit: 10 })
+                <div class="tool-block">
+                    <h3 class="tool-name">Smart cleanup</h3>
+                    <p class="tool-desc">Site-specific optimizations strip junk and save 65&ndash;98% of tokens. Every site gets universal cleanup (nav, footer, ads, cookie banners, modals), and these get extra attention:</p>
 
-<span class="code-comment"># Step 2: Read the most relevant posts</span>
-<span class="code-key">fetch</span>({ url: <span class="code-string">"https://reddit.com/r/HeadphoneAdvice/comments/..."</span> })
+                    <div class="sites">
+                        <div class="site">
+                            <div class="site-name">GitHub</div>
+                            <div class="site-desc">Issues, PRs, repos, org pages. Strips sidebar, nav, metadata chrome.</div>
+                        </div>
+                        <div class="site">
+                            <div class="site-name">Stack Overflow</div>
+                            <div class="site-desc">All Stack Exchange sites. Removes sidebars, vote buttons, user cards.</div>
+                        </div>
+                        <div class="site">
+                            <div class="site-name">Hacker News</div>
+                            <div class="site-desc">Compact story format, clean comment threads. Table unwrapping.</div>
+                        </div>
+                        <div class="site">
+                            <div class="site-name">Medium</div>
+                            <div class="site-desc">Detects 100s of custom domains. Strips sign-up prompts, footers.</div>
+                        </div>
+                        <div class="site">
+                            <div class="site-name">Hugging Face</div>
+                            <div class="site-desc">Models, datasets, spaces. Removes viewer widgets, gated blocks.</div>
+                        </div>
+                        <div class="site">
+                            <div class="site-name">Wikipedia</div>
+                            <div class="site-desc">Strips edit buttons, navboxes, TOC, reference lists.</div>
+                        </div>
+                        <div class="site">
+                            <div class="site-name">Reddit</div>
+                            <div class="site-desc">Auto-converts to old.reddit.com. 65&ndash;70% token savings.</div>
+                        </div>
+                        <div class="site">
+                            <div class="site-name">Forums</div>
+                            <div class="site-desc">XenForo, vBulletin, phpBB, Discourse. Auto-detects threads.</div>
+                        </div>
+                    </div>
 
-<span class="code-comment"># Or browse a specific subreddit</span>
-<span class="code-key">browse_reddit</span>({ subreddit: <span class="code-string">"HeadphoneAdvice"</span>, sort: <span class="code-string">"top"</span>, time: <span class="code-string">"month"</span> })</pre>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="cleanup">
-            <div class="container">
-                <h2 class="section-title">Smart Cleanup</h2>
-                <p style="color: var(--text-secondary); margin-bottom: 24px;">Site-specific optimizations strip junk and save 65-98% of tokens. Every site gets universal cleanup, and these get extra attention.</p>
-
-                <div class="features-grid">
-                    <div class="feature-card">
-                        <h4>GitHub</h4>
-                        <p>Issues, PRs, repos, org pages. Strips sidebar, nav, metadata chrome.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Stack Overflow</h4>
-                        <p>All Stack Exchange sites. Removes sidebars, vote buttons, user cards, ads.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Hacker News</h4>
-                        <p>Compact story format, clean comment threads. Table unwrapping.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Medium</h4>
-                        <p>Detects 100s of custom domains. Strips sign-up prompts, footers, avatars.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Hugging Face</h4>
-                        <p>Models, datasets, spaces. Removes DatasetViewer, inference widgets, gated blocks.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Wikipedia</h4>
-                        <p>Strips edit buttons, navboxes, table of contents, reference lists.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Reddit</h4>
-                        <p>Auto-converts to old.reddit.com. 65-70% token savings with full comments.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Forums</h4>
-                        <p>XenForo, vBulletin, phpBB, Discourse. Auto-detects and cleans thread pages.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Everything Else</h4>
-                        <p>Universal cleanup strips nav, footer, ads, cookie banners, modals from all sites.</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section>
-            <div class="container">
-                <h2 class="section-title">Features</h2>
-                <div class="features-grid">
-                    <div class="feature-card">
-                        <h4>Web Search</h4>
-                        <p>Search Google + DuckDuckGo in parallel, with dedup and caching</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Reddit Tools</h4>
-                        <p>Browse, search, and read full discussions with optimized output</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Smart Cleanup</h4>
-                        <p>Site-specific optimization for 10+ sites, saving 65-98% tokens</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Any Domain</h4>
-                        <p>No permission prompts, no restrictions. One rule covers all URLs</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>Forum Support</h4>
-                        <p>Auto-detects XenForo, vBulletin, phpBB, Discourse. RSS feed discovery</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>PDF & More</h4>
-                        <p>Extract text from PDFs, handle JSON, XML, CSV, and plain text</p>
-                    </div>
+                    <p class="tool-desc">Also handles PDFs, JSON, XML, CSV, and plain text.</p>
                 </div>
             </div>
         </section>
 
         <section id="faq">
-            <div class="container">
-                <h2 class="section-title">FAQ</h2>
-                <div class="faq-list">
-                    <div class="faq-item">
-                        <h4>Why not just use WebFetch?</h4>
+            <div class="wrap reveal">
+                <h2>FAQ</h2>
+                <div class="faq">
+                    <details>
+                        <summary>Why not just use WebFetch?</summary>
                         <p>WebFetch requires you to approve each domain individually, Reddit is completely blocked, and there's no web search. fetchaller removes these limitations with a single permission rule and adds search, Reddit tools, and smart cleanup.</p>
-                    </div>
-                    <div class="faq-item">
-                        <h4>Can it search the web?</h4>
-                        <p>Yes! The <code>search</code> tool queries Google and DuckDuckGo in parallel. Results are deduplicated and cached. Use <code>search</code> to find URLs, then <code>fetch</code> to read them.</p>
-                    </div>
-                    <div class="faq-item">
-                        <h4>What sites are optimized?</h4>
-                        <p>GitHub, Stack Overflow (all SE sites), Hacker News, Medium (including custom domains), Hugging Face, Wikipedia, Reddit, and generic forums (XenForo, vBulletin, phpBB, Discourse). Each gets tailored cleanup saving 65-98% tokens. All other sites get universal junk removal.</p>
-                    </div>
-                    <div class="faq-item">
-                        <h4>Does Reddit work?</h4>
-                        <p>Yes! fetchaller has three Reddit tools: <code>browse_reddit</code> for subreddit listings, <code>search_reddit</code> for searching posts, and <code>fetch</code> for reading full discussions. It's one of several sites with deep optimization.</p>
-                    </div>
-                    <div class="faq-item">
-                        <h4>Is this safe?</h4>
+                    </details>
+                    <details>
+                        <summary>Can it search the web?</summary>
+                        <p>Yes. The <code>search</code> tool queries Google and DuckDuckGo in parallel. Results are deduplicated and cached. Use <code>search</code> to find URLs, then <code>fetch</code> to read them.</p>
+                    </details>
+                    <details>
+                        <summary>What sites are optimized?</summary>
+                        <p>GitHub, Stack Overflow (all SE sites), Hacker News, Medium (including custom domains), Hugging Face, Wikipedia, Reddit, and generic forums (XenForo, vBulletin, phpBB, Discourse). Each gets tailored cleanup saving 65&ndash;98% tokens. All other sites get universal junk removal.</p>
+                    </details>
+                    <details>
+                        <summary>Does Reddit work?</summary>
+                        <p>Yes. fetchaller has three Reddit tools: <code>browse_reddit</code> for subreddit listings, <code>search_reddit</code> for searching posts, and <code>fetch</code> for reading full discussions with all comments.</p>
+                    </details>
+                    <details>
+                        <summary>Is this safe?</summary>
                         <p>Yes. fetchaller only does GET requests (read-only). It doesn't store cookies, maintain sessions, or write anything. It's the same as opening a URL in your browser.</p>
-                    </div>
-                    <div class="faq-item">
-                        <h4>What about curl?</h4>
+                    </details>
+                    <details>
+                        <summary>What about curl?</summary>
                         <p>Use <code>curl</code> for POST/PUT/DELETE requests, debugging headers, or when you need raw HTTP details. Use fetchaller for reading web pages and APIs during research.</p>
-                    </div>
-                    <div class="faq-item">
-                        <h4>Does it work with other MCP clients?</h4>
-                        <p>Yes! fetchaller is a standard MCP server. It works with Claude Desktop, Cursor, or any MCP-compatible client.</p>
-                    </div>
+                    </details>
+                    <details>
+                        <summary>Does it work with other MCP clients?</summary>
+                        <p>Yes. fetchaller is a standard MCP server. It works with Claude Desktop, Cursor, or any MCP-compatible client.</p>
+                    </details>
                 </div>
             </div>
         </section>
     </main>
 
     <footer>
-        <div class="container">
+        <div class="wrap">
             <div class="footer-links">
                 <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank">GitHub</a>
                 <a href="https://github.com/Averyy/fetchaller-mcp/issues" target="_blank">Issues</a>
             </div>
-            <div class="footer-content">
-                MIT License
-            </div>
+            <span>MIT License</span>
         </div>
     </footer>
 
     <script>
-        function copyCode(btn, elementId) {
-            const code = document.getElementById(elementId).textContent;
+        function copyCode(btn, id) {
+            const code = document.getElementById(id).textContent;
             navigator.clipboard.writeText(code).then(() => {
-                btn.textContent = 'Copied!';
+                btn.textContent = 'Copied';
                 btn.classList.add('copied');
                 setTimeout(() => {
                     btn.textContent = 'Copy';
@@ -1003,6 +922,14 @@ docker compose up -d
                 }, 2000);
             });
         }
+
+        document.querySelectorAll('.reveal').forEach(el => {
+            new IntersectionObserver(([e]) => {
+                if (e.isIntersecting) {
+                    el.classList.add('visible');
+                }
+            }, { threshold: 0.08 }).observe(el);
+        });
     </script>
     <!-- Vercel Analytics -->
     <script defer src="/_vercel/insights/script.js"></script>
