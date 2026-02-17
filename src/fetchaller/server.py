@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, TextContent, Tool
 
 from .botfighter import ChallengeSolver, CookieCache
 from .cache.response_cache import ResponseCache
@@ -361,22 +361,22 @@ def create_server(
             ),
         ]
 
-    def _format_result(name: str, result: dict, start_time: float) -> list[TextContent]:
-        """Format a tool result into TextContent, with logging."""
+    def _format_result(name: str, result: dict, start_time: float) -> CallToolResult:
+        """Format a tool result into CallToolResult, with logging."""
         elapsed = (time.time() - start_time) * 1000
         if "error" in result:
             _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
             text = f"Error: {result['error']}"
             if "body" in result:
                 text += f"\n\nPartial content:\n{result['body']}"
-            return [TextContent(type="text", text=text)]
+            return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
 
         content = result.get("content", "")
         _log(f"TOOL END: {name} OK content_len={len(content)} time={elapsed:.1f}ms")
-        return [TextContent(type="text", text=content)]
+        return CallToolResult(content=[TextContent(type="text", text=content)], isError=False)
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    async def call_tool(name: str, arguments: dict) -> CallToolResult:
         """Handle tool calls."""
         import traceback
 
@@ -488,13 +488,17 @@ def create_server(
             else:
                 elapsed = (time.time() - start_time) * 1000
                 _log(f"TOOL END: {name} UNKNOWN time={elapsed:.1f}ms")
-                return [TextContent(type="text", text=f"Unknown tool: {name}")]
+                return CallToolResult(
+                    content=[TextContent(type="text", text=f"Unknown tool: {name}")], isError=True,
+                )
 
         except Exception as e:
             elapsed = (time.time() - start_time) * 1000
             _log(f"TOOL END: {name} EXCEPTION={type(e).__name__}: {e} time={elapsed:.1f}ms")
             traceback.print_exc(file=sys.stderr)
-            return [TextContent(type="text", text=f"Error: {type(e).__name__}: {e}")]
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Error: {type(e).__name__}: {e}")], isError=True,
+            )
 
     return server
 
