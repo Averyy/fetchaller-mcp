@@ -1,0 +1,110 @@
+# fetchaller
+
+> fetchaller is an MCP (Model Context Protocol) server for Claude Code that fetches any URL and returns clean markdown. No domain restrictions, no permission prompts, built-in web search, full Reddit support, and site-specific content cleanup for 15+ sites.
+
+## What it does
+
+fetchaller replaces Claude Code's built-in WebFetch and WebSearch tools. WebFetch requires per-domain approval, blocks Reddit entirely, and returns raw HTML with navigation, ads, and sidebars. fetchaller removes all of these limitations with a single permission rule.
+
+### Tools
+
+- `fetch` — Fetch any URL and return clean markdown. Handles HTML, JSON, XML, CSV, and PDF files.
+- `search` — Web search combining Google and DuckDuckGo results. Deduplicated and cached.
+- `browse_reddit` — Browse subreddit posts. Sort by hot, new, top, or rising.
+- `search_reddit` — Search Reddit posts across all subreddits or within a specific one.
+- `get_aliexpress_product` / `search_aliexpress` — AliExpress product details and search.
+- `get_alibaba_product` / `search_alibaba` — Alibaba.com B2B product details and search.
+
+### Site-specific cleanup
+
+Each site gets tailored CSS selectors, HTML cleanup, and regex post-processing. Token savings range from 65-98% compared to raw HTML:
+
+- **GitHub** — Issues, PRs, repos, discussions, org pages. Strips sidebar, nav, metadata chrome.
+- **Stack Overflow** — All Stack Exchange sites. Removes sidebars, vote buttons, user cards.
+- **Hacker News** — Compact story format, clean comment threads. Table unwrapping.
+- **Medium** — Detects 100s of custom domains. Strips sign-up prompts and footers.
+- **Hugging Face** — Models, datasets, spaces. Removes viewer widgets, gated blocks.
+- **Wikipedia** — Strips edit buttons, navboxes, TOC, reference lists.
+- **Reddit** — Auto-converts to old.reddit.com for cleaner HTML. 65-70% token savings.
+- **Amazon** — All TLDs (.com, .ca, .co.uk, .de, etc.). Strips sponsored carousels, form fields, duplicate overlays.
+- **eBay** — All TLDs. JSON-LD product extraction. Strips nav, sidebars, sponsored listings.
+- **Forums** — XenForo, vBulletin, phpBB, Discourse auto-detection via RSS/Atom feeds.
+- **Craigslist** — All city subdomains. Strips nav, safety warnings, loading noise.
+- **Kijiji** — kijiji.ca. Strips sponsored content, filters, nav.
+- **DigiKey** — All TLDs. Optional API mode with OAuth2 when keys configured.
+- **Mouser** — All TLDs. Optional API mode when key configured.
+- **Soylent** — soylent.com, soylent.ca. Shopify store cleanup, inventory extraction.
+- **Texas Instruments** — ti.com. Document viewer support for lazy-loaded datasheets.
+
+All other sites get universal junk removal (nav, footer, ads, cookie banners, modals, overlays).
+
+### Bot protection bypass
+
+fetchaller transparently detects and solves bot challenges from Cloudflare, Akamai, DataDome, Alibaba Cloud WAF, and other protection systems. Cookies are cached per-domain so subsequent requests skip the challenge. No configuration or API keys needed.
+
+### Search
+
+The `search` tool queries both Google and DuckDuckGo in parallel and merges results. Duplicates are removed and results are cached for 5 minutes. Rate limiting is built in (2s Google, 1s DuckDuckGo). If a search engine returns a CAPTCHA, fetchaller backs off automatically and relies on the other engine.
+
+## Installation
+
+Requirements: Python 3.10+ and `uv` (recommended) or `pip`.
+
+```
+git clone https://github.com/Averyy/fetchaller-mcp.git
+cd fetchaller-mcp
+uv venv && uv pip install -e .
+claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main
+```
+
+No API keys required. No Docker. Restart Claude Code after adding the server.
+
+### Permission setup
+
+Add fetchaller tools to the `allow` list in `.claude/settings.json` to skip per-call approval prompts:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__fetchaller__fetch",
+      "mcp__fetchaller__search",
+      "mcp__fetchaller__browse_reddit",
+      "mcp__fetchaller__search_reddit",
+      "mcp__fetchaller__get_aliexpress_product",
+      "mcp__fetchaller__search_aliexpress",
+      "mcp__fetchaller__get_alibaba_product",
+      "mcp__fetchaller__search_alibaba"
+    ]
+  }
+}
+```
+
+For per-project permissions, use `.claude/settings.local.json` instead.
+
+### CLAUDE.md setup
+
+Add this to your project's CLAUDE.md to instruct Claude to prefer fetchaller:
+
+```markdown
+## Web Fetching & Search
+
+**ALWAYS use fetchaller MCP tools instead of WebFetch and WebSearch.** fetchaller has no domain restrictions, bypasses bot protection (Cloudflare, Akamai, etc.), and produces much cleaner markdown with site-specific content cleanup.
+
+- **fetch** — Fetch any URL as clean markdown
+- **search** — Web search (Google + DuckDuckGo combined)
+- **browse_reddit** / **search_reddit** — Reddit listings and search
+- **get_aliexpress_product** / **search_aliexpress** — AliExpress products
+- **get_alibaba_product** / **search_alibaba** — Alibaba.com B2B products
+
+Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` CLI), prefer that instead.
+```
+
+## Compatibility
+
+fetchaller is a standard MCP server communicating over stdio. It works with Claude Code, Claude Desktop, Cursor, and any MCP-compatible client. It only performs GET requests (read-only). Bot challenge cookies are cached in memory during the session; in Docker deployments they can optionally persist to disk.
+
+## Docs
+
+- [GitHub repository](https://github.com/Averyy/fetchaller-mcp): Source code, issues, and documentation
+- [Landing page](https://www.fetchaller.com): Project overview and setup instructions

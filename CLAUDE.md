@@ -158,6 +158,14 @@ Both Mouser and DigiKey block HTML scraping even with botfighter. When API keys 
 
 Env vars: `MOUSER_API_KEY`, `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET`.
 
+## Landing Page
+
+`landing/` contains the static site deployed to fetchaller.com. Single-file `index.html` with Win95/98 retro aesthetic.
+
+**For any frontend or design work**, read `design-style-guide.md` first — it defines the color palette, bevel system, window types, typography, animations, and anti-patterns. Always invoke the `frontend-design` skill (`/frontend-design`) when making visual changes.
+
+**`landing/llms.txt`** — LLM-readable project summary following the [llmstxt.org](https://llmstxt.org) spec. Contains tools, site cleanup list, install instructions, and permission setup. **Keep this in sync when adding new tools, sites, or features.**
+
 ## Development & Testing
 
 **CRITICAL**: When testing changes to this MCP server, you MUST use the local version, not the production Docker image.

@@ -359,7 +359,10 @@ fetchaller-mcp/
 ├── docker-compose.local.yml # Local testing
 ├── Dockerfile               # Container build
 ├── CLAUDE.md                # Instructions for Claude
-└── README.md                # This file
+├── README.md                # This file
+└── landing/                 # Static site (fetchaller.com)
+    ├── index.html           # Landing page
+    └── llms.txt             # LLM-readable project summary (llmstxt.org spec)
 ```
 
 ## Dependencies

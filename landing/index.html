@@ -3,24 +3,65 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller</title>
+    <title>fetchaller — MCP server for Claude Code</title>
     <meta name="description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 15+ sites. No permission prompts. WebFetch alternative for Claude Code.">
     <meta name="keywords" content="Claude Code fetch websites, Claude Code MCP server, WebFetch alternative, Claude Code Reddit, web search Claude Code, Google search Claude Code, DuckDuckGo Claude Code, browse reddit Claude Code, search reddit Claude Code, fetch Reddit posts, Claude AI fetch URL, Claude Code PDF, site-specific cleanup, no permission prompts, no domain restrictions">
     <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://fetchaller.dev/">
+    <link rel="canonical" href="https://www.fetchaller.com/">
+    <link rel="sitemap" type="application/xml" href="/sitemap.xml">
+    <link rel="llms-txt" type="text/plain" href="/llms.txt">
 
     <!-- Open Graph -->
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://fetchaller.dev/">
-    <meta property="og:title" content="Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller">
-    <meta property="og:description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 15+ sites. No permission prompts.">
+    <meta property="og:url" content="https://www.fetchaller.com/">
+    <meta property="og:title" content="fetchaller — MCP server for Claude Code">
+    <meta property="og:description" content="Fetch any URL, search the web, browse Reddit. Automatic site cleanup and no nagging permission prompts. WebFetch alternative.">
+    <!-- TODO: Add og:image once screenshot is created -->
     <meta property="og:site_name" content="fetchaller">
     <meta property="og:locale" content="en_US">
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Search the Web, Browse Reddit & Fetch Any URL in Claude Code | fetchaller">
-    <meta name="twitter:description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 15+ sites. No permission prompts.">
+    <meta name="twitter:title" content="fetchaller — MCP server for Claude Code">
+    <meta name="twitter:description" content="Fetch any URL, search the web, browse Reddit. Automatic site cleanup and no nagging permission prompts. WebFetch alternative.">
+    <!-- TODO: Add twitter:image once screenshot is created -->
+
+    <!-- Additional SEO -->
+    <meta name="author" content="fetchaller">
+    <link rel="me" href="https://github.com/Averyy/fetchaller-mcp">
+
+    <!-- Schema.org JSON-LD -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "fetchaller",
+        "description": "MCP server for Claude Code. Fetch any URL as clean markdown, search the web, browse Reddit. 15+ sites with automatic cleanup. No domain restrictions, no permission prompts.",
+        "url": "https://www.fetchaller.com/",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Any",
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+        },
+        "featureList": [
+            "Fetch any URL as clean markdown",
+            "Web search via Google and DuckDuckGo",
+            "Reddit browsing and search",
+            "AliExpress and Alibaba product search",
+            "15+ sites with tailored cleanup (65-98% token savings)",
+            "Automatic bot challenge bypass (Cloudflare, Akamai, DataDome)",
+            "No domain restrictions",
+            "No permission prompts with allow list",
+            "PDF, JSON, XML, CSV support",
+            "No API key required"
+        ],
+        "sameAs": [
+            "https://github.com/Averyy/fetchaller-mcp"
+        ]
+    }
+    </script>
 
     <!-- Favicons -->
     <link rel="icon" type="image/png" href="favicon-96x96.png" sizes="96x96">
@@ -30,72 +71,158 @@
     <meta name="apple-mobile-web-app-title" content="Fetchaller">
     <link rel="manifest" href="site.webmanifest">
 
-    <meta name="theme-color" content="#D5CCAF">
+    <meta name="theme-color" content="#008080">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=VT323&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=VT323&display=swap" rel="stylesheet"></noscript>
     <style>
+        /* ═══════════════════════════════════════════
+           VARIABLES
+           ═══════════════════════════════════════════ */
         :root {
-            --bg: #D5CCAF;
-            --bg-raised: #DED7BC;
-            --bg-recessed: #C9BFA2;
-            --text: #2A1F14;
-            --muted: #695C47;
+            /* Win95 teal desktop */
+            --bg: #008080;
+            /* Physical case (nav, footer) */
+            --case: #C4BA9E;
+            --case-raised: #D2C9AD;
+            --case-border: #A89E80;
+            --case-border-light: #DDD6C0;
+            --case-border-dark: #8A7F64;
+            /* Win98 window chrome (from 98.css) */
+            --surface: #C0C0C0;
+            --button-face: #DFDFDF;
+            --button-highlight: #FFFFFF;
+            --button-shadow: #808080;
+            --window-frame: #0A0A0A;
+            /* Text */
+            --text: #222222;
+            --text-light: #E8E8E8;
+            --muted: #555555;
+            --muted-light: #B0D0D0;
+            /* Brand */
             --purple: #62007F;
             --purple-light: #8B2CB0;
             --red: #FF2300;
             --red-dark: #CC1C00;
-            --border: #B5A888;
-            --border-light: #E8E2CE;
-            --border-dark: #928668;
-            --screen-bg: #1A0826;
+            /* Win95 title bars */
+            --win-blue: #000080;
+            --win-blue-light: #1084D0;
+            /* CRT screen */
+            --screen-bg: #1E0C2A;
             --screen-text: #CBA4E8;
-            --screen-dim: #5E3D78;
+            --screen-bright: #E0C0FF;
+            --screen-dim: #A88CBE;
             --screen-string: #FF8A6A;
             --screen-key: #A78DC4;
             --screen-green: #7ECC8E;
+            /* JP green phosphor */
+            --phosphor: #33FF33;
         }
 
+        /* ═══════════════════════════════════════════
+           RESET & BASE
+           ═══════════════════════════════════════════ */
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        html { scroll-behavior: smooth; }
+        html { }
 
         body {
             font-family: 'IBM Plex Mono', 'SF Mono', 'Menlo', monospace;
             background: var(--bg);
-            color: var(--text);
+            color: var(--text-light);
             line-height: 1.6;
             font-size: 0.9375rem;
-            /* Subtle stipple texture */
-            background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
-            background-size: 10px 10px;
+            padding-bottom: 42px;
         }
 
-        /* Top stripe — logo gradient */
+        /* CRT vignette — darkened edges like a real monitor */
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.2) 100%);
+            pointer-events: none;
+            z-index: 9999;
+        }
+
+        /* Subtle scanlines over entire page */
+        body::after {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background: repeating-linear-gradient(
+                to bottom,
+                transparent 0, transparent 2px,
+                rgba(0, 0, 0, 0.04) 2px,
+                rgba(0, 0, 0, 0.04) 3px
+            );
+            pointer-events: none;
+            z-index: 10000;
+        }
+
+        /* ═══════════════════════════════════════════
+           BRANDING STRIPE — multi-band badge
+           ═══════════════════════════════════════════ */
         .stripe {
-            height: 6px;
-            background: linear-gradient(90deg, var(--purple) 0%, var(--red) 100%);
-            box-shadow: 0 1px 0 var(--border-dark);
+            height: 10px;
+            background: linear-gradient(
+                to bottom,
+                var(--purple) 0, var(--purple) 4px,
+                var(--case-raised) 4px, var(--case-raised) 6px,
+                var(--red) 6px, var(--red) 10px
+            );
+            box-shadow: 0 1px 0 rgba(0,0,0,0.12);
         }
 
-        /* Nav — menu bar */
+        /* ═══════════════════════════════════════════
+           NAV — front panel with crosshatch texture
+           ═══════════════════════════════════════════ */
         nav {
             position: sticky;
             top: 0;
-            z-index: 100;
-            background: var(--bg-raised);
-            background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
-            background-size: 10px 10px;
-            border-bottom: 3px solid;
-            border-bottom-color: var(--border-dark);
-            border-top: 1px solid var(--border-light);
+            z-index: 1000;
+            background: var(--case-raised);
+            background-image:
+                linear-gradient(45deg, rgba(0,0,0,0.03) 25%, transparent 25%),
+                linear-gradient(-45deg, rgba(0,0,0,0.03) 25%, transparent 25%);
+            background-size: 6px 6px;
+            border-bottom: 3px solid var(--case-border-dark);
+            border-top: 1px solid var(--case-border-light);
             padding: 8px 0;
-            box-shadow: 0 2px 0 rgba(0,0,0,0.08);
+            box-shadow: 0 3px 8px rgba(0,0,0,0.3);
         }
 
         .wrap {
             max-width: 740px;
             margin: 0 auto;
             padding: 0 24px;
+        }
+
+        /* Vary window widths/offsets like a real desktop */
+        .wrap-hero { max-width: 1026px; margin: 0 auto; }
+        .wrap-config { max-width: 1100px; }
+        .config-pair {
+            display: flex;
+            gap: 0;
+            align-items: flex-start;
+        }
+        .config-pair .window-notepad:first-child { flex: 0 0 38%; min-width: 0; position: relative; left: -24px; top: 20px; z-index: 1; }
+        .config-pair .window-notepad:first-child .notepad-body pre { white-space: pre; }
+        .config-pair .window-notepad:last-child { flex: 1; min-width: 0; position: relative; right: -24px; top: -20px; z-index: 2; min-height: 375px; }
+        @media (max-width: 900px) {
+            .config-pair { flex-direction: column; gap: 48px; }
+            .config-pair .window-notepad:first-child { flex: none; width: 100%; left: 0; top: 0; }
+            .config-pair .window-notepad:last-child { right: 0; top: 0; }
+        }
+        .wrap-sites { max-width: 860px; margin: 0 auto 0 calc(50% - 384px); }
+        .wrap-faq { max-width: 1200px; margin-left: calc(50% - 570px); margin-right: auto; }
+
+        @media (max-width: 900px) {
+            .wrap-hero, .wrap-config, .wrap-sites, .wrap-faq {
+                max-width: none;
+                margin-left: auto;
+                margin-right: auto;
+            }
         }
 
         nav .wrap {
@@ -117,7 +244,7 @@
         .logo::after {
             content: "_";
             animation: blink 1s step-end infinite;
-            color: var(--red);
+            color: var(--phosphor);
         }
 
         @keyframes blink {
@@ -131,7 +258,7 @@
         }
 
         .nav-right a {
-            color: var(--text);
+            color: #2A1F14;
             text-decoration: none;
             font-size: 0.8125rem;
             font-weight: 500;
@@ -140,19 +267,31 @@
         }
 
         .nav-right a:hover {
-            background: var(--bg-recessed);
+            background: var(--case);
             border: 2px solid;
-            border-color: var(--border-dark) var(--border-light) var(--border-light) var(--border-dark);
+            border-color: var(--case-border-dark) var(--case-border-light) var(--case-border-light) var(--case-border-dark);
         }
 
-        /* Typography */
+        /* ═══════════════════════════════════════════
+           TYPOGRAPHY
+           ═══════════════════════════════════════════ */
         h1 {
-            font-size: clamp(1.75rem, 4.5vw, 2.5rem);
-            font-weight: 700;
+            font-family: 'VT323', monospace;
+            font-size: clamp(2.4rem, 6vw, 3.6rem);
+            font-weight: 400;
             line-height: 1.2;
-            letter-spacing: -0.02em;
-            margin-bottom: 16px;
-            color: var(--purple);
+            letter-spacing: 0.02em;
+            margin-bottom: 0;
+            color: var(--phosphor);
+            text-shadow: 0 0 8px rgba(51, 255, 51, 0.6), 0 0 30px rgba(51, 255, 51, 0.15);
+            position: relative;
+            z-index: 1;
+        }
+
+        h1::after {
+            content: "\2588";
+            animation: blink 1s step-end infinite;
+            margin-left: 4px;
         }
 
         h2 {
@@ -160,54 +299,443 @@
             font-weight: 700;
             line-height: 1.25;
             margin-bottom: 12px;
-            color: var(--purple);
+            color: #FFFFFF;
+            text-shadow: 1px 1px 0 rgba(0,0,0,0.4);
         }
 
         .lead {
             font-size: 0.9375rem;
-            color: var(--muted);
+            color: var(--muted-light);
             line-height: 1.65;
             max-width: 560px;
+            margin-top: 20px;
         }
 
         .desc {
-            color: var(--muted);
+            color: var(--muted-light);
             line-height: 1.6;
             margin-bottom: 24px;
             font-size: 0.875rem;
         }
 
-        /* Sections */
-        section {
-            padding: 56px 0;
-        }
-
-        section + section {
-            border-top: 2px solid var(--border);
+        /* ═══════════════════════════════════════════
+           SECTIONS — consistent 48px gaps
+           ═══════════════════════════════════════════ */
+        #setup, #sites, #faq {
+            margin-top: 48px;
         }
 
         .hero {
-            padding: 80px 0 40px;
+            padding: 40px 0 0;
+            margin-bottom: 0;
         }
 
-        .hero + section {
-            border-top: none;
+        /* ═══════════════════════════════════════════
+           HERO — CRT monitor with power-on animation
+           ═══════════════════════════════════════════ */
+        .hero-screen {
+            padding: 24px 40px 36px;
+            transform-origin: center;
+            animation: crt-on 0.6s ease-out 0.25s both;
         }
 
-        /* Hero animation */
-        .hero .wrap > * {
-            opacity: 0;
-            transform: translateY(12px);
-            animation: fadeUp 0.4s ease forwards;
+        .hero-help {
+            margin-top: 16px;
+            font-size: 0.9375rem;
+            line-height: 1.8;
+            position: relative;
+            z-index: 1;
         }
-        .hero .wrap > :nth-child(2) { animation-delay: 0.06s; }
-        .hero .wrap > :nth-child(3) { animation-delay: 0.12s; }
+
+        .hero-help .cmd {
+            display: flex;
+            gap: 8px;
+        }
+
+        .hero-help .cmd-name {
+            color: var(--screen-green);
+            min-width: 165px;
+            text-shadow: 0 0 4px rgba(126, 204, 142, 0.35);
+        }
+
+        .hero-help .cmd-desc {
+            color: var(--screen-dim);
+        }
+
+        .hero-tagline {
+            margin-top: 14px;
+            color: var(--screen-dim);
+            font-size: 0.875rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-separator {
+            border: none;
+            border-top: 1px solid var(--screen-dim);
+            margin: 16px 0 0;
+            opacity: 0.4;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-install-header {
+            display: flex;
+            justify-content: flex-end;
+            padding: 6px 0 0;
+            position: relative;
+            z-index: 1;
+        }
+
+        .config-section-header {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--win-blue);
+            padding: 12px 0 6px;
+            border-bottom: 1px solid #CCC;
+            margin-bottom: 8px;
+        }
+
+        .config-section-header:first-child {
+            padding-top: 0;
+        }
+
+        /* ═══════════════════════════════════════════
+           WINHELP — Windows 95 Help viewer
+           ═══════════════════════════════════════════ */
+        .winhelp .window-title {
+            background: linear-gradient(90deg, var(--win-blue), var(--win-blue-light));
+            color: white;
+            border-bottom: 2px solid #000040;
+        }
+
+        .winhelp-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            background: #FFD700;
+            color: #000080;
+            border-radius: 50%;
+            font-size: 8px;
+            font-weight: 700;
+            font-family: serif;
+            line-height: 1;
+            margin-right: 3px;
+            flex-shrink: 0;
+            border: 1px solid #B8960F;
+        }
+
+        .winhelp-toolbar {
+            background: var(--surface);
+            padding: 2px 3px;
+            display: flex;
+            gap: 2px;
+            border-bottom: 1px solid var(--button-shadow);
+            -webkit-font-smoothing: none;
+        }
+
+        .winhelp-tb-btn {
+            background: var(--surface);
+            border: none;
+            box-shadow:
+                inset -1px -1px var(--window-frame),
+                inset 1px 1px var(--button-highlight),
+                inset -2px -2px var(--button-shadow),
+                inset 2px 2px var(--button-face);
+            padding: 2px 10px;
+            font-family: inherit;
+            font-size: 0.6875rem;
+            cursor: pointer;
+            -webkit-font-smoothing: none;
+            color: var(--text);
+        }
+
+        .winhelp-tb-btn:active:not(:disabled) {
+            box-shadow:
+                inset -1px -1px var(--button-highlight),
+                inset 1px 1px var(--window-frame),
+                inset -2px -2px var(--button-face),
+                inset 2px 2px var(--button-shadow);
+        }
+
+        .winhelp-body {
+            display: flex;
+            background: var(--surface);
+            padding: 3px;
+            min-height: 600px;
+        }
+
+        .winhelp-nav {
+            width: 320px;
+            flex-shrink: 0;
+            background: white;
+            box-shadow:
+                inset -1px -1px var(--button-highlight),
+                inset 1px 1px var(--window-frame),
+                inset -2px -2px var(--button-face),
+                inset 2px 2px var(--button-shadow);
+            overflow-y: auto;
+        }
+
+        .winhelp-tree { padding: 6px 0; }
+
+        .winhelp-book-header {
+            padding: 4px 6px 4px 8px;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            -webkit-font-smoothing: none;
+            user-select: none;
+        }
+
+        .winhelp-book-header:hover { background: #E8E8E8; }
+
+        .winhelp-book-toggle {
+            font-size: 0.5625rem;
+            width: 10px;
+            flex-shrink: 0;
+            color: #555;
+            text-align: center;
+        }
+
+        .winhelp-folder {
+            width: 14px;
+            height: 10px;
+            flex-shrink: 0;
+            position: relative;
+            background: #FFD700;
+            border: 1px solid #B8960F;
+            border-radius: 0 1px 1px 1px;
+        }
+
+        .winhelp-folder::before {
+            content: "";
+            position: absolute;
+            top: -4px;
+            left: 0;
+            width: 6px;
+            height: 4px;
+            background: #FFD700;
+            border: 1px solid #B8960F;
+            border-bottom: none;
+            border-radius: 2px 2px 0 0;
+        }
+
+        .winhelp-book.open > .winhelp-book-header .winhelp-folder { background: #FFF8C0; }
+        .winhelp-book.open > .winhelp-book-header .winhelp-folder::before { background: #FFF8C0; }
+
+        .winhelp-book-pages { display: none; }
+        .winhelp-book.open > .winhelp-book-pages { display: block; }
+
+        .winhelp-topic {
+            padding: 4px 6px 4px 34px;
+            font-size: 0.8125rem;
+            color: var(--text);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            line-height: 1.4;
+        }
+
+        .winhelp-topic:hover { background: #E0E0E0; }
+
+        .winhelp-topic.active {
+            background: var(--win-blue);
+            color: white;
+        }
+
+        .winhelp-pg-ico {
+            width: 12px;
+            height: 14px;
+            background: white;
+            border: 1px solid #999;
+            flex-shrink: 0;
+            position: relative;
+        }
+
+        .winhelp-pg-ico::after {
+            content: "";
+            position: absolute;
+            top: -1px;
+            right: -1px;
+            width: 0;
+            height: 0;
+            border-style: solid;
+            border-width: 3px;
+            border-color: white white #999 #999;
+        }
+
+        .winhelp-topic.active .winhelp-pg-ico {
+            background: #C0D8FF;
+            border-color: #6680B0;
+        }
+
+        .winhelp-topic.active .winhelp-pg-ico::after {
+            border-color: var(--win-blue) var(--win-blue) #6680B0 #6680B0;
+        }
+
+        .winhelp-divider {
+            width: 4px;
+            background: var(--surface);
+            flex-shrink: 0;
+        }
+
+        .winhelp-content {
+            flex: 1;
+            background: white;
+            box-shadow:
+                inset -1px -1px var(--button-highlight),
+                inset 1px 1px var(--window-frame),
+                inset -2px -2px var(--button-face),
+                inset 2px 2px var(--button-shadow);
+            padding: 16px 20px;
+            overflow-y: auto;
+        }
+
+        .winhelp-page { display: none; }
+        .winhelp-page.active { display: block; }
+
+        .winhelp-page h3 {
+            font-size: 0.9375rem;
+            font-weight: 700;
+            color: #1A1A1A;
+            margin: 0 0 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #E0E0E0;
+        }
+
+        .winhelp-page p {
+            font-size: 0.8125rem;
+            color: #333;
+            line-height: 1.7;
+            margin: 0 0 10px;
+        }
+
+        .winhelp-page p:last-child { margin-bottom: 0; }
+
+        .winhelp-page code {
+            background: #F0F0F0;
+            color: var(--win-blue);
+            padding: 1px 5px;
+            border: 1px solid #CCC;
+            font-size: 0.8125rem;
+        }
+
+        .winhelp-page .see-also {
+            margin-top: 16px;
+            padding-top: 10px;
+            border-top: 1px solid #E0E0E0;
+            font-size: 0.75rem;
+            color: #666;
+        }
+
+        .winhelp-page .see-also a {
+            color: #008000;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
+        .winhelp-page .see-also a:hover { color: #006600; }
+
+        .winhelp-status {
+            background: var(--surface);
+            border-top: 1px solid var(--button-shadow);
+            padding: 2px 8px;
+            font-size: 0.625rem;
+            color: #444;
+            -webkit-font-smoothing: none;
+            display: flex;
+            justify-content: space-between;
+        }
 
         @keyframes fadeUp {
             to { opacity: 1; transform: none; }
         }
 
-        /* Buttons — chunky beveled retro */
+        @keyframes crt-on {
+            0%   { filter: brightness(10); transform: scaleY(0.005); }
+            40%  { filter: brightness(2); transform: scaleY(1.01); }
+            70%  { filter: brightness(1.2); transform: scaleY(0.998); }
+            100% { filter: brightness(1); transform: scaleY(1); }
+        }
+
+        @keyframes crt-off {
+            0%   { filter: brightness(1); transform: scaleY(1); }
+            40%  { filter: brightness(4); transform: scaleY(0.005); }
+            70%  { filter: brightness(8); transform: scaleY(0.005) scaleX(0.1); }
+            100% { filter: brightness(0); transform: scaleY(0) scaleX(0); }
+        }
+
+        /* Monitor chin — physical details below CRT */
+        .monitor-chin {
+            background: var(--surface);
+            padding: 6px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--button-shadow);
+        }
+
+        .chin-brand {
+            font-size: 0.625rem;
+            font-weight: 700;
+            color: var(--purple);
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+
+        .chin-indicators {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .chin-led-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .led-label {
+            font-size: 0.5rem;
+            color: var(--button-shadow);
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .hdd-led {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: #CC0000;
+            border-radius: 50%;
+            animation: hdd-blink 0.3s ease-in-out infinite alternate;
+        }
+
+        @keyframes hdd-blink {
+            0%   { opacity: 0.2; box-shadow: none; }
+            100% { opacity: 1; box-shadow: 0 0 4px rgba(204, 0, 0, 0.6); }
+        }
+
+        .floppy-slot {
+            width: 80px;
+            height: 5px;
+            background: #1A1A1A;
+            border: 2px solid;
+            border-color: var(--button-shadow) var(--button-face) var(--button-face) var(--button-shadow);
+            border-radius: 1px;
+        }
+
+        /* ═══════════════════════════════════════════
+           BUTTONS — chunky beveled retro
+           ═══════════════════════════════════════════ */
         .cta {
             display: flex;
             gap: 12px;
@@ -218,112 +746,315 @@
         .btn-primary {
             display: inline-flex;
             align-items: center;
-            padding: 8px 20px;
+            padding: 10px 24px;
             background: var(--red);
             color: white;
-            border: 3px solid;
-            border-color: #FF6644 #990E00 #990E00 #FF6644;
-            box-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+            border: none;
+            box-shadow:
+                inset -1px -1px #660E00,
+                inset 1px 1px #FF6644,
+                inset -2px -2px #990E00,
+                inset 2px 2px #FF4422,
+                3px 3px 0 rgba(0,0,0,0.4);
             font-family: inherit;
             font-size: 0.875rem;
             font-weight: 700;
             text-decoration: none;
             cursor: pointer;
+            -webkit-font-smoothing: none;
         }
 
         .btn-primary:hover {
             background: #E62000;
-            border-color: #FF7755 #880D00 #880D00 #FF7755;
-            box-shadow: 3px 3px 0 rgba(0,0,0,0.3);
         }
 
         .btn-primary:active {
-            border-color: #990E00 #FF6644 #FF6644 #990E00;
-            box-shadow: none;
-            transform: translate(1px, 1px);
+            box-shadow:
+                inset -1px -1px #FF6644,
+                inset 1px 1px #660E00,
+                inset -2px -2px #FF4422,
+                inset 2px 2px #990E00;
+            transform: translate(2px, 2px);
+        }
+
+        .btn-primary:focus-visible {
+            outline: 1px dotted white;
+            outline-offset: -6px;
         }
 
         .btn-ghost {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            padding: 8px 20px;
-            background: var(--bg-raised);
+            padding: 10px 24px;
+            background: var(--surface);
             color: var(--text);
-            border: 3px solid;
-            border-color: var(--border-light) var(--border-dark) var(--border-dark) var(--border-light);
-            box-shadow: 2px 2px 0 rgba(0,0,0,0.15);
+            border: none;
+            box-shadow:
+                inset -1px -1px var(--window-frame),
+                inset 1px 1px var(--button-highlight),
+                inset -2px -2px var(--button-shadow),
+                inset 2px 2px var(--button-face),
+                3px 3px 0 rgba(0,0,0,0.35);
             font-family: inherit;
             font-size: 0.875rem;
             font-weight: 700;
             text-decoration: none;
             cursor: pointer;
+            -webkit-font-smoothing: none;
         }
 
         .btn-ghost:hover {
-            background: var(--bg);
-            border-color: #F0EAD6 var(--border-dark) var(--border-dark) #F0EAD6;
-            box-shadow: 3px 3px 0 rgba(0,0,0,0.2);
-            color: var(--purple);
+            background: #D0D0D0;
         }
 
         .btn-ghost:active {
-            border-color: var(--border-dark) var(--border-light) var(--border-light) var(--border-dark);
-            box-shadow: none;
-            transform: translate(1px, 1px);
+            box-shadow:
+                inset -1px -1px var(--button-highlight),
+                inset 1px 1px var(--window-frame),
+                inset -2px -2px var(--button-face),
+                inset 2px 2px var(--button-shadow);
+            transform: translate(2px, 2px);
         }
 
-        /* Shared CRT screen styles */
+        .btn-ghost:focus-visible {
+            outline: 1px dotted var(--text);
+            outline-offset: -6px;
+        }
+
+        /* ═══════════════════════════════════════════
+           CRT SCREEN — scanlines, glow, curvature
+           ═══════════════════════════════════════════ */
         .crt-screen {
             position: relative;
             background: var(--screen-bg);
-            border: 2px solid #0D0514;
-            box-shadow: inset 0 0 50px rgba(98, 0, 127, 0.15);
+            border: 2px solid;
+            border-color: #404040 var(--surface) var(--surface) #404040;
+            box-shadow:
+                inset 0 0 30px rgba(0, 0, 0, 0.4),
+                inset 0 0 80px rgba(0, 0, 0, 0.3);
+        }
+
+        .crt-screen::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(
+                ellipse at center,
+                transparent 55%,
+                rgba(0, 0, 0, 0.18) 100%
+            );
+            pointer-events: none;
+            z-index: 3;
         }
 
         .crt-screen::after {
             content: "";
             position: absolute;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: repeating-linear-gradient(
-                0deg,
-                transparent,
-                transparent 3px,
-                rgba(0, 0, 0, 0.07) 3px,
-                rgba(0, 0, 0, 0.07) 4px
+            inset: 0;
+            background: linear-gradient(
+                to bottom,
+                rgba(18, 16, 16, 0) 50%,
+                rgba(0, 0, 0, 0.18) 50%
             );
+            background-size: 100% 4px;
             pointer-events: none;
+            z-index: 2;
         }
 
-        /* Window frame — wraps CRT screens */
+        .crt-screen pre,
+        .crt-screen .diff {
+            text-shadow: 0 0 4px rgba(203, 164, 232, 0.35);
+        }
+
+        .crt-screen h1 {
+            text-shadow: 0 0 8px rgba(51, 255, 51, 0.6), 0 0 30px rgba(51, 255, 51, 0.15);
+        }
+
+        /* ═══════════════════════════════════════════
+           WINDOW FRAMES — shared base
+           ═══════════════════════════════════════════ */
         .window {
-            margin: 20px 0;
-            border: 3px solid;
-            border-color: var(--border-light) var(--border-dark) var(--border-dark) var(--border-light);
-            box-shadow: 3px 3px 0 rgba(0,0,0,0.15);
-            background: var(--bg-raised);
+            margin: 10px 0;
+            border: none;
+            background: var(--surface);
+            box-shadow:
+                inset -1px -1px var(--window-frame),
+                inset 1px 1px var(--button-face),
+                inset -2px -2px var(--button-shadow),
+                inset 2px 2px var(--button-highlight),
+                4px 4px 0 rgba(0,0,0,0.4);
+            padding: 3px;
         }
 
+        /* Purple title bar — CRT terminal windows */
         .window-title {
             background: linear-gradient(90deg, var(--purple) 0%, var(--purple-light) 100%);
-            color: #E0C0F0;
+            color: #E8D0FF;
             font-size: 0.6875rem;
             font-weight: 700;
-            padding: 3px 8px;
+            padding: 2px 4px 2px 8px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             letter-spacing: 0.04em;
             text-transform: uppercase;
-            border-bottom: 2px solid;
-            border-bottom-color: #3A004D;
+            border-bottom: 2px solid #3A004D;
+            user-select: none;
+            min-height: 22px;
+            -webkit-font-smoothing: none;
+        }
+
+        .window-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .win-controls {
+            display: flex;
+            gap: 2px;
+        }
+
+        .win-ctrl {
+            width: 16px;
+            height: 14px;
+            background: var(--surface);
+            border: none;
+            box-shadow:
+                inset -1px -1px var(--window-frame),
+                inset 1px 1px var(--button-highlight),
+                inset -2px -2px var(--button-shadow),
+                inset 2px 2px var(--button-face);
+            font-size: 0.5rem;
+            line-height: 1;
+            text-align: center;
+            color: var(--text);
+            cursor: default;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: inherit;
+            padding: 0;
+            -webkit-font-smoothing: none;
+        }
+
+        .win-ctrl:active {
+            box-shadow:
+                inset -1px -1px var(--button-highlight),
+                inset 1px 1px var(--window-frame),
+                inset -2px -2px var(--button-face),
+                inset 2px 2px var(--button-shadow);
         }
 
         .window-body {
-            padding: 3px;
+            padding: 0;
         }
 
-        /* Diff comparison */
+        /* ═══════════════════════════════════════════
+           WIN95 BLUE TITLE BAR — Notepad & file windows
+           ═══════════════════════════════════════════ */
+        .window-notepad .window-title,
+        .window-file .window-title {
+            background: linear-gradient(90deg, var(--win-blue), var(--win-blue-light));
+            color: white;
+            border-bottom: 2px solid #000040;
+        }
+
+        .window-notepad .copy-btn,
+        .window-file .copy-btn {
+            background: rgba(0,0,80,0.4);
+            border-color: #4060C0 #000040 #000040 #4060C0;
+            color: #A0C0FF;
+        }
+
+        /* ═══════════════════════════════════════════
+           NOTEPAD.EXE — menu bar + white content
+           ═══════════════════════════════════════════ */
+        .notepad-menu {
+            background: var(--surface);
+            border-bottom: 1px solid var(--button-shadow);
+            padding: 1px 2px;
+            display: flex;
+            gap: 0;
+            font-size: 0.75rem;
+            -webkit-font-smoothing: none;
+        }
+
+        .notepad-menu span {
+            padding: 1px 6px;
+            color: #222;
+            cursor: default;
+        }
+
+        .notepad-menu span:hover {
+            background: var(--win-blue);
+            color: white;
+        }
+
+        .notepad-body {
+            background: white;
+            padding: 10px 14px;
+        }
+
+        .notepad-body pre {
+            padding: 0;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.8125rem;
+            line-height: 1.7;
+            color: #1A1A1A;
+            margin: 0;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+
+        /* Syntax highlight overrides for light bg */
+        .notepad-body .c { color: #808080; }
+        .notepad-body .s { color: #008000; }
+        .notepad-body .k { color: var(--win-blue); }
+
+        /* Notepad status bar */
+        .notepad-status {
+            background: var(--surface);
+            border-top: 1px solid var(--button-shadow);
+            padding: 2px 8px;
+            font-size: 0.625rem;
+            color: #444;
+            display: flex;
+            justify-content: space-between;
+            -webkit-font-smoothing: none;
+        }
+
+        /* ═══════════════════════════════════════════
+           FILE VIEWER — light bg, no CRT effects
+           ═══════════════════════════════════════════ */
+        .window-file .window-body {
+            padding: 0;
+        }
+
+        .window-file .file-content {
+            background: #FEFCF4;
+            padding: 12px 14px;
+            border: 1px solid #E0D8C8;
+            margin: 3px;
+        }
+
+        .window-file pre {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.8125rem;
+            line-height: 1.7;
+            color: var(--text);
+            margin: 0;
+            overflow-x: auto;
+        }
+
+        .window-file .s { color: #008000; }
+        .window-file .k { color: var(--win-blue); }
+        .window-file .c { color: #808080; }
+
+        /* ═══════════════════════════════════════════
+           DIFF — green additions, warm red removals
+           ═══════════════════════════════════════════ */
         .diff {
             font-size: 0.8125rem;
             padding: 14px 16px;
@@ -349,22 +1080,26 @@
             text-decoration: line-through;
             text-decoration-color: rgba(255, 138, 106, 0.4);
             flex: 1;
+            text-shadow: 0 0 4px rgba(255, 138, 106, 0.25);
         }
 
         .diff-new {
             color: var(--screen-green);
             flex: 1;
+            text-shadow: 0 0 4px rgba(126, 204, 142, 0.35);
         }
 
         .diff-old::before { content: "- "; color: var(--screen-string); opacity: 0.6; }
         .diff-new::before { content: "+ "; color: var(--screen-green); opacity: 0.6; }
 
-        /* Code blocks */
+        /* ═══════════════════════════════════════════
+           CODE BLOCKS (inside CRT screens)
+           ═══════════════════════════════════════════ */
         .crt-screen pre {
             padding: 14px;
             overflow-x: auto;
             font-family: 'IBM Plex Mono', monospace;
-            font-size: 0.8125rem;
+            font-size: 0.9375rem;
             line-height: 1.7;
             color: var(--screen-text);
             margin: 0;
@@ -397,7 +1132,9 @@
         .s { color: var(--screen-string); }
         .k { color: var(--screen-key); }
 
-        /* Tool sub-sections */
+        /* ═══════════════════════════════════════════
+           TOOL BLOCKS
+           ═══════════════════════════════════════════ */
         .tool-block {
             margin-bottom: 36px;
         }
@@ -412,109 +1149,21 @@
         }
 
         .tool-desc {
-            color: var(--muted);
+            color: var(--muted-light);
             font-size: 0.875rem;
             margin-bottom: 14px;
             line-height: 1.6;
         }
 
-        /* Site grid — recessed panel */
-        .sites {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            border: 3px solid;
-            border-color: var(--border-dark) var(--border-light) var(--border-light) var(--border-dark);
-            overflow: hidden;
-            margin: 20px 0;
-            background: var(--bg-recessed);
-            box-shadow: inset 2px 2px 0 rgba(0,0,0,0.08);
-        }
-
-        .site {
-            padding: 10px 14px;
-        }
-
-        .site:nth-child(odd) {
-            border-right: 1px solid var(--border);
-        }
-
-        .site:nth-child(-n+6) {
-            border-bottom: 1px solid var(--border);
-        }
-
-        .site-name {
-            font-size: 0.8125rem;
-            font-weight: 700;
-            margin-bottom: 1px;
-            color: var(--purple);
-        }
-
-        .site-desc {
-            font-size: 0.75rem;
-            color: var(--muted);
-            line-height: 1.45;
-        }
-
-        /* FAQ */
-        .faq details {
-            border-bottom: 2px solid var(--border);
-        }
-
-        .faq details:first-child {
-            border-top: 2px solid var(--border);
-        }
-
-        .faq summary {
-            padding: 10px 0;
-            font-weight: 600;
-            font-size: 0.875rem;
-            cursor: pointer;
-            list-style: none;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 16px;
-            color: var(--text);
-        }
-
-        .faq summary:hover { color: var(--purple); }
-
-        .faq summary::-webkit-details-marker { display: none; }
-
-        .faq summary::after {
-            content: "[+]";
-            color: var(--purple);
-            font-size: 0.75rem;
-            flex-shrink: 0;
-        }
-
-        .faq details[open] summary::after {
-            content: "[-]";
-        }
-
-        .faq details p {
-            padding-bottom: 12px;
-            color: var(--muted);
-            line-height: 1.6;
-            font-size: 0.875rem;
-        }
-
-        .faq code {
-            background: var(--bg-recessed);
-            color: var(--purple);
-            padding: 1px 5px;
-            border: 1px solid var(--border);
-            font-size: 0.8125rem;
-        }
-
-        /* Inline note */
+        /* ═══════════════════════════════════════════
+           NOTES & LEDs
+           ═══════════════════════════════════════════ */
         .note {
-            color: var(--muted);
+            color: var(--muted-light);
             font-size: 0.8125rem;
             margin-top: 14px;
         }
 
-        /* Power LED */
         .power-led {
             display: inline-block;
             width: 8px;
@@ -526,27 +1175,39 @@
             vertical-align: middle;
         }
 
-        /* Footer — status bar */
+        /* ═══════════════════════════════════════════
+           FOOTER — case bottom with vents & specs
+           ═══════════════════════════════════════════ */
         footer {
-            background: var(--bg-raised);
-            background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
+            margin-top: 48px;
+            background: var(--case-raised);
+            background-image: radial-gradient(rgba(60, 50, 30, 0.06) 0.5px, transparent 0.5px);
             background-size: 10px 10px;
-            padding: 6px 0;
-            border-top: 3px solid;
-            border-top-color: var(--border-light);
-            box-shadow: inset 0 -1px 0 var(--border-dark);
+            border-top: 3px solid var(--case-border-light);
+            box-shadow: inset 0 -1px 0 var(--case-border-dark);
             font-size: 0.6875rem;
-            color: var(--muted);
+            color: #5E5340;
         }
 
-        footer .wrap {
+        .vent {
+            height: 14px;
+            background: repeating-linear-gradient(
+                to bottom,
+                transparent 0, transparent 2px,
+                var(--case-border-dark) 2px, var(--case-border-dark) 3px
+            );
+            opacity: 0.3;
+        }
+
+        .footer-main {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: 6px 0;
         }
 
         footer a {
-            color: var(--muted);
+            color: #5E5340;
             text-decoration: none;
             padding: 1px 6px;
             border: 1px solid transparent;
@@ -554,7 +1215,7 @@
 
         footer a:hover {
             color: var(--purple);
-            border: 1px solid var(--border);
+            border: 1px solid var(--case-border);
         }
 
         .footer-links {
@@ -562,7 +1223,19 @@
             gap: 4px;
         }
 
-        /* Reveal animation */
+        .footer-specs {
+            text-align: center;
+            padding: 4px 0 6px;
+            font-size: 0.5625rem;
+            color: var(--case-border-dark);
+            letter-spacing: 0.06em;
+            border-top: 1px solid var(--case-border);
+            -webkit-font-smoothing: none;
+        }
+
+        /* ═══════════════════════════════════════════
+           REVEAL ANIMATION
+           ═══════════════════════════════════════════ */
         .reveal {
             opacity: 0;
             transform: translateY(8px);
@@ -574,20 +1247,442 @@
             transform: none;
         }
 
-        /* Mobile */
-        @media (max-width: 640px) {
-            .hero { padding: 60px 0 32px; }
-            h1 { font-size: 1.5rem; }
-            section { padding: 40px 0; }
-            .diff-row { flex-direction: column; }
-            .diff-new { padding-left: 16px; }
-            .sites { grid-template-columns: 1fr; }
-            .site:nth-child(odd) { border-right: none; }
-            .site { border-bottom: 1px solid var(--border); }
-            .site:last-child { border-bottom: none; }
-            .cta { flex-direction: column; }
-            .cta a { text-align: center; justify-content: center; }
+        /* ═══════════════════════════════════════════
+           MOBILE (<900px)
+           ═══════════════════════════════════════════ */
+        @media (max-width: 900px) {
+            body { padding-bottom: 0; }
+            .taskbar { display: none !important; }
+            #setup, #sites, #faq { margin-top: 48px; padding-top: 0; padding-bottom: 0; }
+            .hero { padding: 28px 0 0; }
+            .hero-screen { padding: 16px 14px 14px; }
+            h1 { font-size: 1.75rem; }
+            .hero-help .cmd-name { min-width: 110px; font-size: 0.75rem; }
+            .hero-help .cmd-desc { font-size: 0.75rem; }
+            .hero-tagline { font-size: 0.6875rem; }
+            .monitor-chin { padding: 4px 10px; }
+            .floppy-slot { display: none; }
+            .led-label { display: none; }
+            .winamp-vis { display: none; }
+            .winamp-display { height: 32px; }
+            .winamp-marquee span { font-size: 0.625rem; }
             .nav-right { gap: 2px; }
+            .footer-specs { display: none; }
+            footer { padding-bottom: 8px; }
+            .win-controls { display: none; }
+            .notepad-menu { font-size: 0.6875rem; }
+            .winhelp-body { flex-direction: column; min-height: auto; }
+            .winhelp-nav { width: 100%; max-height: 180px; }
+            .winhelp-divider { width: auto; height: 3px; }
+            .winhelp-topic { padding-left: 24px; }
+        }
+
+        /* ═══════════════════════════════════════════
+           WINAMP PLAYER
+           ═══════════════════════════════════════════ */
+        .winamp {
+            background: #2B2520;
+            border: 2px solid #1A1510;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+            border-radius: 3px;
+            background-image: linear-gradient(180deg, #332D28 0%, #2B2520 4%, #2B2520 96%, #221D18 100%);
+        }
+        .winamp-titlebar {
+            background: linear-gradient(180deg, #4A4340 0%, #3D3630 30%, #2B2520 50%, #3D3630 70%, #4A4340 100%);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 2px 4px 2px 8px;
+            border-bottom: 1px solid #1A1510;
+        }
+        .winamp-title-text {
+            font-size: 0.6875rem;
+            color: #D4C4A8;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }
+        .winamp-title-btns {
+            display: flex;
+            gap: 1px;
+        }
+        .winamp-title-btns span {
+            width: 9px;
+            height: 9px;
+            font-size: 5px;
+            line-height: 9px;
+            text-align: center;
+            background: #3D3630;
+            border: 1px solid;
+            border-color: #5A5450 #1A1510 #1A1510 #5A5450;
+            color: #D4C4A8;
+            cursor: default;
+        }
+        .winamp-display {
+            margin: 3px;
+            background: #000;
+            border: 2px solid;
+            border-color: #0A0800 #4A4440 #4A4440 #0A0800;
+            padding: 8px 10px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            overflow: hidden;
+            height: 56px;
+        }
+        .winamp-vis {
+            display: flex;
+            gap: 1px;
+            align-items: flex-end;
+            height: 34px;
+            flex-shrink: 0;
+        }
+        .winamp-vis span {
+            width: 2px;
+            background: linear-gradient(to top, #00CC00 0%, #AAFF00 50%, #FF6600 100%);
+            transform-origin: bottom;
+            animation: wa-vis 0.6s ease-in-out infinite alternate;
+        }
+        @keyframes wa-vis {
+            0% { transform: scaleY(0.15); }
+            100% { transform: scaleY(1); }
+        }
+        .winamp-marquee {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+        }
+        .winamp-marquee span {
+            display: inline-block;
+            color: #00FF00;
+            font-size: 1rem;
+            white-space: nowrap;
+            animation: wa-scroll 22s linear infinite;
+            text-shadow: 0 0 4px rgba(0,255,0,0.25);
+        }
+        @keyframes wa-scroll {
+            0% { transform: translateX(100%); }
+            100% { transform: translateX(-100%); }
+        }
+        .winamp-time {
+            color: #00FF00;
+            font-size: 1.375rem;
+            font-weight: 700;
+            flex-shrink: 0;
+            letter-spacing: 1px;
+            text-shadow: 0 0 6px rgba(0,255,0,0.3);
+            font-variant-numeric: tabular-nums;
+        }
+        .winamp-bitrate {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0;
+            flex-shrink: 0;
+            margin-left: 6px;
+        }
+        .winamp-bitrate span {
+            font-size: 0.5625rem;
+            color: #00BB00;
+            line-height: 1.2;
+            letter-spacing: 0.5px;
+        }
+        .winamp-controls {
+            display: flex;
+            align-items: center;
+            padding: 3px 4px 4px;
+            gap: 2px;
+        }
+        .winamp-btn {
+            background: #3D3630;
+            border: 1px solid;
+            border-color: #5A5450 #1A1510 #1A1510 #5A5450;
+            color: #D4C4A8;
+            font-size: 0.75rem;
+            padding: 0 5px;
+            height: 18px;
+            display: flex;
+            align-items: center;
+            cursor: default;
+            line-height: 1;
+        }
+        .winamp-btn.active {
+            border-color: #1A1510 #5A5450 #5A5450 #1A1510;
+            background: #2B2520;
+        }
+        .winamp-seek {
+            flex: 1;
+            height: 7px;
+            background: #000;
+            border: 1px solid;
+            border-color: #1A1510 #4A4440 #4A4440 #1A1510;
+            margin: 0 3px;
+            position: relative;
+            overflow: hidden;
+        }
+        .winamp-seek-fill {
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 33%;
+            background: #00CC00;
+        }
+        .winamp-volume-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: auto;
+            padding-left: 8px;
+        }
+        .winamp-vol-label {
+            font-size: 0.5rem;
+            color: #D4C4A8;
+            letter-spacing: 0.3px;
+        }
+        .winamp-vol-slider {
+            width: 52px;
+            height: 7px;
+            background: #000;
+            border: 1px solid;
+            border-color: #1A1510 #4A4440 #4A4440 #1A1510;
+            position: relative;
+            overflow: hidden;
+        }
+        .winamp-vol-slider::after {
+            content: "";
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 72%;
+            background: linear-gradient(90deg, #00AA00 0%, #AAFF00 70%, #FF6600 100%);
+        }
+        .winamp-bal-slider::after {
+            width: 50%;
+            background: #00AA00;
+        }
+        .winamp-playlist {
+            margin: 0 3px 3px;
+            background: #000;
+            border: 2px solid;
+            border-color: #0A0800 #4A4440 #4A4440 #0A0800;
+        }
+        .winamp-pl-header {
+            background: linear-gradient(180deg, #3D3630 0%, #2B2520 100%);
+            padding: 1px 6px;
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid #1A1510;
+        }
+        .winamp-pl-header span {
+            font-size: 0.8125rem;
+            color: #D4C4A8;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }
+        .winamp-track {
+            display: flex;
+            padding: 7px 10px 7px 8px;
+            font-size: 0.9375rem;
+            color: #00CC00;
+            gap: 6px;
+            align-items: baseline;
+            line-height: 1.4;
+            cursor: default;
+            transition: background 0.15s, padding-left 0.15s;
+        }
+        .winamp-track:nth-child(even) {
+            background: rgba(0,20,0,0.25);
+        }
+        .winamp-track:hover {
+            background: rgba(0,60,0,0.35);
+            padding-left: 14px;
+        }
+        .winamp-track:hover .winamp-track-desc {
+            opacity: 0.85;
+        }
+        .winamp-track.active {
+            background: #00003A;
+            color: #FFF;
+        }
+        .winamp-track.active:hover {
+            background: #000050;
+            padding-left: 14px;
+        }
+        .winamp-track-num {
+            flex-shrink: 0;
+            width: 24px;
+            text-align: right;
+            opacity: 0.5;
+        }
+        .winamp-track-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .winamp-track-info strong {
+            font-weight: 700;
+        }
+        .winamp-track-desc {
+            display: block;
+            font-size: 0.8125rem;
+            color: #44DD44;
+            opacity: 0.7;
+            line-height: 1.4;
+            transition: opacity 0.15s;
+        }
+        .winamp-track.active .winamp-track-desc {
+            color: #BBBBFF;
+            opacity: 0.8;
+        }
+        .winamp-pl-footer {
+            padding: 6px 10px;
+            font-size: 0.8125rem;
+            color: #009900;
+            display: flex;
+            justify-content: space-between;
+            border-top: 1px solid #0A1A00;
+        }
+
+/* ═══════════════════════════════════════════
+           WIN95 TASKBAR
+           ═══════════════════════════════════════════ */
+        .taskbar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 999;
+            height: 36px;
+            background: var(--surface);
+            border-top: 2px solid var(--button-highlight);
+            display: flex;
+            align-items: center;
+            padding: 2px 40px;
+            gap: 3px;
+            font-size: 0.75rem;
+            font-family: inherit;
+            -webkit-font-smoothing: none;
+        }
+
+        .start-btn {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px 2px 4px;
+            background: var(--surface);
+            border: none;
+            box-shadow:
+                inset -1px -1px var(--window-frame),
+                inset 1px 1px var(--button-highlight),
+                inset -2px -2px var(--button-shadow),
+                inset 2px 2px var(--button-face);
+            font-family: inherit;
+            font-size: 0.75rem;
+            font-weight: 700;
+            cursor: pointer;
+            height: 28px;
+            -webkit-font-smoothing: none;
+            color: var(--text);
+        }
+
+        .start-btn:active {
+            box-shadow:
+                inset -1px -1px var(--button-highlight),
+                inset 1px 1px var(--window-frame),
+                inset -2px -2px var(--button-face),
+                inset 2px 2px var(--button-shadow);
+        }
+
+        .start-logo {
+            width: 16px;
+            height: 16px;
+            border-radius: 2px;
+        }
+
+        .taskbar-divider {
+            width: 0;
+            height: 26px;
+            border-left: 1px solid var(--button-shadow);
+            border-right: 1px solid var(--button-highlight);
+            margin: 0 2px;
+        }
+
+        .taskbar-item {
+            padding: 2px 10px;
+            background: var(--surface);
+            border: none;
+            box-shadow:
+                inset -1px -1px var(--window-frame),
+                inset 1px 1px var(--button-highlight),
+                inset -2px -2px var(--button-shadow),
+                inset 2px 2px var(--button-face);
+            font-family: inherit;
+            font-size: 0.75rem;
+            font-weight: 400;
+            cursor: pointer;
+            height: 28px;
+            text-align: left;
+            -webkit-font-smoothing: none;
+            color: var(--text);
+            max-width: 160px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex-shrink: 1;
+            min-width: 0;
+        }
+        .taskbar-item.active {
+            box-shadow:
+                inset -1px -1px var(--button-highlight),
+                inset 1px 1px var(--window-frame),
+                inset -2px -2px var(--button-face),
+                inset 2px 2px var(--button-shadow);
+            font-weight: 700;
+        }
+
+        .taskbar-tray {
+            margin-left: auto;
+            padding: 0 10px;
+            box-shadow:
+                inset -1px -1px var(--button-highlight),
+                inset 1px 1px var(--button-shadow);
+            font-size: 0.6875rem;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text);
+        }
+
+        @media (min-width: 901px) {
+            .hero { margin-bottom: 70px; }
+            .taskbar { height: 44px; }
+            .start-btn { height: 34px; padding-left: 6px; font-size: 0.85rem; font-weight: 500; }
+            .taskbar-item { height: 34px; font-size: 0.85rem; font-weight: 500; }
+        }
+
+        .tray-volume {
+            width: 12px;
+            height: 10px;
+            position: relative;
+        }
+
+        .tray-volume::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            bottom: 1px;
+            width: 4px;
+            height: 5px;
+            background: var(--text);
+        }
+
+        .tray-volume::after {
+            content: "";
+            position: absolute;
+            right: 0;
+            top: 0;
+            border: 3px solid transparent;
+            border-left: 5px solid var(--text);
+            height: 0;
         }
     </style>
 </head>
@@ -603,86 +1698,79 @@
             <div class="nav-right">
                 <a href="#setup">Setup</a>
                 <a href="#faq">FAQ</a>
-                <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener">GitHub</a>
+                <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px;margin-right:4px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
             </div>
         </div>
     </nav>
 
     <main>
-        <section class="hero">
-            <div class="wrap">
-                <h1>Search, fetch &amp; read<br>any website in Claude Code</h1>
-                <p class="lead">An MCP server with web search, Reddit tools, and smart site-specific cleanup for 15+ sites. No permission prompts, no domain restrictions.</p>
-                <div class="cta">
-                    <a href="#setup" class="btn-primary">Get started</a>
-                    <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener" class="btn-ghost">
-                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-                        View source
-                    </a>
-                </div>
-            </div>
-        </section>
-
-        <section>
-            <div class="wrap reveal">
-                <h2>Why not WebFetch?</h2>
-                <div class="window">
-                    <div class="window-title"><span>diff --fetchaller</span></div>
-                    <div class="window-body">
-                        <div class="crt-screen diff">
-                            <div class="diff-row">
-                                <div class="diff-old">Approve each domain manually</div>
-                                <div class="diff-new">One permission rule, all domains</div>
-                            </div>
-                            <div class="diff-row">
-                                <div class="diff-old">Reddit completely blocked</div>
-                                <div class="diff-new">Browse, search, read full threads</div>
-                            </div>
-                            <div class="diff-row">
-                                <div class="diff-old">No web search built in</div>
-                                <div class="diff-new">Google + DuckDuckGo in parallel</div>
-                            </div>
-                            <div class="diff-row">
-                                <div class="diff-old">Raw HTML with all the noise</div>
-                                <div class="diff-new">65&ndash;98% cleaner with smart cleanup</div>
-                            </div>
-                            <div class="diff-row">
-                                <div class="diff-old">Research constantly interrupted</div>
-                                <div class="diff-new">Seamless research workflows</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="setup">
-            <div class="wrap reveal">
-                <h2>Run locally</h2>
-
-                <div class="window">
+        <div class="hero">
+            <div class="wrap wrap-hero">
+                <div class="window monitor-window">
                     <div class="window-title">
-                        <span>Terminal</span>
-                        <button class="copy-btn" onclick="copyCode(this, 'install-code')">Copy</button>
+                        <span>FETCHALLER.EXE</span>
+                        <div class="win-controls"><span class="win-ctrl">&#9472;</span><span class="win-ctrl">&#9633;</span><span class="win-ctrl close-monitor">&#215;</span></div>
                     </div>
-                    <div class="window-body"><div class="crt-screen">
-<pre id="install-code"><span class="c"># Clone and install</span>
+                    <div class="window-body">
+                        <div class="crt-screen hero-screen">
+                            <h1>fetchaller</h1>
+                            <div class="hero-help">
+                                <div class="cmd"><span class="cmd-name">fetch &lt;url&gt;</span><span class="cmd-desc">any URL → clean markdown</span></div>
+                                <div class="cmd"><span class="cmd-name">search &lt;query&gt;</span><span class="cmd-desc">Google + DuckDuckGo combined</span></div>
+                                <div class="cmd"><span class="cmd-name">browse_reddit</span><span class="cmd-desc">subreddit listings</span></div>
+                                <div class="cmd"><span class="cmd-name">search_reddit</span><span class="cmd-desc">search posts across Reddit</span></div>
+                            </div>
+                            <div class="hero-tagline">MCP server for Claude Code. No domain restrictions. Automatic site cleanup and no nagging permission prompts.</div>
+                            <hr class="hero-separator">
+                            <div class="hero-install-header">
+                                <button class="copy-btn" onclick="copyCode(this, 'install-code')">Copy</button>
+                            </div>
+<pre id="install-code" style="padding: 0;"><span class="c"># Install</span>
 git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
 uv venv && uv pip install -e .
 
-<span class="c"># Add to Claude Code (choose one)</span>
-claude mcp add fetchaller -s user -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main    <span class="c"># all projects</span>
-claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main <span class="c"># this project only</span></pre>
-                    </div></div>
-                </div>
-
-                <div class="window">
-                    <div class="window-title">
-                        <span>~/.claude/settings.json</span>
-                        <button class="copy-btn" onclick="copyCode(this, 'settings-code')">Copy</button>
+<span class="c"># Add to Claude Code</span>
+claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
+                        </div>
                     </div>
-                    <div class="window-body"><div class="crt-screen">
+                    <div class="monitor-chin">
+                        <span class="chin-brand">fetchaller</span>
+                        <div class="chin-indicators">
+                            <div class="chin-led-group">
+                                <span class="power-led"></span>
+                                <span class="led-label">PWR</span>
+                            </div>
+                            <div class="chin-led-group">
+                                <span class="hdd-led"></span>
+                                <span class="led-label">HDD</span>
+                            </div>
+                            <div class="floppy-slot" title="A:"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="setup">
+            <div class="wrap wrap-config">
+                <div class="config-pair">
+                    <div class="window window-notepad" style="margin: 0;">
+                        <div class="window-title">
+                            <span>settings.json - Notepad</span>
+                            <div class="window-actions">
+                                <button class="copy-btn" onclick="copyCode(this, 'settings-code')">Copy</button>
+                                <div class="win-controls"><span class="win-ctrl">&#9472;</span><span class="win-ctrl">&#9633;</span><span class="win-ctrl">&#215;</span></div>
+                            </div>
+                        </div>
+                        <div class="notepad-menu">
+                            <span><u>F</u>ile</span>
+                            <span><u>E</u>dit</span>
+                            <span>F<u>o</u>rmat</span>
+                            <span><u>V</u>iew</span>
+                            <span><u>H</u>elp</span>
+                        </div>
+                        <div class="window-body notepad-body">
 <pre id="settings-code">{
   <span class="k">"permissions"</span>: {
     <span class="k">"allow"</span>: [
@@ -697,21 +1785,32 @@ claude mcp add fetchaller -s project -- /path/to/fetchaller-mcp/.venv/bin/python
     ]
   }
 }</pre>
-                    </div></div>
-                </div>
-
-                <div class="window">
-                    <div class="window-title">
-                        <span>CLAUDE.md (recommended)</span>
-                        <button class="copy-btn" onclick="copyCode(this, 'claude-md-code')">Copy</button>
+                        </div>
+                        <div class="notepad-status">
+                            <span>Ln 1, Col 1</span>
+                            <span>UTF-8</span>
+                        </div>
                     </div>
-                    <div class="window-body"><div class="crt-screen">
-<pre id="claude-md-code"><span class="c">## Web Fetching & Search</span>
 
-<span class="k">**ALWAYS use fetchaller MCP tools instead of WebFetch and WebSearch.**</span>
-fetchaller has no domain restrictions, bypasses bot protection
-(Cloudflare, Akamai, etc.), and produces much cleaner markdown
-with site-specific content cleanup.
+                    <div class="window window-notepad" style="margin: 0;">
+                        <div class="window-title">
+                            <span>CLAUDE.md - Notepad</span>
+                            <div class="window-actions">
+                                <button class="copy-btn" onclick="copyCode(this, 'claude-md-code')">Copy</button>
+                                <div class="win-controls"><span class="win-ctrl">&#9472;</span><span class="win-ctrl">&#9633;</span><span class="win-ctrl">&#215;</span></div>
+                            </div>
+                        </div>
+                        <div class="notepad-menu">
+                            <span><u>F</u>ile</span>
+                            <span><u>E</u>dit</span>
+                            <span>F<u>o</u>rmat</span>
+                            <span><u>V</u>iew</span>
+                            <span><u>H</u>elp</span>
+                        </div>
+                        <div class="window-body notepad-body">
+<pre id="claude-md-code"><span class="c">## Web Fetching &amp; Search</span>
+
+<span class="k">**ALWAYS use fetchaller MCP tools instead of WebFetch and WebSearch.**</span> fetchaller has no domain restrictions, bypasses bot protection (Cloudflare, Akamai, etc.), and produces much cleaner markdown with site-specific content cleanup.
 
 - <span class="s">**fetch**</span> — Fetch any URL as clean markdown
 - <span class="s">**search**</span> — Web search (Google + DuckDuckGo combined)
@@ -719,196 +1818,367 @@ with site-specific content cleanup.
 - <span class="s">**get_aliexpress_product**</span> / <span class="s">**search_aliexpress**</span> — AliExpress products
 - <span class="s">**get_alibaba_product**</span> / <span class="s">**search_alibaba**</span> — Alibaba.com B2B products
 
-Exception: If a dedicated MCP tool exists for a service
-(e.g., GitHub via <span class="s">`gh`</span> CLI), prefer that instead.</pre>
-                    </div></div>
+Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span class="s">`gh`</span> CLI), prefer that instead.
+
+<span class="k">Restart Claude Code after setup.</span></pre>
+                        </div>
+                        <div class="notepad-status">
+                            <span>Ln 1, Col 1</span>
+                            <span>UTF-8</span>
+                        </div>
+                    </div>
                 </div>
 
-                <p class="note"><span class="power-led"></span> Restart Claude Code after setup. That's it.</p>
             </div>
-        </section>
+        </div>
 
-        <section id="self-host">
-            <div class="wrap reveal">
-                <h2>Host at home</h2>
-                <p class="desc">Run fetchaller on your home server with Docker and a reverse proxy. All your Claude clients can connect, and your home IP won't get blocked by Reddit like cloud servers do.</p>
+        <div id="sites" class="wrap wrap-sites">
+            <div class="winamp">
+                <div class="winamp-titlebar">
+                    <span class="winamp-title-text">FETCHALLER - Winamp</span>
+                    <div class="winamp-title-btns"><span>&#9472;</span><span>&#9633;</span><span>&#215;</span></div>
+                </div>
+                <div class="winamp-display">
+                    <div class="winamp-vis">
+                        <span style="height:14px;animation-delay:0s"></span>
+                        <span style="height:22px;animation-delay:.08s"></span>
+                        <span style="height:18px;animation-delay:.17s"></span>
+                        <span style="height:26px;animation-delay:.04s"></span>
+                        <span style="height:12px;animation-delay:.22s"></span>
+                        <span style="height:20px;animation-delay:.11s"></span>
+                        <span style="height:28px;animation-delay:.19s"></span>
+                        <span style="height:16px;animation-delay:.06s"></span>
+                        <span style="height:24px;animation-delay:.14s"></span>
+                        <span style="height:10px;animation-delay:.25s"></span>
+                        <span style="height:20px;animation-delay:.02s"></span>
+                        <span style="height:26px;animation-delay:.16s"></span>
+                        <span style="height:14px;animation-delay:.09s"></span>
+                        <span style="height:22px;animation-delay:.21s"></span>
+                        <span style="height:18px;animation-delay:.12s"></span>
+                        <span style="height:24px;animation-delay:.07s"></span>
+                    </div>
+                    <div class="winamp-marquee">
+                        <span>*** fetchaller - 10 sites with smart cleanup - no domain restrictions - no permission prompts ***&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>
+                    </div>
+                    <div class="winamp-bitrate"><span>320kbps</span><span>44kHz</span></div>
+                    <div class="winamp-time" id="wa-timer">0:00</div>
+                </div>
+                <div class="winamp-controls">
+                    <div class="winamp-btn">&#9198;</div>
+                    <div class="winamp-btn active">&#9654;</div>
+                    <div class="winamp-btn">&#10074;&#10074;</div>
+                    <div class="winamp-btn">&#9632;</div>
+                    <div class="winamp-btn">&#9197;</div>
+                    <div class="winamp-seek"><div class="winamp-seek-fill"></div></div>
+                    <div class="winamp-btn">&#9834;</div>
+                    <div class="winamp-volume-group">
+                        <span class="winamp-vol-label">VOL</span>
+                        <div class="winamp-vol-slider"></div>
+                        <span class="winamp-vol-label">BAL</span>
+                        <div class="winamp-vol-slider winamp-bal-slider"></div>
+                    </div>
+                </div>
+                <div class="winamp-playlist">
+                    <div class="winamp-pl-header">
+                        <span>FETCHALLER PLAYLIST</span>
+                        <span>10 sites</span>
+                    </div>
+                    <div class="winamp-track active">
+                        <span class="winamp-track-num">1.</span>
+                        <span class="winamp-track-info"><strong>GitHub</strong><span class="winamp-track-desc">Issues, PRs, repos, org pages. Strips sidebar, nav, metadata chrome.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">2.</span>
+                        <span class="winamp-track-info"><strong>Stack Overflow</strong><span class="winamp-track-desc">All Stack Exchange sites. Removes sidebars, vote buttons, user cards.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">3.</span>
+                        <span class="winamp-track-info"><strong>Hacker News</strong><span class="winamp-track-desc">Compact story format, clean comment threads. Table unwrapping.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">4.</span>
+                        <span class="winamp-track-info"><strong>Medium</strong><span class="winamp-track-desc">Detects 100s of custom domains. Strips sign-up prompts, footers.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">5.</span>
+                        <span class="winamp-track-info"><strong>Hugging Face</strong><span class="winamp-track-desc">Models, datasets, spaces. Removes viewer widgets, gated blocks.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">6.</span>
+                        <span class="winamp-track-info"><strong>Wikipedia</strong><span class="winamp-track-desc">Strips edit buttons, navboxes, TOC, reference lists.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">7.</span>
+                        <span class="winamp-track-info"><strong>Reddit</strong><span class="winamp-track-desc">Auto-converts to old.reddit.com. 65&ndash;70% token savings.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">8.</span>
+                        <span class="winamp-track-info"><strong>Amazon</strong><span class="winamp-track-desc">All TLDs. Strips sponsored carousels, form fields, duplicate overlays.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">9.</span>
+                        <span class="winamp-track-info"><strong>eBay</strong><span class="winamp-track-desc">JSON-LD product extraction. Strips nav, sidebars, sponsored listings.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">10.</span>
+                        <span class="winamp-track-info"><strong>Forums</strong><span class="winamp-track-desc">XenForo, vBulletin, phpBB, Discourse. Auto-detects threads.</span></span>
+                    </div>
+                    <div class="winamp-pl-footer">
+                        <span>+ PDFs, JSON, XML, CSV, plain text</span>
+                        <span>10/10</span>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-                <div class="window">
+        <div id="faq">
+            <div class="wrap wrap-faq">
+                <div class="window winhelp" style="margin: 0;">
                     <div class="window-title">
-                        <span>Deploy with Docker</span>
-                        <button class="copy-btn" onclick="copyCode(this, 'server-code')">Copy</button>
+                        <span><span class="winhelp-icon">?</span> fetchaller Help</span>
+                        <div class="win-controls"><span class="win-ctrl">&#9472;</span><span class="win-ctrl">&#9633;</span><span class="win-ctrl">&#215;</span></div>
                     </div>
-                    <div class="window-body"><div class="crt-screen">
-<pre id="server-code">git clone https://github.com/Averyy/fetchaller-mcp.git
-cd fetchaller-mcp
-
-<span class="c"># Configure your server</span>
-cp .env.sample .env
-<span class="c"># Edit .env: set MCP_API_KEY and MCP_SERVER_URL (your domain)</span>
-
-<span class="c"># Start with Docker</span>
-docker compose up -d
-
-<span class="c"># Set up your reverse proxy to point to localhost:6000</span></pre>
-                    </div></div>
-                </div>
-
-                <div class="window">
-                    <div class="window-title">
-                        <span>Claude Code</span>
-                        <button class="copy-btn" onclick="copyCode(this, 'claude-code-config')">Copy</button>
+                    <div class="winhelp-toolbar">
+                        <button class="winhelp-tb-btn" disabled style="opacity:0.5">Help <u>T</u>opics</button>
+                        <button class="winhelp-tb-btn winhelp-back-btn" disabled style="opacity:0.5"><u>B</u>ack</button>
+                        <button class="winhelp-tb-btn"><u>P</u>rint</button>
+                        <button class="winhelp-tb-btn"><u>O</u>ptions</button>
                     </div>
-                    <div class="window-body"><div class="crt-screen">
-<pre id="claude-code-config">claude mcp add --transport http fetchaller https://your-domain.com/mcp</pre>
-                    </div></div>
+                    <div class="winhelp-body">
+                        <div class="winhelp-nav">
+                            <div class="winhelp-tree">
+                                <div class="winhelp-book open">
+                                    <div class="winhelp-book-header">
+                                        <span class="winhelp-book-toggle">&#9662;</span>
+                                        <span class="winhelp-folder"></span>
+                                        Getting Started
+                                    </div>
+                                    <div class="winhelp-book-pages">
+                                        <div class="winhelp-topic active" data-topic="0">
+                                            <span class="winhelp-pg-ico"></span>
+                                            Why not just use WebFetch?
+                                        </div>
+                                        <div class="winhelp-topic" data-topic="1">
+                                            <span class="winhelp-pg-ico"></span>
+                                            Can it search the web?
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="winhelp-book open">
+                                    <div class="winhelp-book-header">
+                                        <span class="winhelp-book-toggle">&#9662;</span>
+                                        <span class="winhelp-folder"></span>
+                                        Installation
+                                    </div>
+                                    <div class="winhelp-book-pages">
+                                        <div class="winhelp-topic" data-topic="2">
+                                            <span class="winhelp-pg-ico"></span>
+                                            What do I need?
+                                        </div>
+                                        <div class="winhelp-topic" data-topic="3">
+                                            <span class="winhelp-pg-ico"></span>
+                                            How do I set up permissions?
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="winhelp-book open">
+                                    <div class="winhelp-book-header">
+                                        <span class="winhelp-book-toggle">&#9662;</span>
+                                        <span class="winhelp-folder"></span>
+                                        Sites &amp; Cleanup
+                                    </div>
+                                    <div class="winhelp-book-pages">
+                                        <div class="winhelp-topic" data-topic="4">
+                                            <span class="winhelp-pg-ico"></span>
+                                            What sites are optimized?
+                                        </div>
+                                        <div class="winhelp-topic" data-topic="5">
+                                            <span class="winhelp-pg-ico"></span>
+                                            Does Reddit work?
+                                        </div>
+                                        <div class="winhelp-topic" data-topic="6">
+                                            <span class="winhelp-pg-ico"></span>
+                                            Does it bypass Cloudflare?
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="winhelp-book open">
+                                    <div class="winhelp-book-header">
+                                        <span class="winhelp-book-toggle">&#9662;</span>
+                                        <span class="winhelp-folder"></span>
+                                        Compatibility
+                                    </div>
+                                    <div class="winhelp-book-pages">
+                                        <div class="winhelp-topic" data-topic="7">
+                                            <span class="winhelp-pg-ico"></span>
+                                            Is this safe?
+                                        </div>
+                                        <div class="winhelp-topic" data-topic="8">
+                                            <span class="winhelp-pg-ico"></span>
+                                            What about curl?
+                                        </div>
+                                        <div class="winhelp-topic" data-topic="9">
+                                            <span class="winhelp-pg-ico"></span>
+                                            Other MCP clients
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="winhelp-divider"></div>
+                        <div class="winhelp-content">
+                            <div class="winhelp-page active" data-topic="0">
+                                <h3>Why not just use WebFetch?</h3>
+                                <p>Claude Code's built-in <code>WebFetch</code> tool has several limitations that get in the way during real work:</p>
+                                <p>&bull; <strong>Domain approvals</strong> &mdash; You have to approve every new domain individually. Research across multiple sites means constant prompts.</p>
+                                <p>&bull; <strong>Reddit blocked</strong> &mdash; WebFetch cannot access Reddit at all. No subreddit browsing, no post reading, no search.</p>
+                                <p>&bull; <strong>No web search</strong> &mdash; There's no way to search Google or DuckDuckGo through WebFetch.</p>
+                                <p>&bull; <strong>No cleanup</strong> &mdash; WebFetch returns raw page content with navigation, ads, sidebars, and cookie banners included, wasting tokens.</p>
+                                <p>fetchaller replaces WebFetch with a single allow rule that covers all tools. No prompts, no blocked sites, and every page gets cleaned up before it reaches Claude.</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="1">Can it search the web?</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="1">
+                                <h3>Can it search the web?</h3>
+                                <p>Yes. The <code>search</code> tool queries both Google and DuckDuckGo in parallel and merges the results. Duplicate URLs are deduplicated and results are cached for 5 minutes so repeated queries are instant.</p>
+                                <p>The typical workflow is: use <code>search</code> to find relevant URLs, then use <code>fetch</code> to read the pages you need. Claude does this naturally when you ask it to research something.</p>
+                                <p>Rate limiting is built in &mdash; Google gets a 2-second cooldown between requests, DuckDuckGo gets 1 second. If a search engine returns a CAPTCHA, fetchaller backs off automatically (2 min &rarr; 5 min &rarr; 15 min) and relies on the other engine in the meantime.</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="2">What do I need?</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="2">
+                                <h3>What do I need?</h3>
+                                <p><strong>Requirements:</strong> Python 3.10+ and <code>uv</code> (recommended) or <code>pip</code>. That's it.</p>
+                                <p><strong>Install:</strong></p>
+                                <p><code>git clone https://github.com/Averyy/fetchaller-mcp.git</code><br><code>cd fetchaller-mcp</code><br><code>uv venv &amp;&amp; uv pip install -e .</code></p>
+                                <p><strong>Add to Claude Code:</strong></p>
+                                <p><code>claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</code></p>
+                                <p>No API keys required. No Docker. No build step. Restart Claude Code after adding the server and you're ready to go.</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="3">How do I set up permissions?</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="3">
+                                <h3>How do I set up permissions?</h3>
+                                <p>By default, Claude Code will ask you to approve each fetchaller tool call. To allow all tools without prompting, add them to <code>.claude/settings.json</code>:</p>
+                                <p><code>"allow": ["mcp__fetchaller__fetch", "mcp__fetchaller__search", ...]</code></p>
+                                <p>The full list is shown in the Setup section above. Copy the settings.json snippet and paste it into your config file.</p>
+                                <p><strong>Per-project permissions:</strong> If you only want fetchaller allowed in certain projects, use <code>.claude/settings.local.json</code> in the project root instead. Same format, scoped to that project.</p>
+                                <p><strong>CLAUDE.md:</strong> Add the CLAUDE.md snippet to your project to instruct Claude to prefer fetchaller over WebFetch and WebSearch when doing research.</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="4">What sites are optimized?</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="4">
+                                <h3>What sites are optimized?</h3>
+                                <p>Each site gets tailored CSS selectors, HTML cleanup, and regex post-processing. Token savings range from 65&ndash;98% compared to raw HTML:</p>
+                                <p>&bull; <strong>GitHub</strong> &mdash; Issues, PRs, repos, discussions, org pages<br>
+                                &bull; <strong>Stack Overflow</strong> &mdash; All Stack Exchange network sites<br>
+                                &bull; <strong>Hacker News</strong> &mdash; Stories and comment threads<br>
+                                &bull; <strong>Medium</strong> &mdash; Including 100s of custom domains<br>
+                                &bull; <strong>Hugging Face</strong> &mdash; Models, datasets, spaces<br>
+                                &bull; <strong>Wikipedia</strong> &mdash; Edit buttons, navboxes, TOC stripped<br>
+                                &bull; <strong>Reddit</strong> &mdash; Auto-converts to old.reddit.com<br>
+                                &bull; <strong>Amazon</strong> &mdash; All TLDs (.com, .ca, .co.uk, etc.)<br>
+                                &bull; <strong>eBay</strong> &mdash; All TLDs, JSON-LD extraction<br>
+                                &bull; <strong>AliExpress</strong> &mdash; Product pages and search<br>
+                                &bull; <strong>Alibaba</strong> &mdash; B2B product pages and search<br>
+                                &bull; <strong>DigiKey</strong> &mdash; Optional API mode with OAuth2<br>
+                                &bull; <strong>Mouser</strong> &mdash; Optional API mode<br>
+                                &bull; <strong>Craigslist</strong> &mdash; All city subdomains<br>
+                                &bull; <strong>Forums</strong> &mdash; XenForo, vBulletin, phpBB, Discourse</p>
+                                <p>All other sites still get universal junk removal (nav, footer, ads, cookie banners, modals).</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="5">Does Reddit work?</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="5">
+                                <h3>Does Reddit work?</h3>
+                                <p>Yes. Reddit is fully supported with three dedicated tools:</p>
+                                <p>&bull; <strong><code>browse_reddit</code></strong> &mdash; List posts from any subreddit. Sort by hot, new, top, or rising. Includes pagination.</p>
+                                <p>&bull; <strong><code>search_reddit</code></strong> &mdash; Search posts across all of Reddit or within a specific subreddit. Filter by time period.</p>
+                                <p>&bull; <strong><code>fetch</code></strong> &mdash; Read full discussion threads with all comments. URLs are auto-converted to old.reddit.com for cleaner, lighter HTML.</p>
+                                <p>This is a major advantage over WebFetch, which blocks Reddit entirely. Claude can now browse subreddits, search for discussions, and read full threads as part of its research workflow.</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="6">Does it bypass Cloudflare?</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="6">
+                                <h3>Does it bypass Cloudflare?</h3>
+                                <p>Yes. fetchaller includes a bot challenge solver that handles multiple protection systems transparently:</p>
+                                <p>&bull; <strong>Cloudflare</strong> &mdash; Turnstile and managed challenges<br>
+                                &bull; <strong>Akamai</strong> &mdash; Bot Manager challenges<br>
+                                &bull; <strong>DataDome</strong> &mdash; CAPTCHA interstitials<br>
+                                &bull; <strong>Alibaba Cloud WAF</strong> &mdash; ACW challenges (solved inline, ~1ms)</p>
+                                <p>When a challenge is detected, fetchaller solves it automatically and caches the resulting cookies per-domain. Subsequent requests to the same site skip the challenge entirely. No configuration, API keys, or proxy services needed.</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="7">Is this safe?</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="7">
+                                <h3>Is this safe?</h3>
+                                <p>Yes. fetchaller is read-only by design:</p>
+                                <p>&bull; Only performs <strong>GET requests</strong> &mdash; never POST, PUT, DELETE, or any write operation.<br>
+                                &bull; <strong>No persistent cookies</strong> &mdash; challenge cookies are cached in memory during the session but not saved to disk by default.<br>
+                                &bull; <strong>No authentication</strong> &mdash; never logs in, never maintains sessions, never accesses private data.<br>
+                                &bull; <strong>No file writes</strong> &mdash; returns content as text to Claude, never writes to your filesystem.</p>
+                                <p>It's functionally equivalent to opening a URL in an incognito browser tab, reading the page, and closing the tab.</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="8">What about curl?</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="8">
+                                <h3>What about curl?</h3>
+                                <p>fetchaller and <code>curl</code> serve different purposes. Use each where it fits best:</p>
+                                <p><strong>Use fetchaller when:</strong><br>
+                                &bull; Reading web pages, documentation, articles, or forum threads<br>
+                                &bull; Researching topics across multiple sites<br>
+                                &bull; Fetching content from bot-protected sites<br>
+                                &bull; You want clean markdown instead of raw HTML</p>
+                                <p><strong>Use curl when:</strong><br>
+                                &bull; Making POST, PUT, or DELETE requests<br>
+                                &bull; Debugging HTTP headers or status codes<br>
+                                &bull; Hitting APIs that require authentication tokens<br>
+                                &bull; You need raw HTTP response details</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="9">Other MCP clients</a></div>
+                            </div>
+                            <div class="winhelp-page" data-topic="9">
+                                <h3>Does it work with other MCP clients?</h3>
+                                <p>Yes. fetchaller is a standard MCP (Model Context Protocol) server that communicates over stdio. It works with any MCP-compatible client:</p>
+                                <p>&bull; <strong>Claude Code</strong> &mdash; Primary target. Use <code>claude mcp add</code> to register.<br>
+                                &bull; <strong>Claude Desktop</strong> &mdash; Add to <code>claude_desktop_config.json</code> under <code>mcpServers</code>.<br>
+                                &bull; <strong>Cursor</strong> &mdash; Add as an MCP server in Cursor's settings.<br>
+                                &bull; <strong>Any MCP client</strong> &mdash; Point it at <code>.venv/bin/python -m fetchaller.main</code>.</p>
+                                <p>The server exposes the same tools regardless of which client connects. Configuration (permissions, CLAUDE.md) is client-specific but the server itself is universal.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="winhelp-status">
+                        <span>fetchaller Help</span>
+                        <span>10 Topics</span>
+                    </div>
                 </div>
-
-                <div class="window">
-                    <div class="window-title"><span>Claude Desktop</span></div>
-                    <div class="window-body"><div class="crt-screen">
-<pre>1. Open Claude Desktop
-2. Go to Settings &rarr; Connectors
-3. Click "Add custom connector"
-4. Enter name: <span class="s">fetchaller</span>
-5. Set URL: <span class="s">https://your-domain.com/mcp</span>
-6. Click "Add" and enter your API key when prompted</pre>
-                    </div></div>
-                </div>
-
-                <p class="note">For personal use only.</p>
             </div>
-        </section>
-
-        <section id="tools">
-            <div class="wrap reveal">
-                <h2>What's included</h2>
-
-                <div class="tool-block">
-                    <h3 class="tool-name">Web search</h3>
-                    <p class="tool-desc">Search Google and DuckDuckGo in parallel. Results are deduplicated, cached for 5 minutes, and returned as clean text. Search to find URLs, then fetch to read them.</p>
-
-                    <div class="window">
-                        <div class="window-title"><span>Example: research a topic</span></div>
-                        <div class="window-body"><div class="crt-screen">
-<pre><span class="c"># Step 1: Search the web</span>
-<span class="k">search</span>({ query: <span class="s">"python asyncio best practices 2025"</span> })
-
-<span class="c"># Returns titles, URLs, and snippets from Google + DuckDuckGo</span>
-<span class="c"># Step 2: Read the most relevant results</span>
-<span class="k">fetch</span>({ url: <span class="s">"https://realpython.com/async-io-python/"</span> })</pre>
-                        </div></div>
-                    </div>
-                </div>
-
-                <div class="tool-block">
-                    <h3 class="tool-name">Reddit tools</h3>
-                    <p class="tool-desc">Three specialized tools: <strong>browse_reddit</strong> for subreddit listings by hot/new/top/rising, <strong>search_reddit</strong> for searching posts across all of Reddit or within a subreddit, and <strong>fetch</strong> for reading full discussions with all comments. Auto-converts to old.reddit.com for 65&ndash;70% token savings.</p>
-
-                    <div class="window">
-                        <div class="window-title"><span>Example: research headphones on Reddit</span></div>
-                        <div class="window-body"><div class="crt-screen">
-<pre><span class="c"># Search Reddit for relevant posts</span>
-<span class="k">search_reddit</span>({ query: <span class="s">"best over ear headphones 2025"</span>, limit: 10 })
-
-<span class="c"># Read the most relevant posts</span>
-<span class="k">fetch</span>({ url: <span class="s">"https://reddit.com/r/HeadphoneAdvice/comments/..."</span> })
-
-<span class="c"># Or browse a specific subreddit</span>
-<span class="k">browse_reddit</span>({ subreddit: <span class="s">"HeadphoneAdvice"</span>, sort: <span class="s">"top"</span>, time: <span class="s">"month"</span> })</pre>
-                        </div></div>
-                    </div>
-                </div>
-
-                <div class="tool-block">
-                    <h3 class="tool-name">Smart cleanup</h3>
-                    <p class="tool-desc">Site-specific optimizations strip junk and save 65&ndash;98% of tokens. Every site gets universal cleanup (nav, footer, ads, cookie banners, modals), and these get extra attention:</p>
-
-                    <div class="sites">
-                        <div class="site">
-                            <div class="site-name">GitHub</div>
-                            <div class="site-desc">Issues, PRs, repos, org pages. Strips sidebar, nav, metadata chrome.</div>
-                        </div>
-                        <div class="site">
-                            <div class="site-name">Stack Overflow</div>
-                            <div class="site-desc">All Stack Exchange sites. Removes sidebars, vote buttons, user cards.</div>
-                        </div>
-                        <div class="site">
-                            <div class="site-name">Hacker News</div>
-                            <div class="site-desc">Compact story format, clean comment threads. Table unwrapping.</div>
-                        </div>
-                        <div class="site">
-                            <div class="site-name">Medium</div>
-                            <div class="site-desc">Detects 100s of custom domains. Strips sign-up prompts, footers.</div>
-                        </div>
-                        <div class="site">
-                            <div class="site-name">Hugging Face</div>
-                            <div class="site-desc">Models, datasets, spaces. Removes viewer widgets, gated blocks.</div>
-                        </div>
-                        <div class="site">
-                            <div class="site-name">Wikipedia</div>
-                            <div class="site-desc">Strips edit buttons, navboxes, TOC, reference lists.</div>
-                        </div>
-                        <div class="site">
-                            <div class="site-name">Reddit</div>
-                            <div class="site-desc">Auto-converts to old.reddit.com. 65&ndash;70% token savings.</div>
-                        </div>
-                        <div class="site">
-                            <div class="site-name">Forums</div>
-                            <div class="site-desc">XenForo, vBulletin, phpBB, Discourse. Auto-detects threads.</div>
-                        </div>
-                    </div>
-
-                    <p class="tool-desc">Also handles PDFs, JSON, XML, CSV, and plain text.</p>
-                </div>
-            </div>
-        </section>
-
-        <section id="faq">
-            <div class="wrap reveal">
-                <h2>FAQ</h2>
-                <div class="faq">
-                    <details>
-                        <summary>Why not just use WebFetch?</summary>
-                        <p>WebFetch requires you to approve each domain individually, Reddit is completely blocked, and there's no web search. fetchaller removes these limitations with a single permission rule and adds search, Reddit tools, and smart cleanup.</p>
-                    </details>
-                    <details>
-                        <summary>Can it search the web?</summary>
-                        <p>Yes. The <code>search</code> tool queries Google and DuckDuckGo in parallel. Results are deduplicated and cached. Use <code>search</code> to find URLs, then <code>fetch</code> to read them.</p>
-                    </details>
-                    <details>
-                        <summary>What sites are optimized?</summary>
-                        <p>GitHub, Stack Overflow (all SE sites), Hacker News, Medium (including custom domains), Hugging Face, Wikipedia, Reddit, and generic forums (XenForo, vBulletin, phpBB, Discourse). Each gets tailored cleanup saving 65&ndash;98% tokens. All other sites get universal junk removal.</p>
-                    </details>
-                    <details>
-                        <summary>Does Reddit work?</summary>
-                        <p>Yes. fetchaller has three Reddit tools: <code>browse_reddit</code> for subreddit listings, <code>search_reddit</code> for searching posts, and <code>fetch</code> for reading full discussions with all comments.</p>
-                    </details>
-                    <details>
-                        <summary>Is this safe?</summary>
-                        <p>Yes. fetchaller only does GET requests (read-only). It doesn't store cookies, maintain sessions, or write anything. It's the same as opening a URL in your browser.</p>
-                    </details>
-                    <details>
-                        <summary>What about curl?</summary>
-                        <p>Use <code>curl</code> for POST/PUT/DELETE requests, debugging headers, or when you need raw HTTP details. Use fetchaller for reading web pages and APIs during research.</p>
-                    </details>
-                    <details>
-                        <summary>Does it work with other MCP clients?</summary>
-                        <p>Yes. fetchaller is a standard MCP server. It works with Claude Desktop, Cursor, or any MCP-compatible client.</p>
-                    </details>
-                </div>
-            </div>
-        </section>
+        </div>
     </main>
 
     <footer>
+        <div class="vent"></div>
         <div class="wrap">
-            <div class="footer-links">
-                <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank">GitHub</a>
-                <a href="https://github.com/Averyy/fetchaller-mcp/issues" target="_blank">Issues</a>
+            <div class="footer-main">
+                <div class="footer-links">
+                    <a href="https://github.com/Averyy/fetchaller-mcp" target="_blank" rel="noopener">GitHub</a>
+                    <a href="https://github.com/Averyy/fetchaller-mcp/issues" target="_blank" rel="noopener">Issues</a>
+                    <a href="/llms.txt">llms.txt</a>
+                </div>
+                <a href="https://github.com/Averyy/fetchaller-mcp/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
             </div>
-            <span>MIT License</span>
+            <div class="footer-specs">ACCESS: MAIN SECURITY GRID | 486DX2-66 | 8MB RAM | 540MB HDD | MCP: ONLINE</div>
         </div>
     </footer>
+
+    <!-- Win95 Taskbar -->
+    <div class="taskbar">
+        <button class="start-btn" onclick="window.scrollTo(0,0)">
+            <img src="icon.svg" class="start-logo" alt="">
+            Start
+        </button>
+        <span class="taskbar-divider"></span>
+        <button class="taskbar-item active" data-section="hero" onclick="smoothScrollTo('.hero')">FETCHALLER.EXE</button>
+        <button class="taskbar-item" data-section="setup" onclick="smoothScrollTo('#setup')">CONFIG</button>
+        <button class="taskbar-item" data-section="sites" onclick="smoothScrollTo('#sites')">SITES.WAV</button>
+        <button class="taskbar-item" data-section="faq" onclick="smoothScrollTo('#faq')">FAQ.HLP</button>
+        <div class="taskbar-tray">
+            <span class="tray-volume"></span>
+            <span id="taskbar-clock"></span>
+        </div>
+    </div>
 
     <script>
         function copyCode(btn, id) {
@@ -920,15 +2190,180 @@ docker compose up -d
                     btn.textContent = 'Copy';
                     btn.classList.remove('copied');
                 }, 2000);
-            });
+            }).catch(() => {});
         }
 
-        document.querySelectorAll('.reveal').forEach(el => {
-            new IntersectionObserver(([e]) => {
-                if (e.isIntersecting) {
-                    el.classList.add('visible');
+        /* Smooth scroll with nav offset */
+        function smoothScrollTo(sel) {
+            var el = document.querySelector(sel);
+            if (!el) return;
+            var navH = document.querySelector('nav').offsetHeight;
+            var top = el.getBoundingClientRect().top + window.scrollY - navH - 20;
+            window.scrollTo({ top: top, behavior: 'smooth' });
+        }
+
+        /* Intercept nav anchor clicks for offset scroll */
+        document.querySelectorAll('.nav-right a[href^="#"]').forEach(function(a) {
+            a.addEventListener('click', function(e) {
+                e.preventDefault();
+                smoothScrollTo(this.getAttribute('href'));
+            });
+        });
+
+        /* Taskbar clock */
+        function updateClock() {
+            const now = new Date();
+            let h = now.getHours(), m = now.getMinutes();
+            const ampm = h >= 12 ? 'PM' : 'AM';
+            h = h % 12 || 12;
+            document.getElementById('taskbar-clock').textContent =
+                h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+        }
+        updateClock();
+        setInterval(updateClock, 30000);
+
+        /* WinAmp timer — counts up like a playing track */
+        (function() {
+            var el = document.getElementById('wa-timer');
+            if (!el) return;
+            var sec = 0;
+            setInterval(function() {
+                sec++;
+                var m = Math.floor(sec / 60);
+                var s = sec % 60;
+                el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+            }, 1000);
+        })();
+
+        /* Taskbar scroll tracking */
+        (function() {
+            const sections = [
+                { id: 'hero', el: document.querySelector('.hero') },
+                { id: 'setup', el: document.getElementById('setup') },
+                { id: 'sites', el: document.getElementById('sites') },
+                { id: 'faq', el: document.getElementById('faq') }
+            ];
+            const btns = document.querySelectorAll('.taskbar-item[data-section]');
+            let ticking = false;
+
+            function updateActive() {
+                const mid = window.innerHeight * 0.4;
+                let current = sections[0].id;
+                for (const s of sections) {
+                    if (s.el && s.el.getBoundingClientRect().top <= mid) current = s.id;
                 }
-            }, { threshold: 0.08 }).observe(el);
+                btns.forEach(b => b.classList.toggle('active', b.dataset.section === current));
+                ticking = false;
+            }
+
+            window.addEventListener('scroll', function() {
+                if (!ticking) { ticking = true; requestAnimationFrame(updateActive); }
+            }, { passive: true });
+            updateActive();
+        })();
+
+        /* WinHelp topic navigation */
+        (function() {
+            var history = [0];
+            var backBtn = document.querySelector('.winhelp-back-btn');
+
+            function showTopic(idx) {
+                document.querySelectorAll('.winhelp-topic').forEach(function(t) {
+                    t.classList.toggle('active', t.dataset.topic === String(idx));
+                });
+                document.querySelectorAll('.winhelp-page').forEach(function(p) {
+                    p.classList.toggle('active', p.dataset.topic === String(idx));
+                });
+                if (backBtn) {
+                    var canGoBack = history.length > 1;
+                    backBtn.disabled = !canGoBack;
+                    backBtn.style.opacity = canGoBack ? '1' : '0.5';
+                }
+            }
+
+            var autoTimer = null;
+            var userInteracted = false;
+            var totalTopics = 10;
+
+            function stopAuto() {
+                userInteracted = true;
+                if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+            }
+
+            document.querySelectorAll('.winhelp-topic').forEach(function(topic) {
+                topic.addEventListener('click', function() {
+                    stopAuto();
+                    var idx = parseInt(this.dataset.topic);
+                    if (history[history.length - 1] !== idx) history.push(idx);
+                    showTopic(idx);
+                });
+            });
+
+            document.querySelectorAll('.winhelp-link').forEach(function(link) {
+                link.addEventListener('click', function() {
+                    stopAuto();
+                    var idx = parseInt(this.dataset.topic);
+                    if (history[history.length - 1] !== idx) history.push(idx);
+                    showTopic(idx);
+                    var topic = document.querySelector('.winhelp-topic[data-topic="' + idx + '"]');
+                    if (topic) {
+                        var book = topic.closest('.winhelp-book');
+                        if (book && !book.classList.contains('open')) {
+                            book.classList.add('open');
+                            book.querySelector('.winhelp-book-toggle').innerHTML = '&#9662;';
+                        }
+                    }
+                });
+            });
+
+            if (backBtn) {
+                backBtn.addEventListener('click', function() {
+                    stopAuto();
+                    if (history.length > 1) {
+                        history.pop();
+                        showTopic(history[history.length - 1]);
+                    }
+                });
+            }
+
+            document.querySelectorAll('.winhelp-book-header').forEach(function(header) {
+                header.addEventListener('click', function() {
+                    stopAuto();
+                    var book = this.closest('.winhelp-book');
+                    book.classList.toggle('open');
+                    this.querySelector('.winhelp-book-toggle').innerHTML =
+                        book.classList.contains('open') ? '&#9662;' : '&#9656;';
+                });
+            });
+
+            /* Auto-cycle topics every 4s until user interacts */
+            var autoCurrent = 0;
+            autoTimer = setInterval(function() {
+                if (userInteracted) return;
+                autoCurrent = (autoCurrent + 1) % totalTopics;
+                history = [autoCurrent];
+                showTopic(autoCurrent);
+            }, 4000);
+        })();
+
+        /* Easter egg: JP "ah ah ah" on hero × click */
+        document.querySelector('.close-monitor')?.addEventListener('click', function() {
+            const screen = document.querySelector('.hero-screen');
+            if (!screen || screen.dataset.rebooting) return;
+            screen.dataset.rebooting = '1';
+            screen.style.position = 'relative';
+            const msg = document.createElement('div');
+            msg.style.cssText = 'position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;flex-direction:column;background:var(--screen-bg);color:#33FF33;font-family:VT323,monospace;font-size:clamp(1.2rem,3vw,1.8rem);text-align:center;padding:20px;text-shadow:0 0 8px rgba(51,255,51,0.6);';
+            msg.innerHTML = 'Ah ah ah...<br><span style="font-size:0.8em;opacity:0.7;">You didn\'t say the magic word!</span>';
+            screen.appendChild(msg);
+            setTimeout(() => {
+                msg.remove();
+                screen.style.animation = 'crt-off 0.3s ease-in forwards';
+                setTimeout(() => {
+                    screen.style.animation = 'crt-on 0.6s ease-out forwards';
+                    setTimeout(() => { delete screen.dataset.rebooting; }, 600);
+                }, 800);
+            }, 1500);
         });
     </script>
     <!-- Vercel Analytics -->
