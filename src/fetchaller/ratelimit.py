@@ -67,6 +67,11 @@ aliexpress_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
 # 2s base is conservative enough for sequential product page fetches.
 soylent_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 
+# Reddit: old.reddit.com (HTML fetches via fetch tool)
+# Reddit allows ~10 req/min. browse_reddit/search_reddit use RedditRequestQueue,
+# but fetch tool bypasses it. 3s base keeps us well under the limit.
+reddit_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
+
 # Mouser: api.mouser.com (official API)
 # 30 req/min API limit → 2s base interval.
 mouser_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))

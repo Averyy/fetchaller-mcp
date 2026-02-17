@@ -305,6 +305,20 @@ class ContentFetcher:
         if self._session:
             self._session.cookies.clear()
 
+    async def clear_domain_cookies(self, domain_suffix: str) -> None:
+        """Remove cookies matching a domain suffix (e.g., '.reddit.com').
+
+        Used to prevent cookie contamination when the shared fetcher makes
+        requests to different subdomains of the same site (e.g., www.reddit.com
+        JSON API sets .reddit.com cookies that interfere with old.reddit.com HTML).
+        """
+        if not self._session:
+            return
+        jar = self._session.cookies.jar
+        to_remove = [c for c in jar if c.domain and c.domain.endswith(domain_suffix)]
+        for c in to_remove:
+            jar.clear(c.domain, c.path, c.name)
+
     async def close(self) -> None:
         """Close the session."""
         if self._session:

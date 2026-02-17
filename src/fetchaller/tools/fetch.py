@@ -582,6 +582,17 @@ async def fetch_url(
         retry_config = RetryConfig.from_config(config) if config else None
         fetcher = ContentFetcher(retry_config=retry_config)
 
+    # Reddit: use a dedicated fetcher to avoid cookie contamination.
+    # The shared fetcher accumulates .reddit.com cookies from browse_reddit/
+    # search_reddit JSON API calls (www.reddit.com). Those cookies get sent
+    # to old.reddit.com HTML fetches and can trigger 403s from session mismatch.
+    # A dedicated fetcher also avoids race conditions on the shared session
+    # in HTTP mode where concurrent requests share the same fetcher instance.
+    reddit_fetcher: ContentFetcher | None = None
+    if is_reddit and isinstance(fetcher, ContentFetcher) and not owns_fetcher:
+        retry_config = RetryConfig.from_config(config) if config else None
+        reddit_fetcher = ContentFetcher(retry_config=retry_config)
+
     # Botfighter: check cookie cache and prepare a dedicated fetcher if needed.
     # A separate fetcher avoids race conditions on the shared instance when
     # concurrent requests apply/clear cookies for different domains.
@@ -610,11 +621,14 @@ async def fetch_url(
                 except Exception:
                     pass
 
-    # Use dedicated botfighter fetcher if we have cached cookies, else shared fetcher
-    active_fetcher = bf_fetcher if bf_fetcher else fetcher
+    # Priority: botfighter fetcher > reddit fetcher > shared fetcher
+    active_fetcher = bf_fetcher if bf_fetcher else (reddit_fetcher if reddit_fetcher else fetcher)
 
     # Per-domain rate limiting for sites that aggressively block rapid requests
-    if _is_soylent(fetch_url_str):
+    if is_reddit:
+        from ..ratelimit import reddit_limiter
+        await reddit_limiter.wait()
+    elif _is_soylent(fetch_url_str):
         from ..ratelimit import soylent_limiter
         await soylent_limiter.wait()
 
@@ -926,8 +940,10 @@ async def fetch_url(
         # Unsupported content type
         return {"error": f"Unsupported content type: {content_type}"}
     finally:
-        # Close the dedicated botfighter fetcher if one was created
+        # Close dedicated fetchers if created
         if bf_fetcher:
             await bf_fetcher.close()
+        if reddit_fetcher:
+            await reddit_fetcher.close()
         if owns_fetcher:
             await fetcher.close()
