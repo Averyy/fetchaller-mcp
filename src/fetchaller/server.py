@@ -2,6 +2,7 @@
 
 import sys
 import time
+import traceback
 from datetime import UTC, datetime
 
 from mcp.server import Server
@@ -378,7 +379,6 @@ def create_server(
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> CallToolResult:
         """Handle tool calls."""
-        import traceback
 
         start_time = time.time()
         tool_args_summary = _summarize_args(name, arguments)
@@ -497,7 +497,7 @@ def create_server(
             _log(f"TOOL END: {name} EXCEPTION={type(e).__name__}: {e} time={elapsed:.1f}ms")
             traceback.print_exc(file=sys.stderr)
             return CallToolResult(
-                content=[TextContent(type="text", text=f"Error: {type(e).__name__}: {e}")], isError=True,
+                content=[TextContent(type="text", text=f"Error: {type(e).__name__}: unexpected error (check server logs)")], isError=True,
             )
 
     return server
