@@ -518,7 +518,11 @@ async def fetch_url(
             if "Could not extract" not in result.get("error", ""):
                 return result  # Definitive API failure (auth, rate limit, timeout)
             _log(f"FETCH {url} -> Mouser API couldn't parse URL, falling through to HTML")
-        # No API key or unrecognized URL — fall through to HTML pipeline
+        else:
+            return {
+                "error": "Mouser requires an API key (MOUSER_API_KEY). "
+                "Get a free key at https://www.mouser.com/api-hub/"
+            }
 
     # DigiKey product/search pages — use API when credentials are configured
     if _is_digikey(url):
@@ -538,7 +542,11 @@ async def fetch_url(
             if "Could not extract" not in result.get("error", ""):
                 return result  # Definitive API failure (auth, rate limit, timeout)
             _log(f"FETCH {url} -> DigiKey API couldn't parse URL, falling through to HTML")
-        # No credentials or unrecognized URL — fall through to HTML pipeline
+        else:
+            return {
+                "error": "DigiKey requires API credentials (DIGIKEY_CLIENT_ID + DIGIKEY_CLIENT_SECRET). "
+                "Register at https://developer.digikey.com/"
+            }
 
     # Transform Reddit URLs
     reddit_result = transform_reddit_url(url)
@@ -790,7 +798,7 @@ async def fetch_url(
             if pdf_result.is_empty:
                 content = f"[PDF: {pdf_result.page_count} pages. No extractable text found - this may be a scanned document or image-based PDF.]"
             else:
-                header = f"[PDF: {pdf_result.page_count} pages. Text extraction is approximate - complex layouts, tables, and formatting may not be preserved.]\n\n"
+                header = f"[PDF: {pdf_result.page_count} pages.]\n\n"
                 # Account for header in token budget
                 chars_per_token = config.chars_per_token if config else 4
                 reserved_tokens = len(header) // chars_per_token + 10

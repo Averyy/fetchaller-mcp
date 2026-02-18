@@ -371,7 +371,7 @@ fetchaller-mcp/
 - `fastapi` + `uvicorn` - HTTP server
 - `curl-cffi` - TLS fingerprint impersonation
 - `beautifulsoup4` + `markdownify` - HTML to markdown
-- `pdfplumber` - PDF text extraction
+- `pymupdf4llm` - PDF to markdown extraction
 - `pyjwt` - OAuth tokens
 - `pydoll-python` - Headful Chrome automation for bot challenge bypass
 

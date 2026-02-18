@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 # OAuth TTL defaults (shared with OAuthStore)
 AUTH_CODE_TTL = 10 * 60  # 10 minutes
@@ -66,8 +67,31 @@ class Config:
         return self.server_url or f"http://localhost:{self.http_port}"
 
 
+def _load_dotenv() -> None:
+    """Load .env file into os.environ (existing vars take precedence)."""
+    # Walk up from this file to find .env (supports installed and dev layouts)
+    for parent in Path(__file__).resolve().parents:
+        env_file = parent / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Don't override existing env vars
+                if key and key not in os.environ:
+                    os.environ[key] = value
+            break
+
+
 def load_config() -> Config:
     """Load configuration from environment variables."""
+    _load_dotenv()
+
     def _int(key: str, default: int) -> int:
         raw = os.environ.get(key, str(default))
         try:

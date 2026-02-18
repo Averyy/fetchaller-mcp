@@ -22,7 +22,7 @@ Module layout:
                    post-processing for badges, dates, comments headers.
 - wikipedia.py  — Wikipedia: CSS selectors for edit buttons, navboxes, etc.
 - fetcher.py    — HTTP fetching via curl_cffi.
-- pdf.py        — PDF text extraction.
+- pdf.py        — PDF to markdown extraction via pymupdf4llm.
 - url.py        — URL validation and SSRF protection.
 
 Each site module follows the same interface:
