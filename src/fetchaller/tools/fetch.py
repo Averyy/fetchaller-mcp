@@ -716,9 +716,15 @@ async def fetch_url(
                 "url": result.final_url,
             }
 
-        # XML/RSS/Atom — try structured feed parsing first
+        # XML/RSS/Atom — try structured feed parsing first (unless raw mode)
         if any(t in content_type for t in ("text/xml", "application/xml", "application/rss+xml", "application/atom+xml")):
             text = _decode_content(result.content, content_type)
+            if raw:
+                return {
+                    "content": truncate(text, max_tokens),
+                    "content_type": "xml",
+                    "url": result.final_url,
+                }
             feed = parse_feed(text)
             if feed and feed.items:
                 markdown = format_feed_as_markdown(feed)
@@ -936,6 +942,15 @@ async def fetch_url(
 
             _log(f"FETCH {url} -> {response['content_type']} ({len(response['content'])} chars, {time.monotonic() - start:.1f}s)")
             return response
+
+        # Any other text-based content type (text/javascript, text/css, etc.)
+        if content_type.startswith("text/") or content_type.startswith("application/javascript"):
+            text = _decode_content(result.content, content_type)
+            return {
+                "content": truncate(text, max_tokens),
+                "content_type": "text",
+                "url": result.final_url,
+            }
 
         # Unsupported content type
         return {"error": f"Unsupported content type: {content_type}"}
