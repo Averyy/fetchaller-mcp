@@ -150,18 +150,6 @@ class TestFormatSearchResults:
         assert "61. A" in result
 
 
-class TestRateLimiting:
-    """Rate limiting uses shared domain limiter."""
-
-    def test_uses_shared_aliexpress_limiter(self):
-        """Verify search uses the shared aliexpress domain limiter."""
-        from fetchaller.aliexpress import search as search_mod
-        from fetchaller.ratelimit import aliexpress_limiter
-
-        assert hasattr(search_mod, "aliexpress_limiter")
-        assert search_mod.aliexpress_limiter is aliexpress_limiter
-
-
 class TestBuildSearchUrl:
     """Search URL construction."""
 

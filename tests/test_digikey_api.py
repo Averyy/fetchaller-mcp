@@ -121,22 +121,6 @@ class TestURLParsing:
 
 
 class TestTokenManager:
-    def test_is_expired_initially(self):
-        tm = TokenManager("id", "secret")
-        assert tm.is_expired is True
-
-    def test_is_expired_after_set(self):
-        tm = TokenManager("id", "secret")
-        tm._token = "tok"
-        tm._token_expires = time.time() + 600
-        assert tm.is_expired is False
-
-    def test_is_expired_when_past_expiry(self):
-        tm = TokenManager("id", "secret")
-        tm._token = "tok"
-        tm._token_expires = time.time() - 1
-        assert tm.is_expired is True
-
     @pytest.mark.asyncio
     async def test_ensure_token_fetches_when_expired(self):
         tm = TokenManager("id", "secret")

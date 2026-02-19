@@ -143,6 +143,8 @@ Each site module exports the same interface: `is_<site>(url)`, `SELECTORS_LIST`,
 
 Key rules: cached cookies MUST use pinned UA + impersonate (no rotation). CF detects headless — always use Xvfb or offscreen window. Extract ALL cookies from browser (sites layer multiple protections).
 
+Browser fingerprints auto-discovered from curl_cffi's `BrowserType` enum. `BROWSER_FINGERPRINTS` (newest 3 Chrome desktop) and `DEFAULT_IMPERSONATE` (newest) update automatically when curl_cffi is upgraded — zero code changes needed. curl_cffi handles Sec-Ch-Ua, User-Agent, and TLS fingerprint natively via `impersonate` — no manual header dicts.
+
 ## Alibaba/AliExpress Architecture
 
 - **Alibaba.com**: SSR HTML only — no MTop API exists for the international site (`h5api.m.alibaba.com` serves 1688.com domestic China only). Extract embedded JSON from `window.detailData` (product) and `window.__page__data_sse10._offer_list` (search).

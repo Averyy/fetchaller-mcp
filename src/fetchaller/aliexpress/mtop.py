@@ -148,7 +148,7 @@ class MTopClient:
         # Cache the cookies for future use
         cookies = solve_result.get("cookies", [])
         ua = solve_result.get("user_agent", "")
-        impersonate = solve_result.get("impersonate", "chrome")
+        impersonate = solve_result.get("impersonate", BROWSER_FINGERPRINTS[-1])
 
         if self._cookie_cache:
             self._cookie_cache.set(

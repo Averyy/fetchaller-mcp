@@ -1,6 +1,7 @@
 """Configuration from environment variables."""
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -160,16 +161,47 @@ def load_config() -> Config:
     return config
 
 
-# Browser fingerprints for TLS impersonation rotation (NEW)
-BROWSER_FINGERPRINTS = ["chrome131", "chrome133a", "chrome136", "chrome142"]
+_FALLBACK_FINGERPRINTS = ["chrome133a", "chrome136", "chrome142"]
 
-# Sec-Ch-Ua headers must match the TLS fingerprint — mismatches are a detection vector.
-FINGERPRINT_SEC_CH_UA = {
-    "chrome131": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-    "chrome133a": '"Google Chrome";v="133", "Chromium";v="133", "Not(A:Brand";v="24"',
-    "chrome136": '"Google Chrome";v="136", "Chromium";v="136", "Not)A;Brand";v="99"',
-    "chrome142": '"Google Chrome";v="142", "Chromium";v="142", "Not:A-Brand";v="99"',
-}
+
+def _chrome_version(fp: str) -> tuple[int, str]:
+    """Sort key for Chrome fingerprints: 'chrome133a' → (133, 'a').
+
+    Sub-versions (e.g. 'a') sort after the base version, so chrome133a > chrome133.
+    """
+    m = re.match(r"chrome(\d+)(.*)", fp)
+    return (int(m.group(1)), m.group(2)) if m else (0, fp)
+
+
+def _discover_chrome_fingerprints() -> list[str]:
+    """Discover Chrome desktop fingerprints from curl_cffi's BrowserType enum.
+
+    Auto-updates when curl_cffi adds new Chrome versions. Returns the newest 3
+    sorted by version number. curl_cffi handles all TLS + header fingerprinting
+    (including Sec-Ch-Ua) natively via the impersonate parameter — no manual
+    header overrides needed.
+    """
+    try:
+        from curl_cffi.requests import BrowserType
+        chrome_fps = [
+            member.value
+            for member in BrowserType
+            if member.value.startswith("chrome") and "android" not in member.value
+        ]
+    except (ImportError, AttributeError):
+        chrome_fps = []
+    # Fallback: last known good values — only used if curl_cffi changes its
+    # BrowserType API or returns no Chrome desktop entries.
+    if not chrome_fps:
+        chrome_fps = list(_FALLBACK_FINGERPRINTS)
+    return sorted(chrome_fps, key=_chrome_version)[-3:]
+
+
+# Newest 3 Chrome fingerprints for rotation (auto-discovered from curl_cffi).
+# When curl_cffi is upgraded with new Chrome versions, this list updates automatically.
+# curl_cffi sets Sec-Ch-Ua, User-Agent, and TLS fingerprint natively — no manual
+# header dicts needed.
+BROWSER_FINGERPRINTS = _discover_chrome_fingerprints()
 
 # Tracking params to strip for URL normalization (NEW)
 TRACKING_PARAMS = {

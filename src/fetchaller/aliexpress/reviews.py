@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 
 from curl_cffi.requests import AsyncSession
 
+from ..config import BROWSER_FINGERPRINTS
+
 
 def _log(msg: str) -> None:
     print(f"[{datetime.now(UTC).isoformat()}] aliexpress reviews: {msg}", file=sys.stderr)
@@ -41,7 +43,7 @@ async def fetch_reviews(
         "sort": "complex_default",
     }
 
-    async with AsyncSession(impersonate="chrome") as session:
+    async with AsyncSession(impersonate=BROWSER_FINGERPRINTS[-1]) as session:
         try:
             resp = await session.get(
                 url,

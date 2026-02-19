@@ -14,6 +14,7 @@ from ..botfighter import (
     CookieCache,
     detect_challenge,
     solve_acw_sc_v2,
+    solve_amazon_inline,
 )
 from ..cache.response_cache import ResponseCache
 from ..config import Config
@@ -102,7 +103,8 @@ def _quick_challenge_possible(result: FetchResult) -> bool:
     # Quick byte check avoids full decode for the common case.
     if result.status_code == 200 and len(result.content) < 50_000 and (
         b"ontinue shopping" in result.content and (
-            b"amazon" in result.content or b"Amazon" in result.content or b"amzn" in result.content
+            b"amazon" in result.content or b"Amazon" in result.content
+            or b"amzn" in result.content or b"validateCaptcha" in result.content
         )
     ):
         return True
@@ -188,6 +190,43 @@ async def _handle_botfighter(
             # Fall through to browser solve
         else:
             return result  # ACW solve failed, return as-is
+
+    # Amazon: solve inline (~10ms, curl_cffi form submission)
+    if challenge == "amazon":
+        original_cookies = await fetcher.export_cookies()
+        solve_result = await solve_amazon_inline(
+            body, fetch_url_str,
+            impersonate=fetcher.current_impersonate,
+            original_cookies=original_cookies,
+        )
+        if solve_result:
+            solve_impersonate = solve_result["impersonate"]
+            amazon_fetcher = ContentFetcher()
+            try:
+                await amazon_fetcher.apply_cookies(solve_result["cookies"])
+                amazon_fetcher.pin_identity(solve_impersonate)
+                try:
+                    result = await amazon_fetcher.fetch(fetch_url_str, timeout=timeout)
+                except (TimeoutError, ConnectionError, RequestsError) as e:
+                    return {"error": f"Request failed after Amazon inline solve: {e}"}
+                except Exception as e:
+                    return {"error": f"Fetch failed after Amazon inline solve ({type(e).__name__}): {e}"}
+            finally:
+                await amazon_fetcher.close()
+            # Check for re-challenge (may be a different type, e.g. Cloudflare layered after Amazon)
+            body = _decode_content(result.content, result.content_type.lower())
+            challenge = detect_challenge(result.status_code, result.headers, body)
+            if not challenge:
+                _log(f"Amazon captcha solved inline for {domain}")
+                # Cache cookies for future requests
+                if cookie_cache:
+                    cookie_cache.set(
+                        domain, "amazon", solve_result["cookies"],
+                        solve_result["user_agent"], solve_impersonate,
+                    )
+                return result
+            _log(f"Amazon inline solve failed (re-challenge: {challenge}), falling through to Chrome")
+        # Fall through to browser solve
 
     # Browser challenge
     if not challenge_solver:
@@ -646,7 +685,7 @@ async def fetch_url(
             result = await active_fetcher.fetch(
                 fetch_url_str,
                 timeout=float(timeout),
-                headers={"User-Agent": cached_bot_cookies.user_agent} if cached_bot_cookies else None,
+                headers={"User-Agent": cached_bot_cookies.user_agent} if cached_bot_cookies and cached_bot_cookies.user_agent else None,
             )
         except TimeoutError:
             _log(f"FETCH {url} -> ERROR: timeout after {timeout}s ({time.monotonic() - start:.1f}s)")

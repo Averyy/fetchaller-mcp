@@ -221,7 +221,7 @@ Accepts a numeric product ID or full URL. Returns tiered pricing, MOQ, lead time
 1. Validates URL (http/https only)
 2. Blocks private/internal IPs (SSRF protection with DNS rebinding prevention)
 3. Checks cookie cache for domain — if cached, uses pinned cookies + UA + TLS fingerprint
-4. Fetches with browser-like TLS fingerprints (curl_cffi)
+4. Fetches with browser-like TLS fingerprints (curl_cffi) — rotates newest 3 Chrome versions automatically
 5. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
 6. Detects content type
 7. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (20+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, and more), converts to markdown
@@ -249,6 +249,10 @@ fetchaller transparently bypasses bot challenges. First requests to protected si
 1. **ACW challenges** (Alibaba Cloud WAF): Solved inline with pure Python — no browser needed. Extracts `arg1` from challenge HTML, applies fixed shuffle permutation + XOR → cookie value.
 2. **Browser challenges** (everything else): Launches headful Chrome via PyDoll with Xvfb virtual display (CF detects headless mode). Solves the challenge, extracts all cookies + User-Agent, caches per-domain.
 3. **Cookie caching**: Cookies are bound to UA + TLS fingerprint. Cached cookies are replayed on subsequent requests with the exact same UA and fingerprint. CF cookies track expiry; all others cached until re-challenged.
+
+### Browser Fingerprints
+
+TLS fingerprint versions are auto-discovered from curl_cffi's `BrowserType` enum at import time. `BROWSER_FINGERPRINTS` (newest 3 Chrome desktop versions) and `DEFAULT_IMPERSONATE` (newest) are derived automatically — upgrading curl_cffi with new Chrome versions requires zero code changes. curl_cffi handles Sec-Ch-Ua, User-Agent, and TLS fingerprint natively via `impersonate`.
 4. **Geo-redirects**: Sites like Glassdoor redirect based on location (.com → .ca). Cookies are cached under both domains and requests retry from the final URL.
 5. **Persistence**: Cookie cache auto-persists to `/app/data/cookies.json` in Docker (survives container restarts). In-memory only outside Docker.
 
@@ -342,7 +346,7 @@ fetchaller-mcp/
 ├── src/fetchaller/          # Python source
 │   ├── main.py              # Entry point
 │   ├── server.py            # MCP server setup
-│   ├── config.py            # Configuration
+│   ├── config.py            # Configuration + auto-discovered browser fingerprints
 │   ├── botfighter.py        # Bot challenge detection, solving, cookie cache
 │   ├── http/                # HTTP server (FastAPI)
 │   ├── tools/               # MCP tools (fetch, search, reddit, aliexpress, alibaba)

@@ -6,13 +6,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fetchaller.botfighter import (
+    DEFAULT_IMPERSONATE,
     CachedCookies,
     ChallengeSolver,
     CookieCache,
     detect_challenge,
     is_acw_waf_challenge,
     is_amazon_captcha,
+    parse_amazon_captcha,
     solve_acw_sc_v2,
+    solve_amazon_inline,
 )
 
 # ── ACW Detection ─────────────────────────────────────────────────────────────
@@ -212,13 +215,13 @@ class TestCookieCache:
     def test_set_and_get(self):
         cache = CookieCache()
         cookies = [{"name": "test", "value": "123", "domain": ".example.com", "path": "/"}]
-        cache.set("example.com", "akamai", cookies, "Mozilla/5.0", "chrome131")
+        cache.set("example.com", "akamai", cookies, "Mozilla/5.0", DEFAULT_IMPERSONATE)
         entry = cache.get("example.com")
         assert entry is not None
         assert entry.challenge_type == "akamai"
         assert len(entry.cookies) == 1
         assert entry.user_agent == "Mozilla/5.0"
-        assert entry.impersonate == "chrome131"
+        assert entry.impersonate == DEFAULT_IMPERSONATE
         assert entry.expires is None  # Non-CF: no expiry
 
     def test_get_returns_none_for_missing(self):
@@ -227,7 +230,7 @@ class TestCookieCache:
 
     def test_evict(self):
         cache = CookieCache()
-        cache.set("example.com", "akamai", [], "UA", "chrome131")
+        cache.set("example.com", "akamai", [], "UA", DEFAULT_IMPERSONATE)
         cache.evict("example.com")
         assert cache.get("example.com") is None
 
@@ -241,7 +244,7 @@ class TestCookieCache:
         cookies = [
             {"name": "cf_clearance", "value": "abc", "domain": ".example.com", "path": "/", "expires": future_time}
         ]
-        cache.set("example.com", "cloudflare", cookies, "UA", "chrome131")
+        cache.set("example.com", "cloudflare", cookies, "UA", DEFAULT_IMPERSONATE)
         entry = cache.get("example.com")
         assert entry is not None
         assert entry.expires == future_time
@@ -252,7 +255,7 @@ class TestCookieCache:
         cookies = [
             {"name": "cf_clearance", "value": "abc", "domain": ".example.com", "path": "/", "expires": past_time}
         ]
-        cache.set("example.com", "cloudflare", cookies, "UA", "chrome131")
+        cache.set("example.com", "cloudflare", cookies, "UA", DEFAULT_IMPERSONATE)
         assert cache.get("example.com") is None  # Should be evicted
 
     def test_non_cf_no_expiry(self):
@@ -261,7 +264,7 @@ class TestCookieCache:
         cookies = [
             {"name": "_abck", "value": "abc", "domain": ".example.com", "path": "/", "expires": time.time() - 100}
         ]
-        cache.set("example.com", "akamai", cookies, "UA", "chrome131")
+        cache.set("example.com", "akamai", cookies, "UA", DEFAULT_IMPERSONATE)
         entry = cache.get("example.com")
         assert entry is not None  # Should NOT be evicted — non-CF
 
@@ -271,9 +274,9 @@ class TestCookieCache:
         cache = CookieCache()
         # Fill to capacity
         for i in range(_MAX_CACHE_ENTRIES):
-            cache.set(f"domain{i}.com", "akamai", [], "UA", "chrome131")
+            cache.set(f"domain{i}.com", "akamai", [], "UA", DEFAULT_IMPERSONATE)
         # Next insert should evict oldest
-        cache.set("new-domain.com", "akamai", [], "UA", "chrome131")
+        cache.set("new-domain.com", "akamai", [], "UA", DEFAULT_IMPERSONATE)
         assert cache.get("new-domain.com") is not None
         assert cache.get("domain0.com") is None  # Oldest should be evicted
 
@@ -282,7 +285,7 @@ class TestCookieCache:
         cache = CookieCache()
         cache.set("example.com", "cloudflare", [
             {"name": "cf_clearance", "value": "abc", "expires": time.time() + 3600}
-        ], "UA", "chrome131", final_url="http://192.168.1.1/admin")
+        ], "UA", DEFAULT_IMPERSONATE, final_url="http://192.168.1.1/admin")
         entry = cache.get("example.com")
         assert entry is not None
         assert entry.final_url is None  # Private URL should have been rejected
@@ -292,7 +295,7 @@ class TestCookieCache:
         path = str(tmp_path / "cookies.json")
         cache1 = CookieCache(persist_path=path)
         cookies = [{"name": "test", "value": "123", "domain": ".example.com"}]
-        cache1.set("example.com", "akamai", cookies, "Mozilla/5.0", "chrome131")
+        cache1.set("example.com", "akamai", cookies, "Mozilla/5.0", DEFAULT_IMPERSONATE)
 
         # New cache instance loads from same file
         cache2 = CookieCache(persist_path=path)
@@ -306,7 +309,7 @@ class TestCookieCache:
         """Evicted entries are removed from the persisted file."""
         path = str(tmp_path / "cookies.json")
         cache1 = CookieCache(persist_path=path)
-        cache1.set("example.com", "akamai", [], "UA", "chrome131")
+        cache1.set("example.com", "akamai", [], "UA", DEFAULT_IMPERSONATE)
         cache1.evict("example.com")
 
         cache2 = CookieCache(persist_path=path)
@@ -321,7 +324,7 @@ class TestCookieCache:
         # Write directly to bypass the in-memory expiry check
         cache1._cache["example.com"] = CachedCookies(
             challenge_type="cloudflare", cookies=cookies,
-            user_agent="UA", impersonate="chrome131", expires=past_time,
+            user_agent="UA", impersonate=DEFAULT_IMPERSONATE, expires=past_time,
         )
         cache1._save()
 
@@ -334,7 +337,7 @@ class TestCookieCache:
         cache1 = CookieCache(persist_path=path)
         cache1.set("glassdoor.com", "cloudflare", [
             {"name": "cf_clearance", "value": "abc", "expires": time.time() + 3600}
-        ], "UA", "chrome131", final_url="https://www.glassdoor.ca/")
+        ], "UA", DEFAULT_IMPERSONATE, final_url="https://www.glassdoor.ca/")
 
         cache2 = CookieCache(persist_path=path)
         entry = cache2.get("glassdoor.com")
@@ -344,7 +347,7 @@ class TestCookieCache:
     def test_persist_no_path_is_noop(self):
         """Without persist_path, save/load are silent noops."""
         cache = CookieCache()  # No path
-        cache.set("example.com", "akamai", [], "UA", "chrome131")
+        cache.set("example.com", "akamai", [], "UA", DEFAULT_IMPERSONATE)
         # Should not raise — just doesn't persist
 
     def test_persist_corrupt_file_starts_fresh(self, tmp_path):
@@ -357,8 +360,8 @@ class TestCookieCache:
     def test_batch_save_avoids_double_write(self):
         """Using _save=False then _save=True avoids double disk write. [#20]"""
         cache = CookieCache()
-        cache.set("domain1.com", "akamai", [], "UA", "chrome131", _save=False)
-        cache.set("domain2.com", "akamai", [], "UA", "chrome131", _save=True)
+        cache.set("domain1.com", "akamai", [], "UA", DEFAULT_IMPERSONATE, _save=False)
+        cache.set("domain2.com", "akamai", [], "UA", DEFAULT_IMPERSONATE, _save=True)
         # Both entries should exist
         assert cache.get("domain1.com") is not None
         assert cache.get("domain2.com") is not None
@@ -371,7 +374,7 @@ class TestCookieCache:
             "bad.com": {"cookies": []},  # Missing required fields
             "good.com": {
                 "challenge_type": "akamai", "cookies": [{"name": "x", "value": "y"}],
-                "user_agent": "UA", "impersonate": "chrome131",
+                "user_agent": "UA", "impersonate": DEFAULT_IMPERSONATE,
             },
         }
         path.write_text(json.dumps(data))
@@ -387,7 +390,7 @@ class TestCookieCache:
         data = {
             "example.com": {
                 "challenge_type": "akamai", "cookies": [], "user_agent": "UA",
-                "impersonate": "chrome131", "future_field": "should be ignored",
+                "impersonate": DEFAULT_IMPERSONATE, "future_field": "should be ignored",
             },
         }
         path.write_text(json.dumps(data))
@@ -435,7 +438,7 @@ class TestChallengeSolver:
                 result = await solver.solve("https://example.com", "cloudflare")
                 assert result is not None
                 assert result["cookies"] == mock_cookies
-                assert result["impersonate"] == "chrome131"  # [#3] Check impersonate is attached
+                assert result["impersonate"] == DEFAULT_IMPERSONATE  # [#3] Check impersonate is attached
 
     @pytest.mark.asyncio
     async def test_dispatches_akamai(self):
@@ -448,7 +451,7 @@ class TestChallengeSolver:
             with patch.object(solver, "_solve_akamai", return_value={"cookies": expected_cookies, "user_agent": "UA"}):
                 result = await solver.solve("https://example.com", "akamai")
                 assert result["cookies"] == expected_cookies
-                assert result["impersonate"] == "chrome131"
+                assert result["impersonate"] == DEFAULT_IMPERSONATE
 
     @pytest.mark.asyncio
     async def test_dispatches_amazon(self):
@@ -461,7 +464,7 @@ class TestChallengeSolver:
             with patch.object(solver, "_solve_amazon", return_value={"cookies": expected_cookies, "user_agent": "UA"}):
                 result = await solver.solve("https://www.amazon.ca/dp/B123", "amazon")
                 assert result["cookies"] == expected_cookies
-                assert result["impersonate"] == "chrome131"
+                assert result["impersonate"] == DEFAULT_IMPERSONATE
 
     @pytest.mark.asyncio
     async def test_dispatches_generic_for_unknown(self):
@@ -560,7 +563,7 @@ class TestHandleBotfighter:
         result = self._make_result(status_code=403, body=cf_body)
         fetcher = MagicMock()
         cache = CookieCache()
-        cache.set("example.com", "cloudflare", [{"name": "cf_clearance", "value": "old", "expires": time.time() + 3600}], "UA", "chrome131")
+        cache.set("example.com", "cloudflare", [{"name": "cf_clearance", "value": "old", "expires": time.time() + 3600}], "UA", DEFAULT_IMPERSONATE)
         solver = AsyncMock()
         solver.solve = AsyncMock(return_value=None)
 
@@ -584,10 +587,10 @@ class TestHandleBotfighter:
         future = time.time() + 3600
         cache.set("www.glassdoor.com", "cloudflare", [
             {"name": "cf_clearance", "value": "old", "expires": future}
-        ], "UA", "chrome131", final_url="https://www.glassdoor.ca/")
+        ], "UA", DEFAULT_IMPERSONATE, final_url="https://www.glassdoor.ca/")
         cache.set("www.glassdoor.ca", "cloudflare", [
             {"name": "cf_clearance", "value": "old", "expires": future}
-        ], "UA", "chrome131")
+        ], "UA", DEFAULT_IMPERSONATE)
         solver = AsyncMock()
         solver.solve = AsyncMock(return_value=None)
 
@@ -608,7 +611,7 @@ class TestHandleBotfighter:
         cf_body = b"window._cf_chl_opt = {}"
         result = self._make_result(status_code=403, body=cf_body)
         fetcher = MagicMock()
-        fetcher.current_impersonate = "chrome131"
+        fetcher.current_impersonate = DEFAULT_IMPERSONATE
 
         mock_retry_fetcher = AsyncMock()
         mock_retry_fetcher.apply_cookies = AsyncMock()
@@ -622,7 +625,7 @@ class TestHandleBotfighter:
             "cookies": new_cookies,
             "user_agent": "Mozilla/5.0",
             "final_url": "https://www.glassdoor.ca/",
-            "impersonate": "chrome131",
+            "impersonate": DEFAULT_IMPERSONATE,
         })
 
         cache = CookieCache()
@@ -646,7 +649,7 @@ class TestHandleBotfighter:
         cf_body = b"window._cf_chl_opt = {}"
         result = self._make_result(status_code=403, body=cf_body)
         fetcher = MagicMock()
-        fetcher.current_impersonate = "chrome131"
+        fetcher.current_impersonate = DEFAULT_IMPERSONATE
 
         mock_retry_fetcher = AsyncMock()
         mock_retry_fetcher.apply_cookies = AsyncMock()
@@ -659,7 +662,7 @@ class TestHandleBotfighter:
             "cookies": [{"name": "cf_clearance", "value": "abc"}],
             "user_agent": "Mozilla/5.0",
             "final_url": "https://example.com",
-            "impersonate": "chrome131",
+            "impersonate": DEFAULT_IMPERSONATE,
         })
 
         with patch("fetchaller.tools.fetch.ContentFetcher", return_value=mock_retry_fetcher):
@@ -674,7 +677,7 @@ class TestHandleBotfighter:
         cf_body = b"window._cf_chl_opt = {}"
         result = self._make_result(status_code=403, body=cf_body)
         fetcher = MagicMock()
-        fetcher.current_impersonate = "chrome131"
+        fetcher.current_impersonate = DEFAULT_IMPERSONATE
 
         mock_retry_fetcher = AsyncMock()
         mock_retry_fetcher.apply_cookies = AsyncMock()
@@ -687,7 +690,7 @@ class TestHandleBotfighter:
             "cookies": [{"name": "cf_clearance", "value": "abc"}],
             "user_agent": "Mozilla/5.0",
             "final_url": "http://192.168.1.1/admin",  # Private host
-            "impersonate": "chrome131",
+            "impersonate": DEFAULT_IMPERSONATE,
         })
 
         cache = CookieCache()
@@ -711,7 +714,7 @@ class TestHandleBotfighter:
             headers={"set-cookie": "_abck=~invalid; path=/"},
         )
         fetcher = MagicMock()
-        fetcher.current_impersonate = "chrome131"
+        fetcher.current_impersonate = DEFAULT_IMPERSONATE
 
         # Retry fetcher returns another challenge (cookie replay failed)
         rechallenge_result = self._make_result(
@@ -731,7 +734,7 @@ class TestHandleBotfighter:
             "cookies": [{"name": "_abck", "value": "valid_abck_value"}],
             "user_agent": "Mozilla/5.0",
             "final_url": "https://www.aliexpress.com/item/123.html",
-            "impersonate": "chrome131",
+            "impersonate": DEFAULT_IMPERSONATE,
             "html": chrome_html,
         })
 
@@ -758,7 +761,7 @@ class TestHandleBotfighter:
             headers={"set-cookie": "_abck=~invalid; path=/"},
         )
         fetcher = MagicMock()
-        fetcher.current_impersonate = "chrome131"
+        fetcher.current_impersonate = DEFAULT_IMPERSONATE
 
         rechallenge_result = self._make_result(
             status_code=403, body=akamai_body,
@@ -776,7 +779,7 @@ class TestHandleBotfighter:
             "cookies": [{"name": "_abck", "value": "valid"}],
             "user_agent": "Mozilla/5.0",
             "final_url": "https://example.com",
-            "impersonate": "chrome131",
+            "impersonate": DEFAULT_IMPERSONATE,
         })
 
         with patch("fetchaller.tools.fetch.ContentFetcher", return_value=mock_retry_fetcher):
@@ -787,3 +790,311 @@ class TestHandleBotfighter:
 
         assert isinstance(bf_result, dict)
         assert "error" in bf_result
+
+
+# ── Amazon Inline Captcha Solver ─────────────────────────────────────────────
+
+
+class TestAmazonInlineSolver:
+    """Tests for parse_amazon_captcha() and solve_amazon_inline()."""
+
+    def test_parse_link_variant(self):
+        """<a> with 'Continue shopping' text extracts correct GET target."""
+        html = '<html><body><a href="https://www.amazon.ca/ref=cs_503_link">Continue shopping</a></body></html>'
+        result = parse_amazon_captcha(html, "https://www.amazon.ca/dp/B123")
+        assert result is not None
+        assert result["method"] == "GET"
+        assert result["url"] == "https://www.amazon.ca/ref=cs_503_link"
+        assert result["params"] == {}
+
+    def test_parse_form_variant(self):
+        """<form action="/errors/validateCaptcha"> with hidden fields extracts params."""
+        html = '''<html><body>
+            <form method="get" action="/errors/validateCaptcha">
+                <input type="hidden" name="amzn" value="abc123">
+                <input type="hidden" name="amzn-r" value="/dp/B123">
+                <input type="submit" value="Continue shopping">
+            </form>
+        </body></html>'''
+        result = parse_amazon_captcha(html, "https://www.amazon.ca/dp/B123")
+        assert result is not None
+        assert result["method"] == "GET"
+        assert result["url"] == "https://www.amazon.ca/errors/validateCaptcha"
+        assert result["params"]["amzn"] == "abc123"
+        assert result["params"]["amzn-r"] == "/dp/B123"
+
+    def test_parse_relative_action(self):
+        """Relative form action is resolved against page URL."""
+        html = '<html><body><form action="/errors/validateCaptcha"><input name="k" value="v"></form></body></html>'
+        result = parse_amazon_captcha(html, "https://www.amazon.com/dp/B999")
+        assert result is not None
+        assert result["url"] == "https://www.amazon.com/errors/validateCaptcha"
+
+    def test_parse_unrecognized_returns_none(self):
+        """Page with no links or forms returns None."""
+        html = "<html><body><p>Something went wrong</p></body></html>"
+        assert parse_amazon_captcha(html, "https://www.amazon.ca/") is None
+
+    def test_parse_prefers_link_over_form(self):
+        """When both <a> and <form> exist, the link wins."""
+        html = '''<html><body>
+            <a href="https://www.amazon.ca/">Continue shopping</a>
+            <form action="/errors/validateCaptcha">
+                <input name="k" value="v">
+            </form>
+        </body></html>'''
+        result = parse_amazon_captcha(html, "https://www.amazon.ca/dp/B123")
+        assert result is not None
+        assert result["method"] == "GET"
+        assert result["url"] == "https://www.amazon.ca/"
+
+    def test_parse_rejects_non_amazon_link(self):
+        """Links to non-Amazon domains are ignored (prevents external SSRF)."""
+        html = '<html><body><a href="https://attacker.com/steal">Continue shopping</a></body></html>'
+        assert parse_amazon_captcha(html, "https://www.amazon.ca/dp/B123") is None
+
+    def test_parse_rejects_amazon_subdomain_of_attacker(self):
+        """Domains like amazon.attacker.com are rejected (not a real Amazon TLD)."""
+        html = '<html><body><a href="https://amazon.attacker.com/">Continue shopping</a></body></html>'
+        assert parse_amazon_captcha(html, "https://www.amazon.ca/dp/B123") is None
+
+    def test_parse_rejects_amzn_subdomain_of_attacker(self):
+        """Domains like amzn.attacker.com are rejected."""
+        html = '<html><body><a href="https://amzn.attacker.com/">Continue shopping</a></body></html>'
+        assert parse_amazon_captcha(html, "https://www.amazon.ca/dp/B123") is None
+
+    def test_parse_accepts_known_amazon_tlds(self):
+        """All major Amazon TLDs are accepted."""
+        for tld in ["amazon.com", "amazon.ca", "amazon.co.uk", "amazon.de", "amazon.co.jp", "amzn.com"]:
+            html = f'<html><body><a href="https://www.{tld}/">Continue shopping</a></body></html>'
+            result = parse_amazon_captcha(html, f"https://www.{tld}/dp/B123")
+            assert result is not None, f"Should accept {tld}"
+
+    def test_parse_rejects_non_amazon_form_action(self):
+        """Form actions to non-Amazon domains are ignored."""
+        html = '<html><body><form action="https://attacker.com/collect"><input name="k" value="v"></form></body></html>'
+        assert parse_amazon_captcha(html, "https://www.amazon.ca/dp/B123") is None
+
+    @pytest.mark.asyncio
+    async def test_solve_success(self):
+        """Successful inline solve returns cookies dict."""
+        html = '<html><body><a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+        mock_cookie = MagicMock()
+        mock_cookie.name = "session-id"
+        mock_cookie.value = "123-456"
+        mock_cookie.domain = ".amazon.ca"
+        mock_cookie.path = "/"
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock()
+        mock_session.cookies = MagicMock()
+        mock_session.cookies.jar = [mock_cookie]
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("curl_cffi.requests.AsyncSession", return_value=mock_session):
+            result = await solve_amazon_inline(html, "https://www.amazon.ca/dp/B123")
+        assert result is not None
+        assert len(result["cookies"]) == 1
+        assert result["cookies"][0]["name"] == "session-id"
+        assert result["cookies"][0]["value"] == "123-456"
+        assert result["cookies"][0]["domain"] == ".amazon.ca"
+
+    @pytest.mark.asyncio
+    async def test_solve_no_cookies_returns_none(self):
+        """Empty cookie jar after solve returns None."""
+        html = '<html><body><a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock()
+        mock_session.cookies = MagicMock()
+        mock_session.cookies.jar = []
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("curl_cffi.requests.AsyncSession", return_value=mock_session):
+            result = await solve_amazon_inline(html, "https://www.amazon.ca/dp/B123")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_solve_network_error_returns_none(self):
+        """Network exception during solve returns None."""
+        html = '<html><body><a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(side_effect=ConnectionError("network down"))
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("curl_cffi.requests.AsyncSession", return_value=mock_session):
+            result = await solve_amazon_inline(html, "https://www.amazon.ca/dp/B123")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_solve_rejects_private_target(self):
+        """SSRF: target URL pointing to private IP returns None."""
+        html = '<html><body><a href="http://192.168.1.1/admin">Continue shopping</a> amazon</body></html>'
+        # parse_amazon_captcha rejects non-Amazon domains, so this returns None at parse stage
+        result = await solve_amazon_inline(html, "https://www.amazon.ca/dp/B123")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_solve_forwards_original_cookies(self):
+        """Original session cookies are injected into the solve session."""
+        html = '<html><body><a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+        mock_cookie = MagicMock()
+        mock_cookie.name = "session-id"
+        mock_cookie.value = "new-456"
+        mock_cookie.domain = ".amazon.ca"
+        mock_cookie.path = "/"
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock()
+        mock_session.cookies = MagicMock()
+        mock_session.cookies.jar = [mock_cookie]
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        original = [{"name": "session-id", "value": "orig-123", "domain": ".amazon.ca", "path": "/"}]
+
+        with patch("curl_cffi.requests.AsyncSession", return_value=mock_session):
+            result = await solve_amazon_inline(
+                html, "https://www.amazon.ca/dp/B123", original_cookies=original,
+            )
+        assert result is not None
+        # Verify cookies.set was called with the original cookie
+        mock_session.cookies.set.assert_called_once_with(
+            "session-id", "orig-123", domain=".amazon.ca", path="/",
+        )
+
+    @pytest.mark.asyncio
+    async def test_solve_rejects_redirect_to_private_host(self):
+        """SSRF: redirect landing on a private IP returns None (DNS rebinding guard)."""
+        html = '<html><body><a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+
+        mock_resp = MagicMock()
+        mock_resp.url = "https://www.amazon.ca/"
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=mock_resp)
+        mock_session.cookies = MagicMock()
+        mock_session.cookies.jar = [MagicMock(name="sid", value="x", domain=".amazon.ca", path="/")]
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("curl_cffi.requests.AsyncSession", return_value=mock_session):
+            # Patch at the source module — both pre-request and post-redirect import from here
+            with patch("fetchaller.security.ssrf.is_private_host", new_callable=AsyncMock) as mock_ssrf:
+                # Pre-request check passes, post-redirect check fails (DNS rebinding)
+                mock_ssrf.side_effect = [False, True]
+                result = await solve_amazon_inline(html, "https://www.amazon.ca/dp/B123")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_solve_rejects_non_http_scheme(self):
+        """Scheme validation: javascript: and file: URLs are rejected."""
+        html = '<html><body><a href="javascript:alert(1)">Continue shopping</a> amazon</body></html>'
+        result = await solve_amazon_inline(html, "https://www.amazon.ca/dp/B123")
+        assert result is None
+
+
+# ── _handle_botfighter Amazon Integration Tests ──────────────────────────────
+
+
+class TestHandleBotfighterAmazon:
+    """Integration tests for Amazon inline solve path in _handle_botfighter."""
+
+    def _make_result(self, status_code=200, body=b"<html>OK</html>", headers=None, content_type="text/html"):
+        from fetchaller.content.fetcher import FetchResult
+        return FetchResult(
+            content=body, content_type=content_type,
+            status_code=status_code, final_url="https://www.amazon.ca/dp/B123",
+            headers=headers or {},
+        )
+
+    @pytest.mark.asyncio
+    async def test_amazon_inline_solve_caches_cookies(self):
+        """Successful Amazon inline solve caches cookies for future requests."""
+        from fetchaller.tools.fetch import _handle_botfighter
+        amazon_body = b'<html><body>amazon <a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+        result = self._make_result(status_code=200, body=amazon_body)
+        success_result = self._make_result(status_code=200, body=b"<html>Product page</html>")
+
+        mock_amazon_fetcher = AsyncMock()
+        mock_amazon_fetcher.apply_cookies = AsyncMock()
+        mock_amazon_fetcher.pin_identity = MagicMock()
+        mock_amazon_fetcher.fetch = AsyncMock(return_value=success_result)
+        mock_amazon_fetcher.close = AsyncMock()
+
+        fetcher = MagicMock()
+        fetcher.current_impersonate = DEFAULT_IMPERSONATE
+        fetcher.export_cookies = AsyncMock(return_value=[])
+        cache = CookieCache()
+
+        mock_cookies = [{"name": "session-id", "value": "123", "domain": ".amazon.ca", "path": "/"}]
+        with patch("fetchaller.tools.fetch.solve_amazon_inline", new_callable=AsyncMock,
+                    return_value={"cookies": mock_cookies, "user_agent": "", "impersonate": DEFAULT_IMPERSONATE}):
+            with patch("fetchaller.tools.fetch.ContentFetcher", return_value=mock_amazon_fetcher):
+                bf_result = await _handle_botfighter(
+                    result, "https://www.amazon.ca/dp/B123", 10.0,
+                    fetcher, cache, None, False,
+                )
+        assert bf_result is success_result
+        # Cookies should be cached under the Amazon domain
+        entry = cache.get("www.amazon.ca")
+        assert entry is not None
+        assert entry.challenge_type == "amazon"
+        assert entry.cookies == mock_cookies
+
+    @pytest.mark.asyncio
+    async def test_amazon_inline_failure_falls_to_chrome(self):
+        """When Amazon inline solve returns None, falls through to browser solve."""
+        from fetchaller.tools.fetch import _handle_botfighter
+        amazon_body = b'<html><body>amazon <a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+        result = self._make_result(status_code=200, body=amazon_body)
+        fetcher = MagicMock()
+        fetcher.current_impersonate = DEFAULT_IMPERSONATE
+        fetcher.export_cookies = AsyncMock(return_value=[])
+
+        solver = AsyncMock()
+        solver.solve = AsyncMock(return_value=None)
+
+        with patch("fetchaller.tools.fetch.solve_amazon_inline", new_callable=AsyncMock, return_value=None):
+            await _handle_botfighter(
+                result, "https://www.amazon.ca/dp/B123", 10.0,
+                fetcher, CookieCache(), solver, False,
+            )
+        # Should have attempted Chrome solve after inline failure
+        solver.solve.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_amazon_rechallenge_falls_to_chrome(self):
+        """When Amazon inline solve succeeds but retry is re-challenged, falls to Chrome."""
+        from fetchaller.tools.fetch import _handle_botfighter
+        amazon_body = b'<html><body>amazon <a href="https://www.amazon.ca/">Continue shopping</a></body></html>'
+        result = self._make_result(status_code=200, body=amazon_body)
+        # Retry still shows a challenge (e.g. Cloudflare layered after Amazon)
+        cf_result = self._make_result(status_code=403, body=b"window._cf_chl_opt = {}")
+
+        mock_amazon_fetcher = AsyncMock()
+        mock_amazon_fetcher.apply_cookies = AsyncMock()
+        mock_amazon_fetcher.pin_identity = MagicMock()
+        mock_amazon_fetcher.fetch = AsyncMock(return_value=cf_result)
+        mock_amazon_fetcher.close = AsyncMock()
+
+        fetcher = MagicMock()
+        fetcher.current_impersonate = DEFAULT_IMPERSONATE
+        fetcher.export_cookies = AsyncMock(return_value=[])
+        solver = AsyncMock()
+        solver.solve = AsyncMock(return_value=None)
+
+        mock_cookies = [{"name": "session-id", "value": "123", "domain": ".amazon.ca", "path": "/"}]
+        with patch("fetchaller.tools.fetch.solve_amazon_inline", new_callable=AsyncMock,
+                    return_value={"cookies": mock_cookies, "user_agent": "", "impersonate": DEFAULT_IMPERSONATE}):
+            with patch("fetchaller.tools.fetch.ContentFetcher", return_value=mock_amazon_fetcher):
+                await _handle_botfighter(
+                    result, "https://www.amazon.ca/dp/B123", 10.0,
+                    fetcher, CookieCache(), solver, False,
+                )
+        # Should have fallen through to Chrome solver
+        solver.solve.assert_called_once()

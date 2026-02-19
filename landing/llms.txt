@@ -40,7 +40,7 @@ All other sites get universal junk removal (nav, footer, ads, cookie banners, mo
 
 ### Bot protection bypass
 
-fetchaller transparently detects and solves bot challenges from Cloudflare, Akamai, DataDome, Alibaba Cloud WAF, and other protection systems. Cookies are cached per-domain so subsequent requests skip the challenge. No configuration or API keys needed.
+fetchaller transparently detects and solves bot challenges from Cloudflare, Akamai, DataDome, Alibaba Cloud WAF, and other protection systems. Cookies are cached per-domain so subsequent requests skip the challenge. No configuration or API keys needed. Browser TLS fingerprints are auto-discovered from curl_cffi and rotate the newest 3 Chrome versions — upgrading curl_cffi automatically adds new versions.
 
 ### Search
 

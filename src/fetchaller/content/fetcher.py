@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from curl_cffi.requests import AsyncSession, Response
 
-from ..config import BROWSER_FINGERPRINTS, FINGERPRINT_SEC_CH_UA, Config
+from ..config import BROWSER_FINGERPRINTS, Config
 
 
 def _find_ca_bundle() -> str | None:
@@ -72,14 +72,16 @@ class ContentFetcher:
     Fetches content using curl_cffi with TLS fingerprint impersonation.
 
     Features:
-    - Browser fingerprint rotation (chrome131, chrome133a, chrome136, chrome142)
+    - Browser fingerprint rotation (newest 3 Chrome versions from config)
     - Smart retry with exponential backoff
     - Max response size enforcement (default 20MB)
     """
 
     MAX_RESPONSE_SIZE = 20 * 1024 * 1024  # 20MB
 
-    # Browser navigation headers (Sec-Ch-Ua set dynamically per-request)
+    # Browser navigation headers.
+    # Sec-Ch-Ua, Sec-Ch-Ua-Mobile, Sec-Ch-Ua-Platform, and User-Agent are all
+    # set by curl_cffi natively via the impersonate parameter — do not override.
     _DEFAULT_HEADERS_BASE = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -87,8 +89,6 @@ class ContentFetcher:
         "Cache-Control": "max-age=0",
         "DNT": "1",
         "Priority": "u=0, i",
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"macOS"',
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "none",
@@ -96,13 +96,13 @@ class ContentFetcher:
         "Upgrade-Insecure-Requests": "1",
     }
 
-    # JSON API headers (Sec-Ch-Ua set dynamically per-request)
+    # JSON API headers.
+    # Sec-Ch-Ua, Sec-Ch-Ua-Mobile, Sec-Ch-Ua-Platform, and User-Agent are all
+    # set by curl_cffi natively via the impersonate parameter — do not override.
     _JSON_HEADERS_BASE = {
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-US,en;q=0.9",
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"macOS"',
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
@@ -160,11 +160,8 @@ class ContentFetcher:
         session = await self._get_session()
         delay = self.retry_config.initial_delay
 
-        # Build headers with Sec-Ch-Ua matching the active TLS fingerprint
+        # curl_cffi sets Sec-Ch-Ua natively via impersonate — no manual override needed
         base_headers = self._JSON_HEADERS_BASE.copy() if use_json_headers else self._DEFAULT_HEADERS_BASE.copy()
-        sec_ch_ua = FINGERPRINT_SEC_CH_UA.get(self._browser)
-        if sec_ch_ua:
-            base_headers["Sec-Ch-Ua"] = sec_ch_ua
         # Auto-set Referer to the site origin — real browsers always send this.
         # Only set if not already provided in custom headers.
         if not (headers and "Referer" in headers):
@@ -318,6 +315,15 @@ class ContentFetcher:
         to_remove = [c for c in jar if c.domain and c.domain.endswith(domain_suffix)]
         for c in to_remove:
             jar.clear(c.domain, c.path, c.name)
+
+    async def export_cookies(self) -> list[dict]:
+        """Export session cookies as a list of dicts (for passing to other sessions)."""
+        if not self._session:
+            return []
+        return [
+            {"name": c.name, "value": c.value, "domain": c.domain or "", "path": c.path or "/"}
+            for c in self._session.cookies.jar
+        ]
 
     async def close(self) -> None:
         """Close the session."""

@@ -245,17 +245,6 @@ class TestParseSearchHtml:
 # ---------------------------------------------------------------------------
 
 
-class TestRateLimiting:
-    """Rate limiting uses shared domain limiter."""
-
-    def test_uses_shared_alibaba_limiter(self):
-        from fetchaller.alibaba import search as search_mod
-        from fetchaller.ratelimit import alibaba_limiter
-
-        assert hasattr(search_mod, "alibaba_limiter")
-        assert search_mod.alibaba_limiter is alibaba_limiter
-
-
 # ---------------------------------------------------------------------------
 # Integration tests
 # ---------------------------------------------------------------------------

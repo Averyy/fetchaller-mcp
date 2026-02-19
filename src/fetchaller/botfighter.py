@@ -5,6 +5,7 @@ Alibaba Cloud WAF (acw_sc__v2), Amazon rate-limit captcha, and
 unknown JS challenges.
 
 ACW challenges are solved inline with pure Python (~1ms).
+Amazon rate-limit captchas are solved inline with curl_cffi (~10ms).
 All other challenges use PyDoll (persistent headless Chrome).
 """
 
@@ -17,9 +18,9 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
-from .config import Config
+from .config import BROWSER_FINGERPRINTS, Config
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,174 @@ def solve_acw_sc_v2(html: str) -> str | None:
         xored = int(shuffled[i : i + 2], 16) ^ int(_ACW_KEY[i : i + 2], 16)
         result.append(f"{xored:02x}")
     return "".join(result)
+
+
+# ── Amazon Inline Captcha Solver ──────────────────────────────────────────────
+# Amazon's rate-limit interstitial is a simple HTML page with a "Continue
+# shopping" link or form — no JS challenge, no image CAPTCHA. We can solve
+# it inline with curl_cffi (~10ms) instead of spinning up Chrome (~5-10s).
+
+
+_AMAZON_DOMAIN_RE = re.compile(
+    r"(?:^|\.)(?:amazon|amzn)\."
+    r"(?:com|ca|co\.uk|de|fr|it|es|co\.jp|com\.au|in|com\.br|com\.mx|"
+    r"nl|sg|sa|ae|eg|pl|se|tr|to|com\.be|cn|com\.tr|com\.sg)$",
+    re.IGNORECASE,
+)
+
+
+def _is_amazon_domain(url: str) -> bool:
+    """Check if URL points to a known Amazon domain (security: prevents external SSRF)."""
+    hostname = urlparse(url).hostname or ""
+    return bool(_AMAZON_DOMAIN_RE.search(hostname))
+
+
+def parse_amazon_captcha(html: str, page_url: str) -> dict | None:
+    """Parse Amazon rate-limit captcha page to extract the submission target.
+
+    Returns:
+        Dict with 'method' ('GET'/'POST'), 'url' (absolute), 'params' (dict),
+        or None if the page structure is unrecognized or target is non-Amazon.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "lxml")
+
+    # Strategy 1: Find <a> links with "continue shopping" text
+    for a in soup.find_all("a", href=True):
+        if "continue shopping" in (a.get_text() or "").lower():
+            href = urljoin(page_url, a["href"])
+            if _is_amazon_domain(href):
+                return {"method": "GET", "url": href, "params": {}}
+
+    # Strategy 2: Find <form> and extract action + hidden fields
+    form = soup.find("form")
+    if form:
+        action = form.get("action", "")
+        abs_action = urljoin(page_url, action) if action else page_url
+        if _is_amazon_domain(abs_action):
+            method = (form.get("method") or "GET").upper()
+            params = {}
+            for inp in form.find_all("input"):
+                name = inp.get("name")
+                if name:
+                    params[name] = inp.get("value", "")
+            return {"method": method, "url": abs_action, "params": params}
+
+    return None
+
+
+async def solve_amazon_inline(
+    html: str, page_url: str, impersonate: str = "",
+    original_cookies: list[dict] | None = None,
+) -> dict | None:
+    """Solve Amazon rate-limit captcha inline via curl_cffi form submission.
+
+    Args:
+        original_cookies: Cookies from the original request session. Amazon's
+            captcha form needs the session context (session-id, etc.) to associate
+            the "continue shopping" action with the rate-limited session.
+
+    Returns:
+        Dict with 'cookies' (list of cookie dicts), 'user_agent' (str),
+        and 'impersonate' (str — the TLS fingerprint used during solve),
+        or None if solving failed.
+    """
+    from .content.fetcher import _find_ca_bundle
+
+    if not impersonate:
+        impersonate = DEFAULT_IMPERSONATE
+
+    parsed_target = parse_amazon_captcha(html, page_url)
+    if not parsed_target:
+        _log("Amazon captcha: unrecognized page structure, falling through to Chrome")
+        return None
+
+    target_url = parsed_target["url"]
+    parsed = urlparse(target_url)
+
+    # Scheme validation — only allow http/https (libcurl supports file://, ftp://, etc.)
+    if parsed.scheme not in ("http", "https"):
+        _log(f"Amazon captcha: non-http scheme in target URL: {_sanitize_url(target_url)}")
+        return None
+
+    # SSRF check on target URL (async version — resolves DNS, catches rebinding)
+    target_host = parsed.hostname or ""
+    try:
+        from .security.ssrf import is_private_host
+        if await is_private_host(target_host):
+            _log(f"Amazon captcha: target URL points to private host {target_host}")
+            return None
+    except Exception:
+        return None
+
+    try:
+        from curl_cffi.requests import AsyncSession
+
+        ca_bundle = _find_ca_bundle()
+        session_kwargs = {"impersonate": impersonate}
+        if ca_bundle:
+            session_kwargs["verify"] = ca_bundle
+
+        async with AsyncSession(**session_kwargs) as session:
+            # Inject original session cookies so Amazon associates the captcha
+            # solve with the rate-limited session (session-id, etc.)
+            if original_cookies:
+                for c in original_cookies:
+                    session.cookies.set(
+                        c.get("name", ""),
+                        c.get("value", ""),
+                        domain=c.get("domain"),
+                        path=c.get("path", "/"),
+                    )
+
+            if parsed_target["method"] == "POST":
+                resp = await session.post(
+                    target_url,
+                    data=parsed_target["params"],
+                    headers={"Referer": page_url},
+                    allow_redirects=True,
+                    timeout=10,
+                )
+            else:
+                resp = await session.get(
+                    target_url,
+                    params=parsed_target["params"] or None,
+                    headers={"Referer": page_url},
+                    allow_redirects=True,
+                    timeout=10,
+                )
+
+            # SSRF check on final URL after redirects — always validate, even
+            # if hostname didn't change (guards against DNS rebinding)
+            final_url = str(resp.url)
+            final_host = urlparse(final_url).hostname or ""
+            if final_host:
+                from .security.ssrf import is_private_host as _async_ssrf
+                if await _async_ssrf(final_host):
+                    _log(f"Amazon captcha: redirect landed on private host {final_host}")
+                    return None
+
+            # Extract cookies from session jar
+            cookies = []
+            for cookie in session.cookies.jar:
+                cookies.append({
+                    "name": cookie.name,
+                    "value": cookie.value,
+                    "domain": cookie.domain or "",
+                    "path": cookie.path or "/",
+                })
+
+            if not cookies:
+                _log("Amazon captcha: no cookies obtained from inline solve")
+                return None
+
+            _log(f"Amazon captcha solved inline: {len(cookies)} cookies from {_sanitize_url(target_url)}")
+            return {"cookies": cookies, "user_agent": "", "impersonate": impersonate}
+
+    except Exception:
+        logger.exception("Amazon inline captcha solve failed")
+        return None
 
 
 # ── Challenge Detection ───────────────────────────────────────────────────────
@@ -390,8 +559,8 @@ class CookieCache:
 
 # ── Challenge Solver ──────────────────────────────────────────────────────────
 
-# Default impersonate value for cookie cache (matches Chrome UA from browser) [#3]
-DEFAULT_IMPERSONATE = "chrome131"
+# Default impersonate value — newest Chrome auto-discovered from curl_cffi [#3]
+DEFAULT_IMPERSONATE = BROWSER_FINGERPRINTS[-1]
 
 
 class ChallengeSolver:
