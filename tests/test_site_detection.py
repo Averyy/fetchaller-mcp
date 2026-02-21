@@ -118,6 +118,12 @@ class TestDetectSiteByUrl:
     def test_kijiji_listing(self):
         assert _detect_site("https://www.kijiji.ca/v-cell-phone/ottawa/iphone/1701831111", False) == "kijiji"
 
+    def test_molex_com(self):
+        assert _detect_site("https://www.molex.com/en-us/products/part-detail/430250408", False) == "molex"
+
+    def test_molex_no_www(self):
+        assert _detect_site("https://molex.com/en-us/products/part-detail/430250408", False) == "molex"
+
     def test_mouser_com(self):
         assert _detect_site("https://www.mouser.com/ProductDetail/12345", False) == "mouser"
 

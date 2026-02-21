@@ -3,8 +3,13 @@
 This module contains the generic HTML→markdown pipeline. Site-specific
 selectors, soup-level cleanup, and markdown post-processing live in their
 own modules (github.py, reddit.py, hackernews.py, wikipedia.py).
+
+Includes a generic JSON-LD Product extractor as a fallback for sites
+without dedicated modules — extracts brand, price, specs from
+schema.org Product structured data.
 """
 
+import json
 import re
 from urllib.parse import urljoin
 
@@ -23,6 +28,7 @@ from . import hackernews as _hackernews
 from . import huggingface as _huggingface
 from . import kijiji as _kijiji
 from . import medium as _medium
+from . import molex as _molex
 from . import mouser as _mouser
 from . import reddit as _reddit
 from . import redflagdeals as _redflagdeals
@@ -107,6 +113,7 @@ _JUNK_AND_CRAIGSLIST_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _craigslist.SEL
 _JUNK_AND_DIGIKEY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _digikey.SELECTORS_LIST)
 _JUNK_AND_EBAY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _ebay.SELECTORS_LIST)
 _JUNK_AND_KIJIJI_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _kijiji.SELECTORS_LIST)
+_JUNK_AND_MOLEX_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _molex.SELECTORS_LIST)
 _JUNK_AND_MOUSER_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _mouser.SELECTORS_LIST)
 _JUNK_AND_SOYLENT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _soylent.SELECTORS_LIST)
 _JUNK_AND_WIKIPEDIA_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _wikipedia.SELECTORS_LIST)
@@ -187,6 +194,137 @@ def _strip_data_uri_images(soup: BeautifulSoup) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Generic JSON-LD Product extraction (fallback for sites without modules)
+# ---------------------------------------------------------------------------
+
+_GENERIC_JSONLD_MARKER = "__GENERIC_JSONLD__"
+_GENERIC_JSONLD_MARKER_RE = re.compile(
+    r"__GENERIC_JSONLD__([\s\S]*?)__GENERIC_JSONLD__\n*"
+)
+
+
+def _extract_generic_jsonld(soup: BeautifulSoup) -> None:
+    """Extract schema.org Product data from JSON-LD as a fallback.
+
+    Fires for sites without dedicated modules. Extracts name, brand,
+    description, price/availability, and additionalProperty specs.
+
+    Uses the same marker-injection pattern as site-specific extractors
+    (eBay, Molex) so structured data survives the CSS removal + markdownify
+    pipeline.
+    """
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("@type") != "Product":
+                continue
+
+            lines = []
+
+            # Product name
+            name = item.get("name")
+            if name:
+                lines.append(f"**Product:** {name}")
+
+            # Brand
+            brand = item.get("brand")
+            if isinstance(brand, dict):
+                brand_name = brand.get("name")
+            else:
+                brand_name = brand
+            if brand_name:
+                lines.append(f"**Brand:** {brand_name}")
+
+            # Description
+            desc = item.get("description")
+            if desc and desc != name:
+                lines.append(f"**Description:** {desc}")
+
+            # SKU / MPN
+            sku = item.get("sku")
+            mpn = item.get("mpn")
+            if mpn:
+                lines.append(f"**MPN:** {mpn}")
+            if sku and sku != mpn:
+                lines.append(f"**SKU:** {sku}")
+
+            # Offers (price, availability)
+            offers = item.get("offers")
+            if isinstance(offers, dict):
+                offers = [offers]
+            if isinstance(offers, list):
+                for offer in offers:
+                    if not isinstance(offer, dict):
+                        continue
+                    price = offer.get("price")
+                    currency = offer.get("priceCurrency", "")
+                    if price:
+                        lines.append(f"**Price:** {currency} {price}".strip())
+                    avail = offer.get("availability", "")
+                    if avail:
+                        avail_label = avail.rsplit("/", 1)[-1]
+                        lines.append(f"**Availability:** {avail_label}")
+
+            # Specifications from additionalProperty
+            specs = item.get("additionalProperty", [])
+            if isinstance(specs, dict):
+                specs = [specs]
+            spec_lines = []
+            for spec in specs:
+                if not isinstance(spec, dict):
+                    continue
+                spec_name = (spec.get("name") or "").strip()
+                spec_value = (spec.get("value") or "").strip()
+                if spec_name and spec_value:
+                    spec_lines.append(f"- **{spec_name}:** {spec_value}")
+
+            if spec_lines:
+                lines.append("")
+                lines.append("**Specifications:**")
+                lines.extend(spec_lines)
+
+            if lines:
+                body = soup.find("body")
+                if body is not None:
+                    marker = soup.new_tag("div", id="generic-jsonld-marker")
+                    marker.string = (
+                        _GENERIC_JSONLD_MARKER
+                        + "\n".join(lines)
+                        + _GENERIC_JSONLD_MARKER
+                    )
+                    body.insert(0, marker)
+                return  # Only process the first Product
+
+
+def _postprocess_generic_jsonld(markdown: str) -> str:
+    """Inject generic JSON-LD data after first heading."""
+    m = _GENERIC_JSONLD_MARKER_RE.search(markdown)
+    if not m:
+        return markdown
+
+    jsonld_content = m.group(1).strip()
+    markdown = markdown[:m.start()] + markdown[m.end():]
+
+    heading_m = re.search(r"(# [^\n]+\n)", markdown)
+    if heading_m:
+        insert_pos = heading_m.end()
+        markdown = (
+            markdown[:insert_pos] + f"\n{jsonld_content}\n" + markdown[insert_pos:]
+        )
+    else:
+        markdown = f"{jsonld_content}\n\n{markdown}"
+
+    return markdown
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
@@ -216,6 +354,8 @@ def _detect_site(
         return "ebay"
     if url and _kijiji.is_kijiji(url):
         return "kijiji"
+    if url and _molex.is_molex(url):
+        return "molex"
     if url and _mouser.is_mouser(url):
         return "mouser"
     if url and _hackernews.is_hackernews(url):
@@ -257,6 +397,7 @@ _SITE_SELECTORS = {
     "digikey": _JUNK_AND_DIGIKEY_SELECTOR,
     "ebay": _JUNK_AND_EBAY_SELECTOR,
     "kijiji": _JUNK_AND_KIJIJI_SELECTOR,
+    "molex": _JUNK_AND_MOLEX_SELECTOR,
     "mouser": _JUNK_AND_MOUSER_SELECTOR,
     "reddit": _JUNK_AND_REDDIT_SELECTOR,
     "hackernews": _JUNK_AND_HACKERNEWS_SELECTOR,
@@ -306,9 +447,17 @@ def clean_html(
     if site == "ebay":
         _ebay.extract_ebay_jsonld(soup)
 
+    # Molex: extract JSON-LD product data before scripts are removed
+    if site == "molex":
+        _molex.extract_molex_jsonld(soup)
+
     # Soylent: extract inventory from gsf_conversion_data before scripts are removed
     if site == "soylent":
         _soylent.extract_inventory(soup)
+
+    # Generic: extract JSON-LD Product data for sites without dedicated modules
+    if site is None:
+        _extract_generic_jsonld(soup)
 
     # Single-pass removal using combined CSS selector
     selector = _SITE_SELECTORS.get(site, _JUNK_SELECTOR)
@@ -331,6 +480,8 @@ def clean_html(
         _ebay.strip_ebay_junk(soup)
     elif site == "kijiji":
         _kijiji.strip_kijiji_junk(soup)
+    elif site == "molex":
+        _molex.strip_molex_junk(soup)
     elif site == "mouser":
         _mouser.strip_mouser_junk(soup)
     elif site == "hackernews":
@@ -414,6 +565,8 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _ebay.postprocess_ebay(markdown)
     elif site == "kijiji":
         markdown = _kijiji.postprocess_kijiji(markdown)
+    elif site == "molex":
+        markdown = _molex.postprocess_molex(markdown)
     elif site == "mouser":
         markdown = _mouser.postprocess_mouser(markdown)
     elif site == "hackernews":
@@ -434,6 +587,8 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _redflagdeals.postprocess_rfd(markdown)
     elif site == "forum":
         markdown = _forums.postprocess_forum(markdown)
+    elif site is None:
+        markdown = _postprocess_generic_jsonld(markdown)
 
     # Add title header only if markdown doesn't already start with a heading
     if title and not markdown.startswith("# "):

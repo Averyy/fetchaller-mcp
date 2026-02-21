@@ -20,6 +20,9 @@ Module layout:
                    sidebars, vote buttons, post menus, user signatures; soup
                    cleanup for avatars, banners, Collectives promo; regex
                    post-processing for badges, dates, comments headers.
+- molex.py     — Molex: JSON-LD Product extraction (additionalProperty specs),
+                   CSS selectors for AEM header/nav/account, regex post-processing
+                   for Limited Information message, nav items, About Us boilerplate.
 - wikipedia.py  — Wikipedia: CSS selectors for edit buttons, navboxes, etc.
 - fetcher.py    — HTTP fetching via curl_cffi.
 - pdf.py        — PDF to markdown extraction via pymupdf4llm.

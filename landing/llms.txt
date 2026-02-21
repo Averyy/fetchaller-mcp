@@ -32,11 +32,12 @@ Each site gets tailored CSS selectors, HTML cleanup, and regex post-processing. 
 - **Craigslist** — All city subdomains. Strips nav, safety warnings, loading noise.
 - **Kijiji** — kijiji.ca. Strips sponsored content, filters, nav.
 - **DigiKey** — All TLDs. Optional API mode with OAuth2 when keys configured.
+- **Molex** — molex.com. JSON-LD product extraction (CSR site, specs only in structured data).
 - **Mouser** — All TLDs. Optional API mode when key configured.
 - **Soylent** — soylent.com, soylent.ca. Shopify store cleanup, inventory extraction.
 - **Texas Instruments** — ti.com. Document viewer support for lazy-loaded datasheets.
 
-All other sites get universal junk removal (nav, footer, ads, cookie banners, modals, overlays).
+All other sites get universal junk removal (nav, footer, ads, cookie banners, modals, overlays) plus generic JSON-LD Product extraction when structured data is available.
 
 ### Bot protection bypass
 

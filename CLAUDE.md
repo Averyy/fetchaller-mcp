@@ -76,6 +76,7 @@ For each new site module:
 - `test_craigslist_postprocessor.py` — Craigslist URL detection and regex postprocessor unit tests
 - `test_kijiji_postprocessor.py` — Kijiji URL detection and regex postprocessor unit tests
 - `test_ebay_postprocessor.py` — eBay URL detection, JSON-LD extraction, regex postprocessor unit tests
+- `test_molex_postprocessor.py` — Molex URL detection, JSON-LD extraction (additionalProperty specs), regex postprocessor unit tests
 - `test_digikey_postprocessor.py` — DigiKey URL detection and regex postprocessor unit tests
 - `test_digikey_api.py` — DigiKey API client: URL parsing, token manager, product formatting, search, error handling
 - `test_mouser_postprocessor.py` — Mouser URL detection and regex postprocessor unit tests
@@ -104,7 +105,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` C
 
 `src/fetchaller/content/` handles HTML→markdown conversion:
 
-- **`html.py`** — Generic pipeline + dispatch. Universal junk selectors (nav, footer, ads, cookie banners, modals), markdownify conversion, whitespace cleanup. Dispatches to site modules based on URL.
+- **`html.py`** — Generic pipeline + dispatch. Universal junk selectors (nav, footer, ads, cookie banners, modals), markdownify conversion, whitespace cleanup. Dispatches to site modules based on URL. Includes generic JSON-LD Product fallback for sites without dedicated modules.
 - **`amazon.py`** — Amazon (all TLDs): CSS selectors, soup cleanup, regex post-processors. Covers .com, .ca, .co.uk, .de, .fr, .it, .es, .co.jp, .com.au, .in, etc.
 - **`github.py`** — GitHub: CSS selectors, soup cleanup, regex post-processors, URL transforms, file tree extraction, issue/PR/discussion extraction from embedded JSON.
 - **`reddit.py`** — Reddit: CSS selectors for old.reddit.com, URL transforms (www→old), post formatting.
@@ -121,6 +122,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` C
 - **`digikey.py`** — DigiKey (all TLDs): CSS selectors, soup cleanup, regex post-processors. Behind Akamai (botfighter handles). HTML fallback when no API key configured.
 - **`ebay.py`** — eBay (all TLDs): CSS selectors, JSON-LD product data extraction, soup cleanup, regex post-processors.
 - **`kijiji.py`** — Kijiji (kijiji.ca): CSS selectors, soup cleanup, regex post-processors for sponsored/filter/nav noise.
+- **`molex.py`** — Molex (molex.com): JSON-LD Product extraction (additionalProperty specs), AEM header/nav/account CSS selectors, regex post-processors for nav/About Us boilerplate. CSR site — product specs only available via JSON-LD.
 - **`mouser.py`** — Mouser (all TLDs): CSS selectors, soup cleanup, regex post-processors. Behind Akamai (botfighter handles). HTML fallback when no API key configured.
 - **`soylent.py`** — Soylent (soylent.com, soylent.ca): Shopify store cleanup, inventory extraction from `gsf_conversion_data`.
 - **`ti.py`** — Texas Instruments (ti.com): CSS selectors, document viewer support for lazy-loaded datasheets, inventory placeholder extraction.

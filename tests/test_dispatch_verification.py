@@ -203,6 +203,16 @@ class TestSelectorDispatch:
         assert "mouser header junk" not in soup.get_text()
         assert "Part details content" in soup.get_text()
 
+    def test_molex_header_removed(self):
+        html = _wrap(
+            '<div class="cmp-header">molex header junk</div>'
+            '<div>Product content</div>',
+        )
+        soup, site = clean_html(html, url="https://www.molex.com/en-us/products/part-detail/430250408")
+        assert site == "molex"
+        assert "molex header junk" not in soup.get_text()
+        assert "Product content" in soup.get_text()
+
     def test_soylent_announcement_banner_removed(self):
         html = _wrap(
             '<div id="shopify-section-announcement-banner">free shipping social links</div>'
@@ -417,6 +427,76 @@ class TestPostprocessorDispatch:
         assert "**In stock**" in md
         assert "__SOYLENT_" not in md
         assert "Product description" in md
+
+    def test_molex_jsonld_extracted(self):
+        """Molex postprocessor extracts JSON-LD product specs."""
+        html = _wrap(
+            '<script type="application/ld+json">'
+            '{"@type": "Product", "name": "Micro-Fit 3.0", "sku": "430250408", '
+            '"brand": {"name": "Molex"}, '
+            '"additionalProperty": ['
+            '{"@type": "PropertyValue", "name": "Pitch", "value": "3.00mm"}'
+            ']}'
+            '</script>'
+            '<h1>Connector Part</h1>'
+            '<p>Limited Information Available</p>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.molex.com/en-us/products/part-detail/430250408")
+        assert "**Product:** Micro-Fit 3.0" in md
+        assert "**SKU:** 430250408" in md
+        assert "**Brand:** Molex" in md
+        assert "- **Pitch:** 3.00mm" in md
+        assert "Limited Information" not in md
+
+    def test_generic_jsonld_product_extracted(self):
+        """Generic JSON-LD fallback extracts Product data on unknown sites."""
+        html = _wrap(
+            '<script type="application/ld+json">'
+            '{"@type": "Product", "name": "Widget Pro", '
+            '"brand": "AcmeCorp", '
+            '"offers": {"price": "49.99", "priceCurrency": "USD"}, '
+            '"additionalProperty": ['
+            '{"@type": "PropertyValue", "name": "Weight", "value": "250g"}'
+            ']}'
+            '</script>'
+            '<h1>Widget Pro</h1>'
+            '<p>Product page content</p>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.unknownsite.com/product/123")
+        assert "**Product:** Widget Pro" in md
+        assert "**Brand:** AcmeCorp" in md
+        assert "**Price:** USD 49.99" in md
+        assert "- **Weight:** 250g" in md
+        assert "Product page content" in md
+
+    def test_generic_jsonld_ignored_for_non_product(self):
+        """Generic JSON-LD fallback does NOT extract non-Product types."""
+        html = _wrap(
+            '<script type="application/ld+json">'
+            '{"@type": "NewsArticle", "headline": "Breaking News"}'
+            '</script>'
+            '<h1>Article Title</h1>'
+            '<p>Article content</p>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.unknownsite.com/article/123")
+        assert "**Product:**" not in md
+        assert "Article content" in md
+
+    def test_generic_jsonld_not_fired_for_known_site(self):
+        """Generic JSON-LD fallback does NOT fire for sites with modules (eBay)."""
+        html = _wrap(
+            '<script type="application/ld+json">'
+            '{"@type": "Product", "name": "Test Item", '
+            '"brand": {"name": "TestBrand"}, '
+            '"offers": {"price": "10.00", "priceCurrency": "USD"}}'
+            '</script>'
+            '<h1>Test Item</h1>',
+        )
+        md, _ = _html_to_markdown_sync(html, url="https://www.ebay.com/itm/123456789")
+        # eBay's own extractor should handle this, not the generic one
+        assert "__GENERIC_JSONLD__" not in md
+        # eBay extractor should have worked
+        assert "**Brand:** TestBrand" in md
 
     def test_generic_does_not_apply_stackoverflow_postprocessor(self):
         """On a generic page, SO-specific patterns must NOT be removed."""
