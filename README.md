@@ -10,11 +10,11 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 - **`search`**: Web search via Google + DuckDuckGo
 - **`browse_reddit`**: Browse subreddit listings (hot/new/top/rising)
 - **`search_reddit`**: Search Reddit posts globally or within a subreddit
+- **`search_marketplace`**: Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range)
 - **`get_aliexpress_product`**: AliExpress product details (price, specs, ratings, reviews)
 - **`search_aliexpress`**: Search AliExpress products with price filters and sorting
 - **`get_alibaba_product`**: Alibaba.com B2B product details (tiered pricing, MOQ, lead times, supplier info)
 - **`search_alibaba`**: Search Alibaba.com B2B products
-- **`search_marketplace`**: Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range)
 
 ## Quick Start
 
@@ -40,11 +40,11 @@ Add permissions to `~/.claude/settings.json`:
       "mcp__fetchaller__search",
       "mcp__fetchaller__browse_reddit",
       "mcp__fetchaller__search_reddit",
+      "mcp__fetchaller__search_marketplace",
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
       "mcp__fetchaller__get_alibaba_product",
-      "mcp__fetchaller__search_alibaba",
-      "mcp__fetchaller__search_marketplace"
+      "mcp__fetchaller__search_alibaba"
     ]
   }
 }
@@ -65,11 +65,11 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 - `mcp__fetchaller__search(query, page?)` — Web search (Google + DuckDuckGo)
 - `mcp__fetchaller__browse_reddit(subreddit, sort?, time?, limit?)` — Browse subreddit listings
 - `mcp__fetchaller__search_reddit(query, subreddit?, sort?, time?, limit?)` — Search Reddit posts
+- `mcp__fetchaller__search_marketplace(query, location, platforms?, category?, sort?, condition?, min_price?, max_price?)` — Search Kijiji + Craigslist + Facebook Marketplace
 - `mcp__fetchaller__get_aliexpress_product(product_id)` — AliExpress product details
 - `mcp__fetchaller__search_aliexpress(query, page?, sort?, min_price?, max_price?)` — Search AliExpress
 - `mcp__fetchaller__get_alibaba_product(product_id)` — Alibaba.com product details
 - `mcp__fetchaller__search_alibaba(query, page?, sort?, min_price?, max_price?)` — Search Alibaba.com
-- `mcp__fetchaller__search_marketplace(query, location, platforms?, category?, sort?, condition?, min_price?, max_price?)` — Search Kijiji + Craigslist + Facebook Marketplace
 ```
 
 ## Usage

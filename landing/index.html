@@ -1779,11 +1779,11 @@ claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
       <span class="s">"mcp__fetchaller__search"</span>,
       <span class="s">"mcp__fetchaller__browse_reddit"</span>,
       <span class="s">"mcp__fetchaller__search_reddit"</span>,
+      <span class="s">"mcp__fetchaller__search_marketplace"</span>,
       <span class="s">"mcp__fetchaller__get_aliexpress_product"</span>,
       <span class="s">"mcp__fetchaller__search_aliexpress"</span>,
       <span class="s">"mcp__fetchaller__get_alibaba_product"</span>,
-      <span class="s">"mcp__fetchaller__search_alibaba"</span>,
-      <span class="s">"mcp__fetchaller__search_marketplace"</span>
+      <span class="s">"mcp__fetchaller__search_alibaba"</span>
     ]
   }
 }</pre>
@@ -1817,9 +1817,9 @@ claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
 - <span class="s">**fetch**</span> — Fetch any URL as clean markdown
 - <span class="s">**search**</span> — Web search (Google + DuckDuckGo combined)
 - <span class="s">**browse_reddit**</span> / <span class="s">**search_reddit**</span> — Reddit listings and search
+- <span class="s">**search_marketplace**</span> — Search Kijiji + Craigslist + Facebook Marketplace
 - <span class="s">**get_aliexpress_product**</span> / <span class="s">**search_aliexpress**</span> — AliExpress products
 - <span class="s">**get_alibaba_product**</span> / <span class="s">**search_alibaba**</span> — Alibaba.com B2B products
-- <span class="s">**search_marketplace**</span> — Search Kijiji + Craigslist + Facebook Marketplace
 
 Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span class="s">`gh`</span> CLI), prefer that instead.
 
@@ -1920,7 +1920,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                     </div>
                     <div class="winamp-track">
                         <span class="winamp-track-num">9.</span>
-                        <span class="winamp-track-info"><strong>eBay</strong><span class="winamp-track-desc">JSON-LD product extraction. Strips nav, sidebars, sponsored listings.</span></span>
+                        <span class="winamp-track-info"><strong>Marketplaces</strong><span class="winamp-track-desc">eBay, Kijiji, Craigslist, Facebook Marketplace. Search and browse listings.</span></span>
                     </div>
                     <div class="winamp-track">
                         <span class="winamp-track-num">10.</span>

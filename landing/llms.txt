@@ -12,9 +12,9 @@ fetchaller replaces Claude Code's built-in WebFetch and WebSearch tools. WebFetc
 - `search` — Web search combining Google and DuckDuckGo results. Deduplicated and cached.
 - `browse_reddit` — Browse subreddit posts. Sort by hot, new, top, or rising.
 - `search_reddit` — Search Reddit posts across all subreddits or within a specific one.
+- `search_marketplace` — Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range). Returns grouped results from all platforms.
 - `get_aliexpress_product` / `search_aliexpress` — AliExpress product details and search.
 - `get_alibaba_product` / `search_alibaba` — Alibaba.com B2B product details and search.
-- `search_marketplace` — Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range). Returns grouped results from all platforms.
 
 ### Site-specific cleanup
 
@@ -74,11 +74,11 @@ Add fetchaller tools to the `allow` list in `.claude/settings.json` to skip per-
       "mcp__fetchaller__search",
       "mcp__fetchaller__browse_reddit",
       "mcp__fetchaller__search_reddit",
+      "mcp__fetchaller__search_marketplace",
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
       "mcp__fetchaller__get_alibaba_product",
-      "mcp__fetchaller__search_alibaba",
-      "mcp__fetchaller__search_marketplace"
+      "mcp__fetchaller__search_alibaba"
     ]
   }
 }
@@ -98,9 +98,9 @@ Add this to your project's CLAUDE.md to instruct Claude to prefer fetchaller:
 - **fetch** — Fetch any URL as clean markdown
 - **search** — Web search (Google + DuckDuckGo combined)
 - **browse_reddit** / **search_reddit** — Reddit listings and search
+- **search_marketplace** — Search Kijiji, Craigslist, and Facebook Marketplace simultaneously
 - **get_aliexpress_product** / **search_aliexpress** — AliExpress products
 - **get_alibaba_product** / **search_alibaba** — Alibaba.com B2B products
-- **search_marketplace** — Search Kijiji, Craigslist, and Facebook Marketplace simultaneously
 
 Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` CLI), prefer that instead.
 ```

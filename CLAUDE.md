@@ -36,7 +36,7 @@ If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify agai
 - **fetch** — Fetch any URL as clean markdown
 - **search** — Web search (Google + DuckDuckGo combined)
 - **browse_reddit** / **search_reddit** — Reddit listings and search
-- **search_marketplace** — Search Kijiji, Craigslist, and Facebook Marketplace simultaneously
+- **search_marketplace** — Search Kijiji + Craigslist + Facebook Marketplace
 
 Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` CLI), prefer that instead.
 
