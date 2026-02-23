@@ -79,3 +79,15 @@ mouser_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 # DigiKey: api.digikey.com (official API)
 # 120 req/min burst, 1000/day → 0.5s base interval.
 digikey_limiter = DomainRateLimiter(min_interval=0.5, jitter=(0.1, 0.3))
+
+# Kijiji: www.kijiji.ca/anvil/api (unauthenticated GraphQL)
+# No known rate limit, but 1s base interval to be polite.
+kijiji_limiter = DomainRateLimiter(min_interval=1.0, jitter=(0.2, 0.5))
+
+# Craigslist: sapi.craigslist.org (unauthenticated JSON search API)
+# SAPI is the same endpoint the CL frontend uses. Rate limit to be polite.
+craigslist_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
+
+# Facebook: www.facebook.com/api/graphql/ (unauthenticated GraphQL)
+# IP reputation is a concern — conservative rate limiting.
+facebook_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))

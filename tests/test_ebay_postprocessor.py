@@ -171,3 +171,153 @@ class TestPostprocessEbay:
         assert "barely used" in result
         assert "Canon" in result
         assert "AE-1" in result
+
+    # -------------------------------------------------------------------
+    # Global Shipping Programme boilerplate (UK eBay)
+    # -------------------------------------------------------------------
+
+    def test_removes_gsp_boilerplate(self):
+        md = (
+            "# Product\n\n"
+            "This item will be sent through eBay's Global Shipping Programme.\n\n"
+            "Includes international tracking, simplified customs clearance, and no extra charges at delivery. [Learn more](url)\n\n"
+            "This amount includes seller specified domestic postage charges as well.\n\n"
+            "Located in: London"
+        )
+        result = postprocess_ebay(md)
+        assert "Global Shipping Programme" not in result
+        assert "international tracking" not in result
+        assert "seller specified domestic" not in result
+        assert "Located in: London" in result
+
+    def test_removes_import_charges(self):
+        md = "# Product\n\nImport charges:\n\nEst. £19.88 Amount confirmed at checkout\n\nDelivery:"
+        result = postprocess_ebay(md)
+        assert "Import charges:" not in result
+        assert "£19.88" not in result
+        assert "Delivery:" in result
+
+    def test_removes_gsp_terms_link(self):
+        md = "# Product\n\n[terms and conditions](https://pages.ebay.co.uk/shipping/globalshipping/buyer-tnc.html)\n\nContent"
+        result = postprocess_ebay(md)
+        assert "terms and conditions" not in result
+        assert "Content" in result
+
+    # -------------------------------------------------------------------
+    # Payment boilerplate
+    # -------------------------------------------------------------------
+
+    def test_removes_payment_boilerplate(self):
+        md = (
+            "# Product\n\n"
+            "Get more time to pay. [See payment information](url)\n\n"
+            "International postage and import charges paid to Pitney Bowes Inc. [Learn more](url)\n\n"
+            "## Item specifics"
+        )
+        result = postprocess_ebay(md)
+        assert "more time to pay" not in result
+        assert "Pitney Bowes" not in result
+        assert "## Item specifics" in result
+
+    # -------------------------------------------------------------------
+    # Seller business information (UK/EU)
+    # -------------------------------------------------------------------
+
+    def test_removes_seller_business_info(self):
+        md = (
+            "# Product\n\n"
+            "## Seller business information\n\n"
+            "I certify that all my selling activities will comply with all EU laws and regulations.\n\n"
+            "Seller contact information\n\n"
+            "Registered as a business seller\n\n"
+            "Business\n\n"
+            "## Item specifics"
+        )
+        result = postprocess_ebay(md)
+        assert "Seller business information" not in result
+        assert "certify" not in result
+        assert "Seller contact information" not in result
+        assert "Registered as a business seller" not in result
+        assert "## Item specifics" in result
+
+    # -------------------------------------------------------------------
+    # Sold listing summary
+    # -------------------------------------------------------------------
+
+    def test_removes_sold_date_uk_format(self):
+        md = "# Product\n\nMon, 23 Feb, 11:13\n\nContent"
+        result = postprocess_ebay(md)
+        assert "Mon, 23 Feb" not in result
+        assert "Content" in result
+
+    def test_removes_sold_date_us_format(self):
+        md = "# Product\n\nSat, Feb 22, 2025, 3:00 PM\n\nContent"
+        result = postprocess_ebay(md)
+        assert "Sat, Feb 22" not in result
+        assert "Content" in result
+
+    # -------------------------------------------------------------------
+    # Standalone period removal (from ". See details")
+    # -------------------------------------------------------------------
+
+    def test_removes_standalone_period(self):
+        md = "# Product\n\nLine before\n\n.\n\nLine after"
+        result = postprocess_ebay(md)
+        assert "\n.\n" not in result
+        assert "Line before" in result
+        assert "Line after" in result
+
+    def test_removes_see_details_then_period(self):
+        md = "# Product\n\n. See details\n\nLocated in: London"
+        result = postprocess_ebay(md)
+        assert "See details" not in result
+        assert "\n.\n" not in result
+        assert "Located in: London" in result
+
+    # -------------------------------------------------------------------
+    # Duplicate heading/title promotion
+    # -------------------------------------------------------------------
+
+    def test_promotes_heading_from_middle(self):
+        """Sold listings have the heading in the middle after summary block."""
+        md = (
+            "__EBAY_JSONLD__**Brand:** Canon__EBAY_JSONLD__\n\n"
+            "Sold\n\n"
+            "# Canon AE-1\n\n"
+            "Seller info"
+        )
+        result = postprocess_ebay(md)
+        assert result.startswith("# Canon AE-1")
+        assert "**Brand:** Canon" in result
+        assert "Seller info" in result
+
+    def test_removes_duplicate_heading_with_trailing_whitespace(self):
+        md = "# Canon AE-1\n\n**Brand:** Canon\n\n# Canon AE-1 \n\nSeller info"
+        result = postprocess_ebay(md)
+        # Only one heading
+        assert result.count("# Canon AE-1") == 1
+        assert "Seller info" in result
+
+    def test_removes_duplicate_plain_text_title(self):
+        md = "# Canon AE-1\n\n**Brand:** Canon\n\nCanon AE-1\n\n£95.00\n\nSeller info"
+        result = postprocess_ebay(md)
+        # Plain text title removed, heading preserved
+        lines = result.split("\n")
+        title_lines = [line for line in lines if line.strip() == "Canon AE-1"]
+        assert len(title_lines) == 0  # plain text removed
+        assert "# Canon AE-1" in result  # heading kept
+
+    # -------------------------------------------------------------------
+    # Empty section header cleanup
+    # -------------------------------------------------------------------
+
+    def test_removes_empty_payments_header(self):
+        md = "# Product\n\nReturns:\n\n30 days\n\nPayments:\n\n## Item specifics"
+        result = postprocess_ebay(md)
+        assert "Payments:" not in result
+        assert "Returns:" in result
+
+    def test_removes_empty_postage_header(self):
+        md = "# Product\n\nPostage:\n\n## Item specifics"
+        result = postprocess_ebay(md)
+        assert "Postage:" not in result

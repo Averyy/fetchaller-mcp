@@ -34,3 +34,6 @@ node_modules/
 
 # Baseline snapshots (local testing)
 baselines/
+
+# Runtime data (cookie caches, etc.)
+data/

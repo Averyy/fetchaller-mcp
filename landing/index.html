@@ -1719,6 +1719,7 @@
                                 <div class="cmd"><span class="cmd-name">search &lt;query&gt;</span><span class="cmd-desc">Google + DuckDuckGo combined</span></div>
                                 <div class="cmd"><span class="cmd-name">browse_reddit</span><span class="cmd-desc">subreddit listings</span></div>
                                 <div class="cmd"><span class="cmd-name">search_reddit</span><span class="cmd-desc">search posts across Reddit</span></div>
+                                <div class="cmd"><span class="cmd-name">search_marketplace</span><span class="cmd-desc">Kijiji + Craigslist + FB Marketplace</span></div>
                             </div>
                             <div class="hero-tagline">MCP server for Claude Code. No domain restrictions. Automatic site cleanup and no nagging permission prompts.</div>
                             <hr class="hero-separator">
@@ -1781,7 +1782,8 @@ claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
       <span class="s">"mcp__fetchaller__get_aliexpress_product"</span>,
       <span class="s">"mcp__fetchaller__search_aliexpress"</span>,
       <span class="s">"mcp__fetchaller__get_alibaba_product"</span>,
-      <span class="s">"mcp__fetchaller__search_alibaba"</span>
+      <span class="s">"mcp__fetchaller__search_alibaba"</span>,
+      <span class="s">"mcp__fetchaller__search_marketplace"</span>
     ]
   }
 }</pre>
@@ -1817,6 +1819,7 @@ claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
 - <span class="s">**browse_reddit**</span> / <span class="s">**search_reddit**</span> — Reddit listings and search
 - <span class="s">**get_aliexpress_product**</span> / <span class="s">**search_aliexpress**</span> — AliExpress products
 - <span class="s">**get_alibaba_product**</span> / <span class="s">**search_alibaba**</span> — Alibaba.com B2B products
+- <span class="s">**search_marketplace**</span> — Search Kijiji + Craigslist + Facebook Marketplace
 
 Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span class="s">`gh`</span> CLI), prefer that instead.
 

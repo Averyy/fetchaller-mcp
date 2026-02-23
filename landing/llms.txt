@@ -1,6 +1,6 @@
 # fetchaller
 
-> fetchaller is an MCP (Model Context Protocol) server for Claude Code that fetches any URL and returns clean markdown. No domain restrictions, no permission prompts, built-in web search, full Reddit support, and site-specific content cleanup for 15+ sites.
+> fetchaller is an MCP (Model Context Protocol) server for Claude Code that fetches any URL and returns clean markdown. No domain restrictions, no permission prompts, built-in web search, full Reddit support, and site-specific content cleanup for 18+ sites.
 
 ## What it does
 
@@ -14,6 +14,7 @@ fetchaller replaces Claude Code's built-in WebFetch and WebSearch tools. WebFetc
 - `search_reddit` — Search Reddit posts across all subreddits or within a specific one.
 - `get_aliexpress_product` / `search_aliexpress` — AliExpress product details and search.
 - `get_alibaba_product` / `search_alibaba` — Alibaba.com B2B product details and search.
+- `search_marketplace` — Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range). Returns grouped results from all platforms.
 
 ### Site-specific cleanup
 
@@ -27,10 +28,11 @@ Each site gets tailored CSS selectors, HTML cleanup, and regex post-processing. 
 - **Wikipedia** — Strips edit buttons, navboxes, TOC, reference lists.
 - **Reddit** — Auto-converts to old.reddit.com for cleaner HTML. 65-70% token savings.
 - **Amazon** — All TLDs (.com, .ca, .co.uk, .de, etc.). Strips sponsored carousels, form fields, duplicate overlays.
-- **eBay** — All TLDs. JSON-LD product extraction. Strips nav, sidebars, sponsored listings.
+- **eBay** — All TLDs. JSON-LD product extraction. Search pages: structured result extraction from DOM. Strips nav, sidebars, sponsored listings.
+- **Facebook Marketplace** — Search and listing detail via GraphQL API (CSR site). Geocoded location search, price filters, full listing detail with photos.
 - **Forums** — XenForo, vBulletin, phpBB, Discourse auto-detection via RSS/Atom feeds.
-- **Craigslist** — All city subdomains. Strips nav, safety warnings, loading noise.
-- **Kijiji** — kijiji.ca. Strips sponsored content, filters, nav.
+- **Craigslist** — All city subdomains. Search pages use SAPI (structured JSON API) for clean results. Listing pages use HTML pipeline.
+- **Kijiji** — kijiji.ca. Search/listing pages use unauthenticated GraphQL API (CSR site). HTML fallback for other pages.
 - **DigiKey** — All TLDs. Optional API mode with OAuth2 when keys configured.
 - **Molex** — molex.com. JSON-LD product extraction (CSR site, specs only in structured data).
 - **Mouser** — All TLDs. Optional API mode when key configured.
@@ -75,7 +77,8 @@ Add fetchaller tools to the `allow` list in `.claude/settings.json` to skip per-
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
       "mcp__fetchaller__get_alibaba_product",
-      "mcp__fetchaller__search_alibaba"
+      "mcp__fetchaller__search_alibaba",
+      "mcp__fetchaller__search_marketplace"
     ]
   }
 }
@@ -97,6 +100,7 @@ Add this to your project's CLAUDE.md to instruct Claude to prefer fetchaller:
 - **browse_reddit** / **search_reddit** — Reddit listings and search
 - **get_aliexpress_product** / **search_aliexpress** — AliExpress products
 - **get_alibaba_product** / **search_alibaba** — Alibaba.com B2B products
+- **search_marketplace** — Search Kijiji, Craigslist, and Facebook Marketplace simultaneously
 
 Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` CLI), prefer that instead.
 ```

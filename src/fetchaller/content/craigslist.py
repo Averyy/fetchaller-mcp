@@ -22,6 +22,18 @@ def is_craigslist(url: str) -> bool:
     return hostname.endswith(".craigslist.org") or hostname == "craigslist.org"
 
 
+# /search/sss, /search/cta, etc.
+_SEARCH_PATH_RE = re.compile(r"^/search/[a-z]{2,4}")
+
+
+def is_craigslist_search_url(url: str) -> bool:
+    """Check if URL is a Craigslist search page (CSR, needs SAPI)."""
+    if not is_craigslist(url):
+        return False
+    parsed = urlparse(url)
+    return bool(_SEARCH_PATH_RE.match(parsed.path))
+
+
 # ---------------------------------------------------------------------------
 # CSS selectors for elements to remove before markdown conversion
 # ---------------------------------------------------------------------------
@@ -56,9 +68,7 @@ SELECTORS_LIST = [
     "#replyForm",
     # "print" button area
     ".print-information",
-    # Posting body buttons (reply, flag, favorite, hide)
-    ".postinginfos",
-    # "posted" / "updated" timestamps section
+    # Posting body buttons (reply, flag, favorite, hide) + posted/updated timestamps
     ".postinginfos",
     # Page navigation (prev/next arrows)
     ".prevnext",

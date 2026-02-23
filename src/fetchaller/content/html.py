@@ -26,7 +26,6 @@ from . import forums as _forums
 from . import github as _github
 from . import hackernews as _hackernews
 from . import huggingface as _huggingface
-from . import kijiji as _kijiji
 from . import medium as _medium
 from . import molex as _molex
 from . import mouser as _mouser
@@ -112,7 +111,6 @@ _JUNK_AND_FORUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LI
 _JUNK_AND_CRAIGSLIST_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _craigslist.SELECTORS_LIST)
 _JUNK_AND_DIGIKEY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _digikey.SELECTORS_LIST)
 _JUNK_AND_EBAY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _ebay.SELECTORS_LIST)
-_JUNK_AND_KIJIJI_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _kijiji.SELECTORS_LIST)
 _JUNK_AND_MOLEX_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _molex.SELECTORS_LIST)
 _JUNK_AND_MOUSER_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _mouser.SELECTORS_LIST)
 _JUNK_AND_SOYLENT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _soylent.SELECTORS_LIST)
@@ -352,8 +350,6 @@ def _detect_site(
         return "digikey"
     if url and _ebay.is_ebay(url):
         return "ebay"
-    if url and _kijiji.is_kijiji(url):
-        return "kijiji"
     if url and _molex.is_molex(url):
         return "molex"
     if url and _mouser.is_mouser(url):
@@ -396,7 +392,6 @@ _SITE_SELECTORS = {
     "craigslist": _JUNK_AND_CRAIGSLIST_SELECTOR,
     "digikey": _JUNK_AND_DIGIKEY_SELECTOR,
     "ebay": _JUNK_AND_EBAY_SELECTOR,
-    "kijiji": _JUNK_AND_KIJIJI_SELECTOR,
     "molex": _JUNK_AND_MOLEX_SELECTOR,
     "mouser": _JUNK_AND_MOUSER_SELECTOR,
     "reddit": _JUNK_AND_REDDIT_SELECTOR,
@@ -443,9 +438,12 @@ def clean_html(
     if site == "amazon":
         _amazon.extract_related_products(soup)
 
-    # eBay: extract JSON-LD product data before scripts are removed
+    # eBay: extract structured data before scripts are removed
     if site == "ebay":
         _ebay.extract_ebay_jsonld(soup)
+        # Search pages: extract structured results from .s-item DOM
+        if url and _ebay.is_ebay_search_url(url):
+            _ebay.extract_ebay_search_results(soup, url)
 
     # Molex: extract JSON-LD product data before scripts are removed
     if site == "molex":
@@ -478,8 +476,6 @@ def clean_html(
         _digikey.strip_digikey_junk(soup)
     elif site == "ebay":
         _ebay.strip_ebay_junk(soup)
-    elif site == "kijiji":
-        _kijiji.strip_kijiji_junk(soup)
     elif site == "molex":
         _molex.strip_molex_junk(soup)
     elif site == "mouser":
@@ -563,8 +559,6 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _digikey.postprocess_digikey(markdown)
     elif site == "ebay":
         markdown = _ebay.postprocess_ebay(markdown)
-    elif site == "kijiji":
-        markdown = _kijiji.postprocess_kijiji(markdown)
     elif site == "molex":
         markdown = _molex.postprocess_molex(markdown)
     elif site == "mouser":
@@ -589,6 +583,10 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _forums.postprocess_forum(markdown)
     elif site is None:
         markdown = _postprocess_generic_jsonld(markdown)
+
+    # Strip "| SiteName" suffix from titles (eBay, other sites)
+    if title:
+        title = re.sub(r"\s*\|\s*eBay(?:\s+\w+)?\s*$", "", title)
 
     # Add title header only if markdown doesn't already start with a heading
     if title and not markdown.startswith("# "):

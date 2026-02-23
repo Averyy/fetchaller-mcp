@@ -112,12 +112,6 @@ class TestDetectSiteByUrl:
     def test_ebay_co_uk(self):
         assert _detect_site("https://www.ebay.co.uk/itm/123456789", False) == "ebay"
 
-    def test_kijiji_ca(self):
-        assert _detect_site("https://www.kijiji.ca/b-buy-sell/ottawa/c10l1700185", False) == "kijiji"
-
-    def test_kijiji_listing(self):
-        assert _detect_site("https://www.kijiji.ca/v-cell-phone/ottawa/iphone/1701831111", False) == "kijiji"
-
     def test_molex_com(self):
         assert _detect_site("https://www.molex.com/en-us/products/part-detail/430250408", False) == "molex"
 

@@ -14,6 +14,7 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 - **`search_aliexpress`**: Search AliExpress products with price filters and sorting
 - **`get_alibaba_product`**: Alibaba.com B2B product details (tiered pricing, MOQ, lead times, supplier info)
 - **`search_alibaba`**: Search Alibaba.com B2B products
+- **`search_marketplace`**: Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range)
 
 ## Quick Start
 
@@ -42,7 +43,8 @@ Add permissions to `~/.claude/settings.json`:
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
       "mcp__fetchaller__get_alibaba_product",
-      "mcp__fetchaller__search_alibaba"
+      "mcp__fetchaller__search_alibaba",
+      "mcp__fetchaller__search_marketplace"
     ]
   }
 }
@@ -67,6 +69,7 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 - `mcp__fetchaller__search_aliexpress(query, page?, sort?, min_price?, max_price?)` — Search AliExpress
 - `mcp__fetchaller__get_alibaba_product(product_id)` — Alibaba.com product details
 - `mcp__fetchaller__search_alibaba(query, page?, sort?, min_price?, max_price?)` — Search Alibaba.com
+- `mcp__fetchaller__search_marketplace(query, location, platforms?, category?, sort?, condition?, min_price?, max_price?)` — Search Kijiji + Craigslist + Facebook Marketplace
 ```
 
 ## Usage
@@ -216,6 +219,25 @@ Accepts a numeric product ID or full URL. Returns tiered pricing, MOQ, lead time
 | min_price | number | — | Minimum price filter (USD) |
 | max_price | number | — | Maximum price filter (USD) |
 
+## Marketplace Search
+
+### `search_marketplace` — Search Kijiji, Craigslist, and Facebook Marketplace
+
+Searches all three platforms concurrently with human-readable parameters and returns grouped results.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| query | string | required | Search keywords |
+| location | string | required | City name (e.g. "toronto", "st catharines, ON", "seattle") |
+| platforms | string[] | all | Platforms to search: kijiji, craigslist, facebook |
+| category | string | "all" | all, cars, electronics, furniture, clothing, tools, free, bikes, phones, motorcycles, boats, rvs, auto_parts, sporting, toys, baby |
+| sort | string | "date" | date, price_asc, price_desc, relevance |
+| condition | string | — | new, like_new, good, fair |
+| min_price | number | — | Minimum price in dollars |
+| max_price | number | — | Maximum price in dollars |
+
+Kijiji is Canada-only and automatically skipped for US locations. Location matching supports exact names, common aliases (e.g. "niagara" → Hamilton CL area), and fuzzy matching for typos.
+
 ## How It Works
 
 1. Validates URL (http/https only)
@@ -261,6 +283,57 @@ TLS fingerprint versions are auto-discovered from curl_cffi's `BrowserType` enum
 **Docker**: Chrome and Xvfb are included in the image. The `cookie-data` volume persists solved cookies across restarts. No extra setup needed.
 
 **Local (stdio)**: Requires Chrome or Chromium installed on your system for browser-based challenges. Without Chrome, fetchaller still works — it just can't bypass Cloudflare/Akamai/etc. (ACW challenges still work since they're pure Python). macOS uses an offscreen window; Linux needs Xvfb for headful mode.
+
+## Architecture
+
+### Content Processing
+
+`src/fetchaller/content/` handles HTML→markdown conversion. Each site module exports `is_<site>(url)`, `SELECTORS_LIST`, and optionally `strip_<site>_junk(soup)` / `postprocess_<site>(markdown)`:
+
+- **`html.py`** — Generic pipeline + dispatch. Universal junk selectors, markdownify, whitespace cleanup. Generic JSON-LD Product fallback.
+- **`amazon.py`** — All TLDs (.com, .ca, .co.uk, .de, etc.). CSS selectors, soup cleanup, regex post-processors.
+- **`github.py`** — CSS selectors, URL transforms, file tree extraction, issue/PR/discussion extraction from embedded JSON.
+- **`reddit.py`** — CSS selectors for old.reddit.com, URL transforms (www→old), post formatting.
+- **`hackernews.py`** — CSS selectors, table unwrapping, story block reformatter.
+- **`medium.py`** — CSS selectors (data-testid), HTML-based detection for unknown custom domains.
+- **`huggingface.py`** — data-target attribute selectors, filter tag/button cleanup.
+- **`stackoverflow.py`** — All Stack Exchange sites. CSS selectors, soup cleanup, regex post-processors.
+- **`redflagdeals.py`** — RFD-specific CSS selectors, soup cleanup, regex post-processors.
+- **`forums.py`** — Generic forum support (XenForo, vBulletin, phpBB, Discourse). RSS/Atom feed autodiscovery.
+- **`wikipedia.py`** — CSS selectors for edit buttons, navboxes, TOC, reference lists.
+- **`alibaba.py`** — Embedded JSON extraction (`window.detailData`, `window.__page__data_sse10`), soup cleanup.
+- **`aliexpress.py`** — CSS selectors, soup cleanup, regex post-processors.
+- **`craigslist.py`** — All city subdomains. CSS selectors, regex post-processors. Search URL detection for SAPI intercept.
+- **`facebook_marketplace.py`** — URL detection only. GraphQL client in `facebook_marketplace/` package.
+- **`digikey.py`** — All TLDs. CSS selectors, soup cleanup. Behind Akamai (wafer handles). HTML fallback without API key.
+- **`ebay.py`** — All TLDs. JSON-LD product extraction, search result DOM extraction (`.s-item`), regex post-processors.
+- **`kijiji.py`** — kijiji.ca. CSS selectors. HTML fallback — search/listing pages routed to GraphQL API.
+- **`molex.py`** — JSON-LD Product extraction (additionalProperty specs). CSR site — specs only in structured data.
+- **`mouser.py`** — All TLDs. CSS selectors, soup cleanup. Behind Akamai. HTML fallback without API key.
+- **`soylent.py`** — Shopify store cleanup, inventory extraction from `gsf_conversion_data`.
+- **`ti.py`** — Document viewer support for lazy-loaded datasheets.
+
+### Search
+
+`src/fetchaller/search/` — Google + DuckDuckGo combined. Result merging/dedup, 5-minute cache, CAPTCHA backoff. Uses `wafer.AsyncSession(profile=Profile.OPERA_MINI)`.
+
+### Site-Specific API Intercepts
+
+CSR sites where HTML scraping produces garbage are intercepted in `fetch_url()` and routed to structured APIs:
+
+- **Craigslist** (`src/fetchaller/craigslist/`) — SAPI v8 client (`sapi.craigslist.org`). Up to 120 items/request with total count. Area IDs from page HTML, cached per hostname. Listing pages stay in HTML pipeline.
+- **Kijiji** (`src/fetchaller/kijiji/`) — Unauthenticated Apollo GraphQL (`kijiji.ca/anvil/api`). Search + listing detail. Prices in cents.
+- **Facebook Marketplace** (`src/fetchaller/facebook_marketplace/`) — GraphQL (`facebook.com/api/graphql/`). Geocoded search, listing detail with photos.
+- **AliExpress** (`src/fetchaller/aliexpress/`) — MTop API for products (token bootstrap + MD5 signing). SSR HTML for search. Reviews from `feedback.aliexpress.com`.
+- **Alibaba.com** (`src/fetchaller/alibaba/`) — SSR HTML with embedded JSON. No MTop API for international site.
+- **eBay** — SSR search results extracted from `.s-item` DOM elements, formatted as numbered list.
+- **Mouser** (`src/fetchaller/mouser/`) — Search API client. Requires `MOUSER_API_KEY`.
+- **DigiKey** (`src/fetchaller/digikey/`) — OAuth2 client_credentials API. Requires `DIGIKEY_CLIENT_ID` + `DIGIKEY_CLIENT_SECRET`.
+- **Marketplace Search** (`src/fetchaller/marketplace/`) — Unified orchestrator searching Kijiji, Craigslist, and Facebook Marketplace concurrently. Human-readable params mapped to platform-specific values. Auto-skips Kijiji for non-Canadian locations.
+
+### HTTP Transport (Wafer)
+
+All HTTP is handled by `wafer` (`~/code/wafer`). Fetchaller does NOT contain bot protection, challenge solving, or TLS fingerprinting code. If a site blocks requests, fix it in wafer.
 
 ## Remote Deployment (HTTP Mode)
 
@@ -349,12 +422,16 @@ fetchaller-mcp/
 │   ├── config.py            # Configuration + auto-discovered browser fingerprints
 │   ├── botfighter.py        # Bot challenge detection, solving, cookie cache
 │   ├── http/                # HTTP server (FastAPI)
-│   ├── tools/               # MCP tools (fetch, search, reddit, aliexpress, alibaba)
+│   ├── tools/               # MCP tools (fetch, search, reddit, aliexpress, alibaba, marketplace)
 │   ├── content/             # Content processing (HTML→markdown, site-specific cleanup)
 │   ├── search/              # Web search (Google + DuckDuckGo)
 │   ├── aliexpress/          # AliExpress MTop API client, product, search, reviews
 │   ├── alibaba/             # Alibaba.com product and search extraction
 │   ├── mouser/              # Mouser Search API client
+│   ├── craigslist/          # Craigslist SAPI client + location resolution
+│   ├── kijiji/              # Kijiji GraphQL API client + location resolution
+│   ├── facebook_marketplace/# Facebook Marketplace GraphQL client
+│   ├── marketplace/         # Unified marketplace search orchestrator
 │   ├── digikey/             # DigiKey API client (OAuth2 + product/search)
 │   ├── cache/               # Response caching
 │   ├── queue/               # Reddit rate limiting
@@ -362,6 +439,7 @@ fetchaller-mcp/
 ├── docker-compose.yml       # Production deployment
 ├── docker-compose.local.yml # Local testing
 ├── Dockerfile               # Container build
+├── docs/                    # Architecture & developer docs
 ├── CLAUDE.md                # Instructions for Claude
 ├── README.md                # This file
 └── landing/                 # Static site (fetchaller.com)

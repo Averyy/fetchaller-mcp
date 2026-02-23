@@ -173,16 +173,6 @@ class TestSelectorDispatch:
         assert "ebay header junk" not in soup.get_text()
         assert "Product content" in soup.get_text()
 
-    def test_kijiji_header_removed(self):
-        html = _wrap(
-            '<div id="MainHeader">kijiji header junk</div>'
-            '<div>Listing content</div>',
-        )
-        soup, site = clean_html(html, url="https://www.kijiji.ca/v-cell-phone/ottawa/iphone/123")
-        assert site == "kijiji"
-        assert "kijiji header junk" not in soup.get_text()
-        assert "Listing content" in soup.get_text()
-
     def test_digikey_header_removed(self):
         html = _wrap(
             '<div id="header">digikey header junk</div>'
@@ -371,17 +361,6 @@ class TestPostprocessorDispatch:
         assert "**Brand:** Acme" in md
         assert "**Price:** USD 29.99" in md
         assert "Great product" in md
-
-    def test_kijiji_sponsored_removed(self):
-        """Kijiji postprocessor removes 'Sponsored' labels."""
-        html = _wrap(
-            '<p>Great product listing</p>'
-            '<p>Sponsored</p>'
-            '<p>Another listing</p>',
-        )
-        md, _ = _html_to_markdown_sync(html, url="https://www.kijiji.ca/v-buy-sell/ottawa/item/123")
-        assert "Sponsored" not in md
-        assert "Great product listing" in md
 
     def test_digikey_add_to_cart_removed(self):
         """DigiKey postprocessor removes 'Add to Cart' buttons."""

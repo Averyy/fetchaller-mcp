@@ -13,6 +13,7 @@ from .botfighter import ChallengeSolver, CookieCache
 from .cache.response_cache import ResponseCache
 from .config import Config, load_config
 from .content.fetcher import ContentFetcher, RetryConfig
+from .marketplace.search import search_marketplace
 from .queue.reddit_queue import QueueConfig, RedditRequestQueue
 from .tools.browse_reddit import browse_reddit
 from .tools.fetch import fetch_url
@@ -49,6 +50,8 @@ def _summarize_args(tool_name: str, args: dict) -> str:
         return f"product_id={args.get('product_id', '?')}"
     elif tool_name == "search_alibaba":
         return f"query={args.get('query', '?')} page={args.get('page', 1)} sort={args.get('sort', 'default')}"
+    elif tool_name == "search_marketplace":
+        return f"query={args.get('query', '?')} location={args.get('location', '?')} platforms={args.get('platforms', 'all')}"
     return str(args)
 
 
@@ -360,6 +363,72 @@ def create_server(
                     "required": ["query"],
                 },
             ),
+            Tool(
+                name="search_marketplace",
+                description=(
+                    "Search Kijiji, Craigslist, and Facebook Marketplace simultaneously. "
+                    "Takes human-readable parameters (city name, category, price range) and "
+                    "returns grouped results from all platforms. Use fetch(url) to get full "
+                    "listing details for any result URL."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search keywords (e.g. \"golf r\", \"ikea couch\")",
+                        },
+                        "location": {
+                            "type": "string",
+                            "description": (
+                                "City name, optionally with province/state "
+                                "(e.g. \"toronto\", \"st catharines, ON\", \"seattle\")"
+                            ),
+                        },
+                        "platforms": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["kijiji", "craigslist", "facebook"],
+                            },
+                            "description": (
+                                "Platforms to search (default: all). "
+                                "Kijiji is Canada-only and auto-skipped for US locations."
+                            ),
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "all", "cars", "electronics", "furniture", "clothing",
+                                "tools", "free", "bikes", "phones", "motorcycles",
+                                "boats", "rvs", "auto_parts", "sporting", "toys", "baby",
+                            ],
+                            "default": "all",
+                            "description": "Category filter",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["date", "price_asc", "price_desc", "relevance"],
+                            "default": "date",
+                            "description": "Sort order",
+                        },
+                        "condition": {
+                            "type": "string",
+                            "enum": ["new", "like_new", "good", "fair"],
+                            "description": "Item condition filter",
+                        },
+                        "min_price": {
+                            "type": "integer",
+                            "description": "Minimum price in dollars",
+                        },
+                        "max_price": {
+                            "type": "integer",
+                            "description": "Maximum price in dollars",
+                        },
+                    },
+                    "required": ["query", "location"],
+                },
+            ),
         ]
 
     def _format_result(name: str, result: dict, start_time: float) -> CallToolResult:
@@ -479,6 +548,23 @@ def create_server(
                     max_price=arguments.get("max_price"),
                     fetcher=fetcher,
                     cache=cache,
+                    config=config,
+                    cookie_cache=cookie_cache,
+                    challenge_solver=challenge_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_marketplace":
+                result = await search_marketplace(
+                    query=arguments["query"],
+                    location=arguments["location"],
+                    platforms=arguments.get("platforms"),
+                    category=arguments.get("category"),
+                    sort=arguments.get("sort", "date"),
+                    condition=arguments.get("condition"),
+                    min_price=arguments.get("min_price"),
+                    max_price=arguments.get("max_price"),
+                    fetcher=fetcher,
                     config=config,
                     cookie_cache=cookie_cache,
                     challenge_solver=challenge_solver,

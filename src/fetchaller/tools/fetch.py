@@ -26,7 +26,17 @@ from ..content.alibaba import (
 )
 from ..content.aliexpress import extract_product_id_from_url, extract_search_products, is_aliexpress_search_url
 from ..content.amazon import is_amazon_store
+from ..content.craigslist import is_craigslist_search_url as _is_craigslist_search
 from ..content.digikey import is_digikey as _is_digikey
+from ..content.facebook_marketplace import (
+    extract_listing_id as _extract_fb_listing_id,
+)
+from ..content.facebook_marketplace import (
+    is_facebook_marketplace_listing as _is_fb_listing,
+)
+from ..content.facebook_marketplace import (
+    is_facebook_marketplace_search as _is_fb_search,
+)
 from ..content.fetcher import ContentFetcher, FetchResult, RetryConfig
 from ..content.forums import (
     discover_feed_url,
@@ -49,6 +59,7 @@ from ..content.reddit import transform_reddit_url
 from ..content.soylent import is_soylent as _is_soylent
 from ..content.ti import extract_ti_part_from_pdf_url, fetch_document_sections, is_ti_document_viewer
 from ..content.url import normalize_url
+from ..kijiji.api import is_kijiji as _is_kijiji
 from ..security.ssrf import is_private_host
 
 # Byte-level regex to sniff charset from HTML before full decode
@@ -363,6 +374,7 @@ async def fetch_url(
     challenge_solver: ChallengeSolver | None = None,
     _skip_aliexpress_intercept: bool = False,
     _skip_alibaba_intercept: bool = False,
+    _skip_craigslist_intercept: bool = False,
 ) -> dict:
     """
     Fetch a URL and return its content.
@@ -586,6 +598,72 @@ async def fetch_url(
                 "error": "DigiKey requires API credentials (DIGIKEY_CLIENT_ID + DIGIKEY_CLIENT_SECRET). "
                 "Register at https://developer.digikey.com/"
             }
+
+    # Kijiji search/listing pages — use GraphQL API (no auth needed, CSR site)
+    if _is_kijiji(url):
+        from ..kijiji.api import get_listing as get_kijiji_listing
+        from ..kijiji.api import is_kijiji_listing, is_kijiji_search
+
+        if is_kijiji_search(url) or is_kijiji_listing(url):
+            result = await get_kijiji_listing(url)
+            if "content" in result:
+                content = truncate(result["content"], max_tokens)
+                if cache:
+                    cache.set(normalize_url(url), content, "text")
+                _log(f"FETCH {url} -> Kijiji GraphQL ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "text", "url": url}
+            if "Could not extract" not in result.get("error", ""):
+                return result
+            _log(f"FETCH {url} -> Kijiji GraphQL couldn't parse URL, falling through to HTML")
+
+    # Craigslist search pages — CSR (empty <main>), use SAPI for structured results
+    if not _skip_craigslist_intercept and _is_craigslist_search(url):
+        from ..craigslist.search import search_craigslist
+
+        result = await search_craigslist(
+            url,
+            fetcher=fetcher,
+            cache=cache,
+            config=config,
+            cookie_cache=cookie_cache,
+            challenge_solver=challenge_solver,
+        )
+        if "content" in result:
+            content = truncate(result["content"], max_tokens)
+            if cache:
+                cache.set(normalize_url(url), content, "text")
+            _log(f"FETCH {url} -> Craigslist search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "text", "url": url}
+        if "Could not extract" not in result.get("error", ""):
+            return result
+        _log(f"FETCH {url} -> Craigslist search failed, falling through to HTML")
+
+    # Facebook Marketplace — 100% CSR, use GraphQL API
+    if _is_fb_search(url):
+        from ..facebook_marketplace.search import search_marketplace
+
+        result = await search_marketplace(url)
+        if "content" in result:
+            content = truncate(result["content"], max_tokens)
+            if cache:
+                cache.set(normalize_url(url), content, "text")
+            _log(f"FETCH {url} -> FB Marketplace search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "text", "url": url}
+        return result
+
+    if _is_fb_listing(url):
+        listing_id = _extract_fb_listing_id(url)
+        if listing_id:
+            from ..facebook_marketplace.listing import get_listing as get_fb_listing
+
+            result = await get_fb_listing(listing_id)
+            if "content" in result:
+                content = truncate(result["content"], max_tokens)
+                if cache:
+                    cache.set(normalize_url(url), content, "text")
+                _log(f"FETCH {url} -> FB Marketplace listing ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "text", "url": url}
+            return result
 
     # Transform Reddit URLs
     reddit_result = transform_reddit_url(url)
