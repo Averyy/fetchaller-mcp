@@ -1,6 +1,5 @@
 """Google search via Opera Mini SSR endpoint."""
 
-import random
 import re
 import sys
 from datetime import UTC, datetime
@@ -9,38 +8,6 @@ from urllib.parse import unquote
 from bs4 import BeautifulSoup
 
 from .models import SearchResult
-
-# Opera Mini Presto UAs — Google serves full SSR HTML to these
-OPERA_MINI_UAS = [
-    "Opera/9.80 (Android; Opera Mini/7.5.33361/191.243; U; en) Presto/2.12.423 Version/12.16",
-    "Opera/9.80 (Android; Opera Mini/36.2.2254/191.306; U; en) Presto/2.12.423 Version/12.16",
-    "Opera/9.80 (Android; Opera Mini/20.0.2254/191.291; U; en) Presto/2.12.423 Version/12.16",
-    "Opera/9.80 (Android 4.1.2; Opera Mini/7.6.40234/191.257; U; en) Presto/2.12.423 Version/12.16",
-    "Opera/9.80 (iPhone; Opera Mini/14.0.0/37.7452; U; en) Presto/2.12.423 Version/12.16",
-    "Opera/9.80 (iPhone; Opera Mini/7.1.32694/27.1407; U; en) Presto/2.8.119 Version/11.10",
-    "Opera/9.80 (iPad; Opera Mini/7.1.32694/27.1407; U; en) Presto/2.8.119 Version/11.10",
-    "Opera/9.80 (J2ME/MIDP; Opera Mini/9.80 (S60; SymbOS; Opera Mobi/23.348; U; en)) Presto/2.5.25 Version/10.54",
-    "Opera/9.80 (S60; SymbOS; Opera Mobi/SYB-1107071606; U; en) Presto/2.8.149 Version/11.10",
-    "Opera/9.80 (SpreadTrum; Opera Mini/4.4.33961/191.302; U; en) Presto/2.12.423 Version/12.16",
-    "Opera/12.02 (Android 4.1; Linux; Opera Mobi/ADR-1111101157; U; en) Presto/2.9.201 Version/12.02",
-    "Opera/12.00 (Android 4.0; Linux; Opera Mobi/ADR-1205181138; U; en) Presto/2.10.254 Version/12.00",
-    "Opera/9.80 (Android; Opera Mini/7.5/191.243; U; en) Presto/2.12.423 Version/12.16",
-    "Opera/9.80 (iPhone; Opera Mini/8.0/37.7452; U; en) Presto/2.12.423 Version/12.16",
-]
-
-# Pool of realistic devices (popular in Opera Mini markets)
-PHONE_POOL = [
-    ("Samsung # SM-A515F", "Mozilla/5.0 (Linux; Android 11; SM-A515F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.104 Mobile Safari/537.36"),
-    ("Samsung # SM-A127F", "Mozilla/5.0 (Linux; Android 12; SM-A127F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36"),
-    ("Samsung # SM-G960F", "Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"),
-    ("Xiaomi # Redmi Note 9", "Mozilla/5.0 (Linux; Android 10; Redmi Note 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.210 Mobile Safari/537.36"),
-    ("Xiaomi # Redmi 9A", "Mozilla/5.0 (Linux; Android 10; Redmi 9A) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.105 Mobile Safari/537.36"),
-    ("TECNO # TECNO KC8", "Mozilla/5.0 (Linux; Android 10; TECNO KC8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.105 Mobile Safari/537.36"),
-    ("TECNO # TECNO KE5", "Mozilla/5.0 (Linux; Android 11; TECNO KE5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.104 Mobile Safari/537.36"),
-    ("Infinix # Infinix X680", "Mozilla/5.0 (Linux; Android 10; Infinix X680) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.181 Mobile Safari/537.36"),
-    ("Nokia # Nokia 2.3", "Mozilla/5.0 (Linux; Android 10; Nokia 2.3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.181 Mobile Safari/537.36"),
-    ("itel # itel P36", "Mozilla/5.0 (Linux; Android 10; itel P36) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.141 Mobile Safari/537.36"),
-]
 
 # Google internal URLs to filter out
 _GOOGLE_INTERNAL_PREFIXES = (
@@ -64,23 +31,6 @@ _TRAILING_SEPARATORS_RE = re.compile(r"[\s·|—–-]+$")
 
 def _log(msg: str) -> None:
     print(f"[{datetime.now(UTC).isoformat()}] {msg}", file=sys.stderr)
-
-
-def build_google_headers() -> dict[str, str]:
-    """Build Opera Mini proxy request headers with random UA and device."""
-    ua = random.choice(OPERA_MINI_UAS)
-    phone, stock_ua = random.choice(PHONE_POOL)
-    return {
-        "User-Agent": ua,
-        "Accept": "text/html, application/xml;q=0.9, application/xhtml+xml, image/png, image/webp, image/jpeg, image/gif, image/x-xbitmap, */*;q=0.1",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "Keep-Alive",
-        "X-OperaMini-Features": "advanced, file_system, secure, touch",
-        "X-OperaMini-Phone": phone,
-        "X-OperaMini-Phone-UA": stock_ua,
-        "Device-Stock-UA": stock_ua,
-    }
 
 
 def is_captcha(response) -> bool:
@@ -239,19 +189,17 @@ async def search_google(
         "q": query,
         "hl": "en",
         "safe": "off",
+        "client": "ms-opera-mini-android",
+        "channel": "new",
     }
     if page > 1:
         params["start"] = str((page - 1) * 10)
-
-    headers = build_google_headers()
 
     try:
         response = await session.get(
             "https://www.google.com/search",
             params=params,
-            headers=headers,
             timeout=10,
-            allow_redirects=True,
         )
     except Exception as e:
         _log(f"google request error: {type(e).__name__}: {e}")

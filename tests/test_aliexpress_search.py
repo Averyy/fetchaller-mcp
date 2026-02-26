@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import fetchaller.aliexpress.search as search_mod
 from fetchaller.aliexpress.search import (
     _build_search_url,
     _parse_search_html,
-    _search_via_chrome,
     search_aliexpress,
 )
 from fetchaller.content.aliexpress import (
@@ -192,120 +192,20 @@ class TestParseSearchHtml:
         assert _parse_search_html("<html></html>", "test") is None
 
 
-class TestSearchViaChrome:
-    """Chrome-based search with session reuse."""
-
-    @pytest.mark.asyncio
-    async def test_direct_search_with_existing_session(self):
-        """If Chrome already has a session, search works without homepage warming."""
-        products = [
-            {"productId": "456", "title": {"displayTitle": "Chrome Widget"}, "prices": {}, "evaluation": {}, "trade": {}},
-        ]
-        init_data = {
-            "data": {"root": {"fields": {
-                "mods": {"itemList": {"content": products}},
-                "pageInfo": {"totalResults": 1, "page": 1},
-            }}}
-        }
-        init_html = (
-            "<!-->init-data-start--*/\n"
-            f"window._dida_config_._init_data_= {{ data: {json.dumps(init_data)} }}"
-            "\n<!-->init-data-end--*/"
-        )
-
-        tab = MagicMock()
-        tab.go_to = AsyncMock()
-        async def mock_execute(js, **kwargs):
-            if "window.location.href" in js:
-                return {"result": {"result": {"value": "https://www.aliexpress.com/w/wholesale-test.html?page=1"}}}
-            if "_dida_config_" in js and "outerHTML" not in js:
-                return {"result": {"result": {"value": True}}}
-            if "outerHTML" in js:
-                return {"result": {"result": {"value": init_html}}}
-            return {"result": {"result": {"value": None}}}
-        tab.execute_script = mock_execute
-
-        solver = MagicMock()
-        async def fake_with_page(url, callback, wait=1, timeout=30):
-            return await callback(tab)
-        solver.with_page = AsyncMock(side_effect=fake_with_page)
-
-        result = await _search_via_chrome(
-            "https://www.aliexpress.com/w/wholesale-test.html", "test", solver
-        )
-        assert result is not None
-        assert "Chrome Widget" in result["content"]
-        # with_page called with the SEARCH URL directly (not homepage)
-        solver.with_page.assert_called_once()
-        assert "wholesale-test" in solver.with_page.call_args[0][0]
-        # No extra navigation needed — session was already valid
-        assert tab.go_to.call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_tmd_triggers_homepage_warming_then_retry(self):
-        """First attempt gets TMD-blocked → warms from homepage → retries search."""
-        products = [
-            {"productId": "789", "title": {"displayTitle": "Warmed Widget"}, "prices": {}, "evaluation": {}, "trade": {}},
-        ]
-        init_data = {
-            "data": {"root": {"fields": {
-                "mods": {"itemList": {"content": products}},
-                "pageInfo": {"totalResults": 1, "page": 1},
-            }}}
-        }
-        init_html = (
-            "<!-->init-data-start--*/\n"
-            f"window._dida_config_._init_data_= {{ data: {json.dumps(init_data)} }}"
-            "\n<!-->init-data-end--*/"
-        )
-
-        tab = MagicMock()
-        tab.go_to = AsyncMock()
-        call_count = 0
-        async def mock_execute(js, **kwargs):
-            nonlocal call_count
-            if "window.location.href" in js:
-                call_count += 1
-                if call_count <= 1:
-                    # First poll cycle: TMD block (before session warming)
-                    return {"result": {"result": {"value": "https://www.aliexpress.com/_____tmd_____/punish"}}}
-                # After warming: normal search URL
-                return {"result": {"result": {"value": "https://www.aliexpress.com/w/wholesale-test.html"}}}
-            if "_dida_config_" in js and "outerHTML" not in js:
-                return {"result": {"result": {"value": True}}}
-            if "outerHTML" in js:
-                return {"result": {"result": {"value": init_html}}}
-            return {"result": {"result": {"value": None}}}
-        tab.execute_script = mock_execute
-
-        solver = MagicMock()
-        async def fake_with_page(url, callback, wait=1, timeout=30):
-            return await callback(tab)
-        solver.with_page = AsyncMock(side_effect=fake_with_page)
-
-        result = await _search_via_chrome(
-            "https://www.aliexpress.com/w/wholesale-test.html", "test", solver
-        )
-        assert result is not None
-        assert "Warmed Widget" in result["content"]
-        # Should have navigated: homepage (warming) then search URL (retry)
-        go_to_urls = [str(c) for c in tab.go_to.call_args_list]
-        assert any("aliexpress.com/" in u and "wholesale" not in u for u in go_to_urls), "Should visit homepage"
-        assert any("wholesale-test" in u for u in go_to_urls), "Should retry search"
-
-    @pytest.mark.asyncio
-    async def test_chrome_busy_returns_none(self):
-        solver = MagicMock()
-        solver.with_page = AsyncMock(return_value=None)
-
-        result = await _search_via_chrome(
-            "https://www.aliexpress.com/w/wholesale-test.html", "test", solver
-        )
-        assert result is None
+def _make_mock_session():
+    """Create a mock AsyncSession."""
+    return AsyncMock()
 
 
-class TestSearchIntegration:
-    """End-to-end search — always Chrome, no curl_cffi."""
+class TestSearchAliexpress:
+    """End-to-end search via wafer HTTP fetch."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_session(self):
+        """Reset module-level session between tests."""
+        search_mod._session = None
+        yield
+        search_mod._session = None
 
     @pytest.fixture(autouse=True)
     def _skip_rate_limit(self):
@@ -313,8 +213,15 @@ class TestSearchIntegration:
             yield
 
     @pytest.mark.asyncio
-    async def test_chrome_success(self):
-        """Chrome session warming + search page → products extracted."""
+    async def test_no_solver_returns_error(self):
+        """No browser_solver → error."""
+        result = await search_aliexpress("widget", browser_solver=None)
+        assert "error" in result
+        assert "browser solver" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_successful_search(self):
+        """Wafer returns HTML with _init_data_ → products extracted."""
         products = [
             {"productId": "789", "title": {"displayTitle": "Fast Widget"}, "prices": {}, "evaluation": {}, "trade": {}},
         ]
@@ -330,32 +237,87 @@ class TestSearchIntegration:
             "\n<!-->init-data-end--*/"
         )
 
-        tab = MagicMock()
-        tab.go_to = AsyncMock()
-        async def mock_execute(js, **kwargs):
-            if "window.location.href" in js:
-                return {"result": {"result": {"value": "https://www.aliexpress.com/w/wholesale-widget.html"}}}
-            if "_dida_config_" in js and "outerHTML" not in js:
-                return {"result": {"result": {"value": True}}}
-            if "outerHTML" in js:
-                return {"result": {"result": {"value": init_html}}}
-            return {"result": {"result": {"value": None}}}
-        tab.execute_script = mock_execute
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = init_html
+
+        mock_session = _make_mock_session()
+        mock_session.get = AsyncMock(return_value=mock_resp)
 
         solver = MagicMock()
-        async def fake_with_page(url, callback, wait=1, timeout=30):
-            return await callback(tab)
-        solver.with_page = AsyncMock(side_effect=fake_with_page)
 
-        result = await search_aliexpress("widget", challenge_solver=solver)
+        with patch("fetchaller.aliexpress.search._get_session", return_value=mock_session):
+            result = await search_aliexpress("widget", browser_solver=solver)
+
+        assert "content" in result
         assert "Fast Widget" in result["content"]
-        # with_page called with search URL directly
-        solver.with_page.assert_called_once()
-        assert "wholesale-widget" in solver.with_page.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_no_solver_returns_error_immediately(self):
-        """No challenge_solver → error without waiting for rate limit."""
-        result = await search_aliexpress("widget", challenge_solver=None)
+    async def test_challenge_detected(self):
+        """Wafer raises ChallengeDetected → error returned."""
+        import wafer
+
+        mock_session = _make_mock_session()
+        mock_session.get = AsyncMock(side_effect=wafer.ChallengeDetected("cloudflare", "https://example.com", 403))
+
+        solver = MagicMock()
+
+        with patch("fetchaller.aliexpress.search._get_session", return_value=mock_session):
+            result = await search_aliexpress("widget", browser_solver=solver)
+
         assert "error" in result
-        assert "Chrome" in result["error"]
+        assert "cloudflare" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_tmd_punish_in_html(self):
+        """Response contains TMD punish page → error returned."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html>_____tmd_____/punish redirect</html>"
+
+        mock_session = _make_mock_session()
+        mock_session.get = AsyncMock(return_value=mock_resp)
+
+        solver = MagicMock()
+
+        with patch("fetchaller.aliexpress.search._get_session", return_value=mock_session):
+            result = await search_aliexpress("widget", browser_solver=solver)
+
+        assert "error" in result
+        assert "TMD" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_no_init_data_in_html(self):
+        """Response has no _init_data_ → error returned."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body>Some other page</body></html>"
+
+        mock_session = _make_mock_session()
+        mock_session.get = AsyncMock(return_value=mock_resp)
+
+        solver = MagicMock()
+
+        with patch("fetchaller.aliexpress.search._get_session", return_value=mock_session):
+            result = await search_aliexpress("widget", browser_solver=solver)
+
+        assert "error" in result
+        assert "extract" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_http_error(self):
+        """HTTP 500 → error returned."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Internal Server Error"
+
+        mock_session = _make_mock_session()
+        mock_session.get = AsyncMock(return_value=mock_resp)
+
+        solver = MagicMock()
+
+        with patch("fetchaller.aliexpress.search._get_session", return_value=mock_session):
+            result = await search_aliexpress("widget", browser_solver=solver)
+
+        assert "error" in result
+        assert "500" in result["error"]

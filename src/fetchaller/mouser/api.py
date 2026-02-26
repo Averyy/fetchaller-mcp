@@ -1,7 +1,7 @@
 """Mouser Search API client.
 
 Uses the official Mouser API (free, key-based) for structured product data.
-Falls through to HTML pipeline (botfighter) when no API key is configured.
+Falls through to HTML pipeline when no API key is configured.
 
 API docs: https://api.mouser.com/api/docs/ui/index
 Rate limit: 30 requests/minute.

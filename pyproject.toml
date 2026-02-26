@@ -1,13 +1,13 @@
 [project]
 name = "fetchaller-mcp"
-version = "3.0.0"
-description = "MCP server that fetches any URL and returns clean markdown - no domain restrictions. Uses curl_cffi for TLS fingerprint impersonation to bypass bot protection."
+version = "3.1.0"
+description = "MCP server that fetches any URL and returns clean markdown - no domain restrictions. Uses wafer for TLS fingerprint impersonation to bypass bot protection."
 license = "MIT"
-requires-python = ">=3.11"
-keywords = ["mcp", "claude", "fetch", "web", "markdown", "curl-cffi"]
+requires-python = ">=3.12"
+keywords = ["mcp", "claude", "fetch", "web", "markdown", "wafer"]
 dependencies = [
     "mcp>=1.2.0",
-    "curl-cffi>=0.9",
+    "wafer-py[browser]>=0.1.4",
     "fastapi>=0.115",
     "uvicorn>=0.34",
     "pydantic>=2.0",
@@ -19,9 +19,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-botfighter = [
-    "pydoll-python>=2.17",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -44,9 +41,14 @@ packages = ["src/fetchaller"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
+[tool.uv]
+# if-necessary-or-explicit: allow prereleases only when explicitly pinned (rnet>=3.0.0rc*)
+# or when no stable version exists. "allow" was pulling httpx 1.0.dev which breaks httpx_sse
+prerelease = "if-necessary-or-explicit"
+
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]

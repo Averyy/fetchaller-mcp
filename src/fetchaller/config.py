@@ -1,8 +1,7 @@
 """Configuration from environment variables."""
 
 import os
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # OAuth TTL defaults (shared with OAuthStore)
@@ -50,9 +49,9 @@ class Config:
     reddit_backoff_rate_limit: int = 60  # After 429
     reddit_backoff_blocked: int = 300  # After 403
 
-    # Botfighter settings
-    chrome_idle_timeout: int = 60  # Minutes before idle Chrome shuts down
-    cookie_cache_path: str | None = None  # Path to persist bot cookies (JSON)
+    # Wafer cookie cache directory (persists cookies across restarts).
+    # Set to "" to disable. Default: ~/.cache/fetchaller/wafer
+    wafer_cache_dir: str = field(default_factory=lambda: str(Path.home() / ".cache" / "fetchaller" / "wafer"))
 
     # Retry settings - tuned for fast failure detection
     # With 1 retry, max delay is 0.5s (vs 7s with old defaults)
@@ -117,9 +116,12 @@ def load_config() -> Config:
     if rate_limit < 1:
         raise ValueError(f"RATE_LIMIT_REQUESTS must be positive, got {rate_limit}")
 
+    wafer_cache_dir = os.environ.get("WAFER_CACHE_DIR", str(Path.home() / ".cache" / "fetchaller" / "wafer"))
+
     config = Config(
         http_port=http_port,
         server_url=os.environ.get("MCP_SERVER_URL"),
+        wafer_cache_dir=wafer_cache_dir,
         api_key=os.environ.get("MCP_API_KEY"),
         jwt_secret=os.environ.get("JWT_SECRET"),
         rate_limit_requests=rate_limit,
@@ -132,12 +134,6 @@ def load_config() -> Config:
         reddit_proactive_threshold=_int("REDDIT_PROACTIVE_THRESHOLD", 8),
         reddit_backoff_rate_limit=_int("REDDIT_BACKOFF_RATE_LIMIT", 60),
         reddit_backoff_blocked=_int("REDDIT_BACKOFF_BLOCKED", 300),
-        # Botfighter
-        chrome_idle_timeout=_int("CHROME_IDLE_TIMEOUT", 60),
-        cookie_cache_path=os.environ.get(
-            "COOKIE_CACHE_PATH",
-            "/app/data/cookies.json" if os.path.isdir("/app/data") else None,
-        ),
         # Retry
         retry_max_attempts=_int("RETRY_MAX_ATTEMPTS", 1),
         retry_initial_delay=_float("RETRY_INITIAL_DELAY", 0.5),
@@ -161,49 +157,23 @@ def load_config() -> Config:
     return config
 
 
-_FALLBACK_FINGERPRINTS = ["chrome133a", "chrome136", "chrome142"]
+# Module-level wafer cache dir — set once at server startup via set_wafer_cache_dir().
+# Modules that create wafer sessions import get_wafer_cache_dir() to get the path.
+_wafer_cache_dir: str | None = None
 
 
-def _chrome_version(fp: str) -> tuple[int, str]:
-    """Sort key for Chrome fingerprints: 'chrome133a' → (133, 'a').
-
-    Sub-versions (e.g. 'a') sort after the base version, so chrome133a > chrome133.
-    """
-    m = re.match(r"chrome(\d+)(.*)", fp)
-    return (int(m.group(1)), m.group(2)) if m else (0, fp)
+def set_wafer_cache_dir(path: str) -> None:
+    """Set the global wafer cache directory. Called once at server startup."""
+    global _wafer_cache_dir
+    _wafer_cache_dir = path if path else None
 
 
-def _discover_chrome_fingerprints() -> list[str]:
-    """Discover Chrome desktop fingerprints from curl_cffi's BrowserType enum.
-
-    Auto-updates when curl_cffi adds new Chrome versions. Returns the newest 3
-    sorted by version number. curl_cffi handles all TLS + header fingerprinting
-    (including Sec-Ch-Ua) natively via the impersonate parameter — no manual
-    header overrides needed.
-    """
-    try:
-        from curl_cffi.requests import BrowserType
-        chrome_fps = [
-            member.value
-            for member in BrowserType
-            if member.value.startswith("chrome") and "android" not in member.value
-        ]
-    except (ImportError, AttributeError):
-        chrome_fps = []
-    # Fallback: last known good values — only used if curl_cffi changes its
-    # BrowserType API or returns no Chrome desktop entries.
-    if not chrome_fps:
-        chrome_fps = list(_FALLBACK_FINGERPRINTS)
-    return sorted(chrome_fps, key=_chrome_version)[-3:]
+def get_wafer_cache_dir() -> str | None:
+    """Get the wafer cache directory, or None if disabled/unset."""
+    return _wafer_cache_dir
 
 
-# Newest 3 Chrome fingerprints for rotation (auto-discovered from curl_cffi).
-# When curl_cffi is upgraded with new Chrome versions, this list updates automatically.
-# curl_cffi sets Sec-Ch-Ua, User-Agent, and TLS fingerprint natively — no manual
-# header dicts needed.
-BROWSER_FINGERPRINTS = _discover_chrome_fingerprints()
-
-# Tracking params to strip for URL normalization (NEW)
+# Tracking params to strip for URL normalization
 TRACKING_PARAMS = {
     "utm_source",
     "utm_medium",

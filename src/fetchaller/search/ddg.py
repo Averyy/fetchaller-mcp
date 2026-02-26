@@ -1,13 +1,11 @@
 """DuckDuckGo HTML search endpoint scraper."""
 
-import random
 import sys
 from datetime import UTC, datetime
 from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 
-from .google import OPERA_MINI_UAS
 from .models import SearchResult
 
 
@@ -59,20 +57,13 @@ async def search_ddg(session, query: str) -> list[SearchResult]:
         List of results (empty on error).
     """
     params = {"q": query, "kp": "-2"}
-    headers = {
-        "User-Agent": random.choice(OPERA_MINI_UAS),
-        "Accept": "text/html",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-    }
 
     try:
         response = await session.get(
             "https://html.duckduckgo.com/html/",
             params=params,
-            headers=headers,
+            headers={"Accept": "text/html"},
             timeout=10,
-            allow_redirects=True,
         )
     except Exception as e:
         _log(f"ddg request error: {type(e).__name__}: {e}")

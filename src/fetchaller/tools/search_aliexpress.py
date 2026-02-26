@@ -9,11 +9,9 @@ async def search_aliexpress_tool(
     sort: str = "default",
     min_price: float | None = None,
     max_price: float | None = None,
-    fetcher=None,
     cache=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> dict:
     """Search AliExpress products.
 
@@ -23,11 +21,9 @@ async def search_aliexpress_tool(
         sort: Sort order (default, orders, price_asc, price_desc).
         min_price: Minimum price filter.
         max_price: Maximum price filter.
-        fetcher: ContentFetcher for HTTP requests.
         cache: ResponseCache instance.
         config: Config instance.
-        cookie_cache: CookieCache for bot challenge cookies.
-        challenge_solver: ChallengeSolver for browser-based challenges.
+        browser_solver: BrowserSolver for browser-based challenges.
 
     Returns:
         Dict with "content" (formatted results) or "error".
@@ -38,9 +34,7 @@ async def search_aliexpress_tool(
         sort=sort,
         min_price=min_price,
         max_price=max_price,
-        fetcher=fetcher,
         cache=cache,
         config=config,
-        cookie_cache=cookie_cache,
-        challenge_solver=challenge_solver,
+        browser_solver=browser_solver,
     )

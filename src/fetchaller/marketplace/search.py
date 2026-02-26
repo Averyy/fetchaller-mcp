@@ -71,6 +71,25 @@ async def _search_kijiji(
     if "error" in result:
         return {"platform": "kijiji", "error": result["error"]}
 
+    # If category-filtered search returned "No results found", retry without
+    # category restriction. Kijiji's category tree is narrow (e.g. "Electronics"
+    # excludes "Computers"), so the query term handles filtering instead.
+    content = result.get("content", "")
+    if kj_category != "c10" and "No results found" in content:
+        _log(f"Kijiji 0 results with {kj_category}, retrying with c10 (all)")
+        fallback_url = build_search_url(
+            query=query,
+            location_id=location_id,
+            category_code="c10",
+            sort=kj_sort,
+            min_price=min_price,
+            max_price=max_price,
+            condition=kj_condition,
+        )
+        result = await get_listing(fallback_url)
+        if "error" in result:
+            return {"platform": "kijiji", "error": result["error"]}
+
     return {
         "platform": "kijiji",
         "content": result["content"],
@@ -85,10 +104,8 @@ async def _search_craigslist(
     condition: str | None,
     min_price: int | None,
     max_price: int | None,
-    fetcher=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> dict:
     """Search Craigslist via SAPI.
 
@@ -119,10 +136,8 @@ async def _search_craigslist(
     area_id = await _resolve_area_id(
         hostname,
         dummy_url,
-        fetcher=fetcher,
         config=config,
-        cookie_cache=cookie_cache,
-        challenge_solver=challenge_solver,
+        browser_solver=browser_solver,
     )
     if not area_id:
         return {"platform": "craigslist", "error": "Could not resolve Craigslist area ID."}
@@ -250,10 +265,8 @@ async def search_marketplace(
     condition: str | None = None,
     min_price: int | None = None,
     max_price: int | None = None,
-    fetcher=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> dict:
     """Search multiple marketplace platforms concurrently.
 
@@ -266,10 +279,8 @@ async def search_marketplace(
         condition: Condition alias (e.g. "new", "like_new", "good", "fair").
         min_price: Minimum price in dollars.
         max_price: Maximum price in dollars.
-        fetcher: ContentFetcher for HTTP requests.
         config: Config instance.
-        cookie_cache: CookieCache for bot challenge cookies.
-        challenge_solver: ChallengeSolver for browser-based challenges.
+        browser_solver: BrowserSolver for browser-based challenges.
 
     Returns:
         Dict with "content" (grouped markdown) or "error".
@@ -315,8 +326,7 @@ async def search_marketplace(
             tasks.append(asyncio.ensure_future(
                 _search_craigslist(
                     query, location, category, sort, condition, min_price, max_price,
-                    fetcher=fetcher, config=config,
-                    cookie_cache=cookie_cache, challenge_solver=challenge_solver,
+                    config=config, browser_solver=browser_solver,
                 )
             ))
             platform_order.append("craigslist")

@@ -36,7 +36,7 @@ For each new site module:
 ## Test Organization
 
 - `test_site_detection.py` — Tests `_detect_site()` directly (URL-based, HTML-based, priority rules)
-- `test_fetch_integration.py` — Integration tests for `fetch_url()` with MockFetcher (forum hijack, feed discovery, URL transforms, content types, errors)
+- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors)
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
 - `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP
@@ -51,7 +51,6 @@ For each new site module:
 - `test_soylent_postprocessor.py` — Soylent URL detection, inventory extraction, regex postprocessor tests
 - `test_craigslist_postprocessor.py` — Craigslist URL detection and regex postprocessor unit tests
 - `test_craigslist_sapi.py` — Craigslist SAPI client: URL detection, area ID extraction/caching, SAPI item parsing (URL construction, title/price/location/posted time), total count, area name extraction, relative time formatting, search result formatting
-- `test_kijiji_postprocessor.py` — Kijiji URL detection and regex postprocessor unit tests
 - `test_kijiji_api.py` — Kijiji GraphQL API client: URL detection, price formatting (cents, FIXED/FREE/PLEASE_CONTACT/SWAP_TRADE), listing/search formatting, error handling
 - `test_ebay_postprocessor.py` — eBay URL detection, JSON-LD extraction, regex postprocessor unit tests
 - `test_ebay_search_extraction.py` — eBay search URL detection, DOM extraction from `.s-item` elements, search marker postprocessing

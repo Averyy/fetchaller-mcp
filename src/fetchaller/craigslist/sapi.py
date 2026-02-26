@@ -11,6 +11,7 @@ then cached in memory for subsequent calls.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sys
@@ -18,8 +19,9 @@ import time
 from datetime import UTC, datetime
 from urllib.parse import urlencode
 
-import httpx
+import wafer
 
+from ..config import get_wafer_cache_dir
 from ..ratelimit import craigslist_limiter
 
 _SAPI_BASE = "https://sapi.craigslist.org/web/v8/postings/search"
@@ -27,11 +29,6 @@ _SAPI_BASE = "https://sapi.craigslist.org/web/v8/postings/search"
 _HEADERS = {
     "Accept": "application/json",
     "Accept-Language": "en-US,en;q=0.9",
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
 }
 
 # In-memory cache: hostname → area_id (populated from HTML extraction)
@@ -42,6 +39,24 @@ _AREA_ID_RE = re.compile(r'"areaId"\s*:\s*(\d+)')
 
 def _log(msg: str) -> None:
     print(f"[{datetime.now(UTC).isoformat()}] craigslist sapi: {msg}", file=sys.stderr)
+
+
+_session: wafer.AsyncSession | None = None
+_session_lock = asyncio.Lock()
+
+
+async def _get_session() -> wafer.AsyncSession:
+    global _session
+    if _session is None:
+        async with _session_lock:
+            if _session is None:
+                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+    return _session
+
+
+async def close_session() -> None:
+    global _session
+    _session = None
 
 
 # ---------------------------------------------------------------------------
@@ -112,16 +127,16 @@ async def fetch_sapi(
     _log(f"SAPI request: {url}")
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, headers=_HEADERS)
-            if resp.status_code != 200:
-                _log(f"SAPI HTTP {resp.status_code}: {resp.text[:200]}")
-                return None
-            data = resp.json()
-    except httpx.TimeoutException:
+        session = await _get_session()
+        resp = await session.get(url, headers=_HEADERS, timeout=15)
+        if resp.status_code != 200:
+            _log(f"SAPI HTTP {resp.status_code}: {resp.text[:200]}")
+            return None
+        data = resp.json()
+    except wafer.WaferTimeout:
         _log("SAPI request timed out")
         return None
-    except (httpx.HTTPError, json.JSONDecodeError) as e:
+    except (wafer.WaferError, json.JSONDecodeError) as e:
         _log(f"SAPI request failed: {e}")
         return None
 

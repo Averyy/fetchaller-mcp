@@ -66,19 +66,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         max_entries=config.max_rate_limit_entries,
     )
 
-    # Create shared fetcher and botfighter instances
-    from ..botfighter import ChallengeSolver, CookieCache
-    from ..content.fetcher import ContentFetcher
-    from ..content.fetcher import RetryConfig as FetcherRetryConfig
-
-    fetcher = ContentFetcher(retry_config=FetcherRetryConfig.from_config(config))
-    cookie_cache = CookieCache(persist_path=config.cookie_cache_path)
-    challenge_solver = ChallengeSolver(config)
-
     # Create MCP server and session manager
-    mcp_server = create_server(
-        config, fetcher=fetcher, cookie_cache=cookie_cache, challenge_solver=challenge_solver,
-    )
+    mcp_server = create_server(config)
     session_manager = StreamableHTTPSessionManager(
         app=mcp_server,
         stateless=True,
@@ -115,16 +104,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         # Shutdown
         print(f"[{datetime.now(UTC).isoformat()}] Shutting down...", file=sys.stderr)
         await oauth_store.stop_cleanup()
-        await fetcher.close()
-        await challenge_solver.close()
-
-        # Stop Reddit queue if running
-        if hasattr(mcp_server, '_reddit_queue'):
-            await mcp_server._reddit_queue.stop()
-
-        # Close search session
-        from ..search import close_session as close_search_session
-        await close_search_session()
+        from ..server import cleanup_server
+        await cleanup_server(mcp_server)
 
     app = FastAPI(
         title="fetchaller",

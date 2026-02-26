@@ -64,7 +64,7 @@ class TestRedditQueue:
     @pytest.mark.asyncio
     async def test_backoff_delays_next_request(self):
         """set_backoff(429) causes the next enqueue to be delayed."""
-        config = QueueConfig(backoff_rate_limit=1, backoff_blocked=2)
+        config = QueueConfig(backoff_rate_limit=0.05, backoff_blocked=0.1)
         queue = RedditRequestQueue(config)
 
         async def dummy():
@@ -79,8 +79,8 @@ class TestRedditQueue:
         elapsed = time.time() - start
 
         assert result == "ok"
-        # Should have waited ~1s (the backoff_rate_limit value)
-        assert 0.8 <= elapsed < 3.0
+        # Should have waited ~0.05s (the backoff_rate_limit value)
+        assert 0.03 <= elapsed < 1.0
 
         await queue.stop()
 

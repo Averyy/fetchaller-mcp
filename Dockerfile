@@ -2,11 +2,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install curl for healthcheck, chromium + xvfb for botfighter, gosu for entrypoint, and create non-root user
+# Install curl for healthcheck, gosu for entrypoint, and create non-root user
 RUN apt-get update && apt-get install -y \
     curl \
-    chromium \
-    xvfb \
     gosu \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 100 -o appuser \
@@ -15,14 +13,18 @@ RUN apt-get update && apt-get install -y \
 # Install uv for fast package management
 RUN pip install --no-cache-dir uv
 
-# Copy project files
-COPY pyproject.toml ./
+# Copy project files and lockfile
+COPY pyproject.toml uv.lock ./
 COPY src/ ./src/
 
-# Install dependencies using uv
-RUN uv pip install --system --no-cache ".[botfighter]"
+# Install from lockfile (exact pinned versions), then install patchright browser
+RUN uv sync --frozen --no-dev --no-editable \
+    && .venv/bin/python -m patchright install chromium --with-deps
 
-# Create data directory for persistent cookie cache
+# Add venv to PATH so python/fetchaller-mcp use the installed packages
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Create data directory for persistent state
 RUN mkdir -p /app/data
 
 # Change ownership to non-root user
@@ -36,7 +38,6 @@ ENTRYPOINT ["/entrypoint.sh"]
 # Environment variables with defaults
 ENV HTTP_PORT=6000
 ENV RATE_LIMIT_REQUESTS=100
-ENV CHROME_IDLE_TIMEOUT=60
 
 # Default port; override with HTTP_PORT env var
 EXPOSE 6000

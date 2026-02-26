@@ -6,6 +6,7 @@ import sys
 import time as time_module
 from datetime import UTC, datetime
 
+from ..config import get_wafer_cache_dir
 from ..content.url import normalize_url
 from .ddg import search_ddg
 from .google import search_google
@@ -42,24 +43,26 @@ def _log(msg: str) -> None:
 
 
 async def _get_session():
-    """Get or create the shared AsyncSession (no impersonate)."""
+    """Get or create the shared AsyncSession with Opera Mini profile."""
     global _session
     if _session is None:
         async with _session_lock:
             if _session is None:
-                from curl_cffi.requests import AsyncSession
+                from wafer import AsyncSession, Profile
 
-                _session = AsyncSession()
+                _session = AsyncSession(
+                    profile=Profile.OPERA_MINI,
+                    max_rotations=0,
+                    rate_limit=0.0,
+                    cache_dir=get_wafer_cache_dir(),
+                )
     return _session
 
 
 async def close_session() -> None:
-    """Close the shared search session. Called on server shutdown."""
+    """Release the shared search session. Called on server shutdown."""
     global _session
-    async with _session_lock:
-        if _session is not None:
-            await _session.close()
-            _session = None
+    _session = None
 
 
 def _dedup_key(url: str) -> str:

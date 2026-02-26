@@ -9,28 +9,24 @@ import pytest
 from fetchaller.aliexpress.mtop import MTopClient, compute_sign
 
 
-class MockHeaders:
-    """Mock headers object that supports multi_items() like curl_cffi."""
+def _mock_resp(data: dict, cookies: list[str] | None = None):
+    """Create a mock response with .text and .get_all() for Set-Cookie headers.
 
-    def __init__(self, items: list[tuple[str, str]] | None = None):
-        self._items = items or []
-
-    def multi_items(self):
-        return self._items
-
-    def get(self, key, default=None):
-        for k, v in self._items:
-            if k.lower() == key.lower():
-                return v
-        return default
-
-
-def _mock_resp(data: dict, headers=None):
-    """Create a mock response with both .json() and .text for JSONP-aware parsing."""
+    Args:
+        data: JSON response data.
+        cookies: List of Set-Cookie header values (e.g. ["_m_h5_tk=abc_123; Path=/"]).
+    """
     resp = MagicMock()
     resp.json.return_value = data
     resp.text = json.dumps(data)
-    resp.headers = headers or MockHeaders()
+
+    def get_all(name):
+        if name.lower() == "set-cookie":
+            return cookies or []
+        return []
+    resp.get_all = get_all
+
+    resp.headers = {}
     return resp
 
 
@@ -66,20 +62,15 @@ class TestMTopClient:
 
     @pytest.mark.asyncio
     async def test_bootstrap_extracts_token_from_cookie(self):
-        """Token bootstrap should extract _m_h5_tk from response cookies."""
+        """Token bootstrap should extract _m_h5_tk from response Set-Cookie."""
         client = MTopClient()
 
-        # Mock the session to return a cookie with _m_h5_tk
         mock_session = AsyncMock()
-        mock_cookie = MagicMock()
-        mock_cookie.name = "_m_h5_tk"
-        mock_cookie.value = "abcdef1234567890abcdef1234567890_1700000000"
-        mock_session.cookies.jar = [mock_cookie]
-
-        mock_resp = MagicMock()
-        mock_resp.headers = MockHeaders()
+        mock_resp = _mock_resp({}, cookies=[
+            "_m_h5_tk=abcdef1234567890abcdef1234567890_1700000000; Path=/; Domain=.aliexpress.com",
+            "_m_h5_tk_enc=somehash; Path=/; Domain=.aliexpress.com",
+        ])
         mock_session.get = AsyncMock(return_value=mock_resp)
-
         client._session = mock_session
 
         await client._bootstrap_token()
@@ -97,16 +88,19 @@ class TestMTopClient:
         mock_session = AsyncMock()
 
         # First call returns expired, second call (after bootstrap) returns success
-        expired_resp = _mock_resp({"ret": ["FAIL_SYS_TOKEN_EXOIRED::token expired"]})
-        success_resp = _mock_resp({"ret": ["SUCCESS"], "data": {"result": {}}})
+        expired_resp = _mock_resp(
+            {"ret": ["FAIL_SYS_TOKEN_EXOIRED::token expired"]},
+            cookies=[],
+        )
+        success_resp = _mock_resp(
+            {"ret": ["SUCCESS"], "data": {"result": {}}},
+            cookies=[],
+        )
 
-        # Bootstrap response (no json needed — bootstrap only reads cookies)
-        bootstrap_resp = _mock_resp({})
-
-        mock_cookie = MagicMock()
-        mock_cookie.name = "_m_h5_tk"
-        mock_cookie.value = "new_token_value_32charslong12345_1700000000"
-        mock_session.cookies.jar = [mock_cookie]
+        # Bootstrap response sets new token cookie
+        bootstrap_resp = _mock_resp({}, cookies=[
+            "_m_h5_tk=new_token_value_32charslong12345_1700000000; Path=/",
+        ])
 
         call_count = 0
 
@@ -135,9 +129,11 @@ class TestMTopClient:
         client._token_time = 9999999999.0  # Not expired
 
         mock_session = AsyncMock()
-        mock_resp = _mock_resp({"ret": ["FAIL_SYS_USER_VALIDATE::need validate"]})
+        mock_resp = _mock_resp(
+            {"ret": ["FAIL_SYS_USER_VALIDATE::need validate"]},
+            cookies=[],
+        )
         mock_session.get = AsyncMock(return_value=mock_resp)
-        mock_session.cookies.jar = []
         client._session = mock_session
 
         result = await client.request("mtop.test.api", "1.0", {})
@@ -153,9 +149,11 @@ class TestMTopClient:
         client._token_time = 9999999999.0
 
         mock_session = AsyncMock()
-        mock_resp = _mock_resp({"ret": ["RGV587_ERROR::SM"]})
+        mock_resp = _mock_resp(
+            {"ret": ["RGV587_ERROR::SM"]},
+            cookies=[],
+        )
         mock_session.get = AsyncMock(return_value=mock_resp)
-        mock_session.cookies.jar = []
         client._session = mock_session
 
         result = await client.request("mtop.test.api", "1.0", {})
@@ -173,12 +171,9 @@ class TestMTopClient:
         client = MTopClient()
 
         mock_session = AsyncMock()
-        mock_cookie = MagicMock()
-        mock_cookie.name = "_m_h5_tk"
-        mock_cookie.value = "token123_1700000000"
-        mock_session.cookies.jar = [mock_cookie]
-        mock_resp = MagicMock()
-        mock_resp.headers = MockHeaders()
+        mock_resp = _mock_resp({}, cookies=[
+            "_m_h5_tk=token123_1700000000; Path=/",
+        ])
         mock_session.get = AsyncMock(return_value=mock_resp)
         client._session = mock_session
 
@@ -204,9 +199,12 @@ class TestMTopClient:
         jsonp_body = 'mtopjsonp1({"ret":["SUCCESS"],"data":{"result":{"PRODUCT_TITLE":{"text":"Widget"}}}})'
         mock_resp = MagicMock()
         mock_resp.text = jsonp_body
-        mock_resp.headers = MockHeaders()
+
+        def get_all(name):
+            return []
+        mock_resp.get_all = get_all
+        mock_resp.headers = {}
         mock_session.get = AsyncMock(return_value=mock_resp)
-        mock_session.cookies.jar = []
         client._session = mock_session
 
         result = await client.request("mtop.test.api", "1.0", {})
@@ -221,21 +219,21 @@ class TestMTopClient:
         client._token_time = 9999999999.0
 
         mock_session = AsyncMock()
-        mock_resp = _mock_resp({"ret": ["SUCCESS"], "data": {"result": {}}})
+        mock_resp = _mock_resp(
+            {"ret": ["SUCCESS"], "data": {"result": {}}},
+            cookies=[],
+        )
         mock_session.get = AsyncMock(return_value=mock_resp)
-        mock_session.cookies.jar = []
         client._session = mock_session
 
         result = await client.request("mtop.test.api", "1.0", {})
         assert "SUCCESS" in str(result.get("ret", []))
 
     @pytest.mark.asyncio
-    async def test_close_cleans_up_session(self):
-        """close() should close the underlying session."""
+    async def test_close_releases_session(self):
+        """close() should release the session reference."""
         client = MTopClient()
-        mock_session = AsyncMock()
-        client._session = mock_session
+        client._session = AsyncMock()
 
         await client.close()
-        mock_session.close.assert_called_once()
         assert client._session is None

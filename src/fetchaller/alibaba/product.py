@@ -1,7 +1,7 @@
 """Alibaba.com product detail via SSR HTML scraping.
 
 Alibaba.com serves all product data as server-rendered HTML with embedded JSON
-in ``window.detailData``. No MTop API or browser needed — curl_cffi with
+in ``window.detailData``. No MTop API or browser needed — wafer with
 Chrome impersonation works directly.
 """
 
@@ -294,11 +294,9 @@ def _format_output(product_id: str, data: dict) -> str:
 
 async def get_product(
     product_id: str,
-    fetcher=None,
     cache=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> dict:
     """Get Alibaba.com product details.
 
@@ -306,11 +304,9 @@ async def get_product(
 
     Args:
         product_id: Numeric product ID or full Alibaba.com URL.
-        fetcher: ContentFetcher for HTTP requests.
         cache: ResponseCache instance.
         config: Config instance.
-        cookie_cache: CookieCache for bot challenge cookies.
-        challenge_solver: ChallengeSolver for browser-based challenges.
+        browser_solver: Optional BrowserSolver for browser-based challenges.
 
     Returns:
         Dict with "content" (formatted text) or "error".
@@ -331,11 +327,9 @@ async def get_product(
         max_tokens=500000,  # Full page for JSON extraction
         timeout=30,
         raw=True,
-        fetcher=fetcher,
         cache=cache,
         config=config,
-        cookie_cache=cookie_cache,
-        challenge_solver=challenge_solver,
+        browser_solver=browser_solver,
         _skip_alibaba_intercept=True,
     )
 

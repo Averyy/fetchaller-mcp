@@ -24,10 +24,10 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 # Clone and install
 git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
-uv venv && uv pip install -e .
+uv sync && patchright install chromium
 
 # Add to Claude Code
-claude mcp add fetchaller -- /path/to/fetchaller-mcp/.venv/bin/python -m fetchaller.main
+claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main
 ```
 
 Add permissions to `~/.claude/settings.json`:
@@ -104,13 +104,14 @@ search "python asyncio tutorial" page=2
 
 ## Tool Reference
 
-### `fetch(url, maxTokens?, timeout?)`
+### `fetch(url, maxTokens?, timeout?, raw?)`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | url | string | required | URL to fetch (http/https) |
 | maxTokens | number | 25000 | Max tokens to return |
 | timeout | number | 10 | Request timeout in seconds |
+| raw | boolean | false | Return raw HTML instead of markdown |
 
 ### Returns
 
@@ -146,7 +147,7 @@ Searches Google (primary) and DuckDuckGo (supplement) in parallel. Returns title
 
 ## Reddit Tools
 
-Three tools for Reddit research:
+Two tools for Reddit research:
 
 ### `browse_reddit` - Browse Subreddit Listings
 
@@ -242,14 +243,13 @@ Kijiji is Canada-only and automatically skipped for US locations. Location match
 
 1. Validates URL (http/https only)
 2. Blocks private/internal IPs (SSRF protection with DNS rebinding prevention)
-3. Checks cookie cache for domain — if cached, uses pinned cookies + UA + TLS fingerprint
-4. Fetches with browser-like TLS fingerprints (curl_cffi) — rotates newest 3 Chrome versions automatically
-5. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
-6. Detects content type
-7. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (20+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, and more), converts to markdown
-8. For JSON/XML/CSV/text: returns raw
-9. For PDF: extracts text
-10. Truncates to token limit
+3. Fetches with browser-like TLS fingerprints via wafer (Rust/BoringSSL) — rotates Chrome versions automatically
+4. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
+5. Detects content type
+6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (20+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, and more), converts to markdown
+7. For JSON/XML/CSV/text: returns raw
+8. For PDF: extracts text
+9. Truncates to token limit
 
 ## Bot Challenge Bypass
 
@@ -259,30 +259,23 @@ fetchaller transparently bypasses bot challenges. First requests to protected si
 
 | Challenge | Method | Speed |
 |-----------|--------|-------|
-| Alibaba Cloud WAF (`acw_sc__v2`) | Pure Python solver (fixed shuffle + XOR) | ~1ms |
-| Alibaba Cloud WAF TMD | Headful Chrome, session warming via homepage | ~5-10s |
-| Cloudflare Managed Challenge | Headful Chrome via PyDoll + Xvfb | ~3-30s |
-| Akamai Bot Manager | Headful Chrome, poll for `_abck` cookie + HTML fallback | ~3-15s |
-| Amazon rate-limit/CAPTCHA | Headful Chrome, click "Continue shopping" | ~3-10s |
-| DataDome, PerimeterX, Imperva, Kasada | Headful Chrome, network idle wait | ~3-10s |
+| Alibaba Cloud WAF (ACW) | Inline Python solver | ~1ms |
+| Alibaba Cloud WAF (TMD) | Inline warming + browser | ~5-10s |
+| Cloudflare Managed Challenge | Patchright browser solver | ~3-30s |
+| Akamai Bot Manager | Patchright browser solver | ~3-15s |
+| Amazon rate-limit/CAPTCHA | Patchright browser solver | ~3-10s |
+| DataDome, PerimeterX, Imperva | Patchright browser solver | ~3-10s |
+| Kasada | Browser CT token + Python SHA-256 PoW | ~3-10s |
+| GeeTest v4 slide CAPTCHA | CV notch detection + drag replay | ~5-15s |
+| reCAPTCHA v2 | Checkbox → audio (Whisper) → ONNX grid | ~5-30s |
 
-### How It Works
-
-1. **ACW challenges** (Alibaba Cloud WAF): Solved inline with pure Python — no browser needed. Extracts `arg1` from challenge HTML, applies fixed shuffle permutation + XOR → cookie value.
-2. **Browser challenges** (everything else): Launches headful Chrome via PyDoll with Xvfb virtual display (CF detects headless mode). Solves the challenge, extracts all cookies + User-Agent, caches per-domain.
-3. **Cookie caching**: Cookies are bound to UA + TLS fingerprint. Cached cookies are replayed on subsequent requests with the exact same UA and fingerprint. CF cookies track expiry; all others cached until re-challenged.
-
-### Browser Fingerprints
-
-TLS fingerprint versions are auto-discovered from curl_cffi's `BrowserType` enum at import time. `BROWSER_FINGERPRINTS` (newest 3 Chrome desktop versions) and `DEFAULT_IMPERSONATE` (newest) are derived automatically — upgrading curl_cffi with new Chrome versions requires zero code changes. curl_cffi handles Sec-Ch-Ua, User-Agent, and TLS fingerprint natively via `impersonate`.
-4. **Geo-redirects**: Sites like Glassdoor redirect based on location (.com → .ca). Cookies are cached under both domains and requests retry from the final URL.
-5. **Persistence**: Cookie cache auto-persists to `/app/data/cookies.json` in Docker (survives container restarts). In-memory only outside Docker.
+All challenge solving is handled by wafer's `BrowserSolver` (Patchright-based). Cookies are cached per-domain so subsequent requests skip the challenge.
 
 ### Requirements
 
-**Docker**: Chrome and Xvfb are included in the image. The `cookie-data` volume persists solved cookies across restarts. No extra setup needed.
+**Docker**: Patchright's bundled Chromium is included in the image. The `cookie-data` volume persists solved cookies across restarts. No extra setup needed.
 
-**Local (stdio)**: Requires Chrome or Chromium installed on your system for browser-based challenges. Without Chrome, fetchaller still works — it just can't bypass Cloudflare/Akamai/etc. (ACW challenges still work since they're pure Python). macOS uses an offscreen window; Linux needs Xvfb for headful mode.
+**Local (stdio)**: Browser support (Patchright) is included by default. Run `patchright install chromium` after installing to download the browser binary. Docker includes it automatically.
 
 ## Architecture
 
@@ -307,7 +300,6 @@ TLS fingerprint versions are auto-discovered from curl_cffi's `BrowserType` enum
 - **`facebook_marketplace.py`** — URL detection only. GraphQL client in `facebook_marketplace/` package.
 - **`digikey.py`** — All TLDs. CSS selectors, soup cleanup. Behind Akamai (wafer handles). HTML fallback without API key.
 - **`ebay.py`** — All TLDs. JSON-LD product extraction, search result DOM extraction (`.s-item`), regex post-processors.
-- **`kijiji.py`** — kijiji.ca. CSS selectors. HTML fallback — search/listing pages routed to GraphQL API.
 - **`molex.py`** — JSON-LD Product extraction (additionalProperty specs). CSR site — specs only in structured data.
 - **`mouser.py`** — All TLDs. CSS selectors, soup cleanup. Behind Akamai. HTML fallback without API key.
 - **`soylent.py`** — Shopify store cleanup, inventory extraction from `gsf_conversion_data`.
@@ -399,8 +391,6 @@ For Claude.ai web/mobile with cross-platform sync:
 | `MCP_SERVER_URL` | `http://localhost:$PORT` | Public URL for OAuth |
 | `JWT_SECRET` | (derived from API key) | Secret for OAuth tokens |
 | `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
-| `CHROME_IDLE_TIMEOUT` | 60 | Minutes before idle Chrome shuts down |
-| `COOKIE_CACHE_PATH` | auto | Cookie persistence path (auto-detects `/app/data/` in Docker) |
 | `MOUSER_API_KEY` | — | Mouser Search API key ([free registration](https://www.mouser.com/MyMouser/MouserSearchApplication.aspx)) |
 | `DIGIKEY_CLIENT_ID` | — | DigiKey API client ID ([free registration](https://developer.digikey.com)) |
 | `DIGIKEY_CLIENT_SECRET` | — | DigiKey API client secret |
@@ -419,8 +409,7 @@ fetchaller-mcp/
 ├── src/fetchaller/          # Python source
 │   ├── main.py              # Entry point
 │   ├── server.py            # MCP server setup
-│   ├── config.py            # Configuration + auto-discovered browser fingerprints
-│   ├── botfighter.py        # Bot challenge detection, solving, cookie cache
+│   ├── config.py            # Configuration
 │   ├── http/                # HTTP server (FastAPI)
 │   ├── tools/               # MCP tools (fetch, search, reddit, aliexpress, alibaba, marketplace)
 │   ├── content/             # Content processing (HTML→markdown, site-specific cleanup)
@@ -449,20 +438,20 @@ fetchaller-mcp/
 
 ## Dependencies
 
+- `wafer-py[browser]` - HTTP transport with TLS fingerprinting, bot challenge bypass, and browser solver (Rust/BoringSSL + Patchright)
 - `mcp` - MCP protocol SDK
 - `fastapi` + `uvicorn` - HTTP server
-- `curl-cffi` - TLS fingerprint impersonation
 - `beautifulsoup4` + `markdownify` - HTML to markdown
 - `pymupdf4llm` - PDF to markdown extraction
 - `pyjwt` - OAuth tokens
-- `pydoll-python` - Headful Chrome automation for bot challenge bypass
 
 ## Testing
 
 ```bash
-# Run tests locally
-uv venv && source .venv/bin/activate
-python -c "from fetchaller.http.app import create_app; print('OK')"
+# Run tests
+uv sync --extra dev
+.venv/bin/ruff check src/ tests/
+.venv/bin/python -m pytest tests/ -x -q
 
 # Test in Docker
 docker compose -f docker-compose.local.yml up --build

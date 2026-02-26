@@ -4,7 +4,7 @@ Exports the standard site interface (SELECTORS_LIST, is_digikey,
 strip_digikey_junk, postprocess_digikey).
 
 Covers all DigiKey TLDs (digikey.com, digikey.ca, digikey.co.uk, etc.).
-Site is behind Akamai WAF (botfighter handles bypass). Pages are SSR
+Site is behind Akamai WAF (wafer handles bypass). Pages are SSR
 after bypass — just needs content cleanup.
 """
 

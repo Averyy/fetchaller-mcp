@@ -384,12 +384,26 @@ class TestSearchIntegration:
     def clear_state(self):
         """Clear cache and reset module state before each test."""
         import src.fetchaller.search as search_mod
+        from src.fetchaller.search.ddg import search_ddg
+        from src.fetchaller.search.google import search_google
+
         _cache.clear()
         search_mod._captcha_backoff_until = 0.0
         search_mod._captcha_count = 0
         search_mod._google_last_request = 0.0
         search_mod._ddg_last_request = 0.0
-        yield
+
+        # Bypass rate limiter sleeps — these tests use mocked HTTP
+        async def _fast_google(session, query, page):
+            return await search_google(session, query, page)
+
+        async def _fast_ddg(session, query):
+            return await search_ddg(session, query)
+
+        with patch("src.fetchaller.search._rate_limited_google", _fast_google), \
+             patch("src.fetchaller.search._rate_limited_ddg", _fast_ddg):
+            yield
+
         _cache.clear()
 
     def _mock_response(self, html: str, url: str = "https://www.google.com/search?q=test", status: int = 200):

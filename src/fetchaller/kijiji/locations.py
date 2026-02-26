@@ -59,7 +59,7 @@ _LOCATION_TREE: dict = {
             "COQUITLAM": 1700290, "PORT COQUITLAM": 1700290,
             "PORT MOODY": 1700290, "PITT MEADOWS": 1700290,
             "MAPLE RIDGE": 1700290,
-            "VANCOUVER": 1700287,
+            "VANCOUVER": 80003,  # Greater Vancouver Area (metro)
             "KAMLOOPS": 1700227,
             "KELOWNA": 1700228, "PENTICTON": 1700246,
             "NANAIMO": 1700263,
@@ -161,7 +161,7 @@ _LOCATION_TREE: dict = {
             "SUDBURY": 1700245,
             "THUNDER BAY": 1700126,
             "TIMMINS": 1700238,
-            "TORONTO": 1700273,
+            "TORONTO": 1700272,  # Greater Toronto Area (metro)
             "MARKHAM": 1700274, "YORK REGION": 1700274,
             "MISSISSAUGA": 1700276, "BRAMPTON": 1700276,
             "PEEL REGION": 1700276,
@@ -191,7 +191,7 @@ _LOCATION_TREE: dict = {
             "THETFORD MINES": 1700064,
             "GASPE": 1700066,
             "GRANBY": 1700253,
-            "MONTREAL": 1700281,
+            "MONTREAL": 80002,  # Greater Montreal Area (metro)
             "LAVAL": 1700278,
             "LONGUEUIL": 1700279,
             "WEST ISLAND": 1700280,

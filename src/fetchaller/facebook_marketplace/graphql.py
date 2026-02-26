@@ -12,21 +12,18 @@ Known doc_ids:
 
 from __future__ import annotations
 
+import asyncio
 import json
-import random
 import sys
 from datetime import UTC, datetime
 
-from curl_cffi.requests import AsyncSession
-from curl_cffi.requests.errors import RequestsError
+import wafer
 
-from ..config import BROWSER_FINGERPRINTS
+from ..config import get_wafer_cache_dir
 from ..ratelimit import facebook_limiter
 
 _GRAPHQL_URL = "https://www.facebook.com/api/graphql/"
 
-# curl_cffi sets User-Agent, Sec-Ch-Ua, and TLS fingerprint natively
-# via the impersonate parameter — do not set these manually.
 _HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded",
     "Accept": "*/*",
@@ -41,35 +38,46 @@ _HEADERS = {
 # Module-level session for cookie persistence across requests.
 # Facebook uses IP reputation + cookies — reusing a session with
 # seeded cookies from visiting the marketplace page helps avoid blocks.
-_session: AsyncSession | None = None
+_session: wafer.AsyncSession | None = None
 _session_seeded: bool = False
+_session_lock = asyncio.Lock()
 
 
-async def _get_session() -> AsyncSession:
-    """Get or create the shared AsyncSession with browser impersonation.
+async def _get_session() -> wafer.AsyncSession:
+    """Get or create the shared AsyncSession.
 
     On first use, seeds the session by visiting the marketplace page
     to pick up anonymous session cookies (matches real browser behavior).
     """
     global _session, _session_seeded
-    if _session is None:
-        _session = AsyncSession(impersonate=random.choice(BROWSER_FINGERPRINTS))
-        _session_seeded = False
+    if _session is None or not _session_seeded:
+        async with _session_lock:
+            if _session is None:
+                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+                _session_seeded = False
 
-    if not _session_seeded:
-        try:
-            _log("Seeding session cookies from marketplace page...")
-            await _session.get(
-                "https://www.facebook.com/marketplace/",
-                timeout=15.0,
-            )
-            _session_seeded = True
-            _log("Session cookies seeded.")
-        except Exception as e:
-            _log(f"Cookie seeding failed (non-fatal): {e}")
-            _session_seeded = True  # Don't retry on every request
+            if not _session_seeded:
+                try:
+                    _log("Seeding session cookies from marketplace page...")
+                    await _session.get(
+                        "https://www.facebook.com/marketplace/",
+                        timeout=15,
+                    )
+                    _session_seeded = True
+                    _log("Session cookies seeded.")
+                except Exception as e:
+                    _log(f"Cookie seeding failed (non-fatal): {e}")
+                    _session_seeded = True  # Don't retry on every request
 
     return _session
+
+
+async def close_session() -> None:
+    """Release the shared session (for shutdown cleanup)."""
+    global _session, _session_seeded
+    _session = None
+    _session_seeded = False
+
 
 # Known stable doc_ids
 DOC_ID_GEOCODE = "5585904654783609"
@@ -93,7 +101,7 @@ async def graphql_request(doc_id: str, variables: dict) -> dict:
         Parsed JSON response dict.
 
     Raises:
-        RequestsError: On HTTP/connection errors.
+        WaferError: On HTTP/connection errors.
     """
     await facebook_limiter.wait()
 
@@ -106,14 +114,14 @@ async def graphql_request(doc_id: str, variables: dict) -> dict:
     resp = await session.post(
         _GRAPHQL_URL,
         headers=_HEADERS,
-        data=form_data,
-        timeout=20.0,
+        form=form_data,
+        timeout=20,
     )
     resp.raise_for_status()
     try:
         return resp.json()
     except (ValueError, UnicodeDecodeError) as e:
-        raise RequestsError(f"Invalid JSON response: {e}") from e
+        raise wafer.WaferError(f"Invalid JSON response: {e}") from e
 
 
 def build_search_variables(

@@ -4,7 +4,7 @@ Exports the standard site interface (SELECTORS_LIST, is_mouser,
 strip_mouser_junk, postprocess_mouser).
 
 Covers all Mouser TLDs (mouser.com, mouser.ca, mouser.co.uk, etc.).
-Site is behind Akamai WAF (botfighter handles bypass). Pages are SSR
+Site is behind Akamai WAF (wafer handles bypass). Pages are SSR
 after bypass — just needs content cleanup.
 """
 

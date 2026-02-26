@@ -1,8 +1,8 @@
 """Integration tests for fetch_url() — the full pipeline.
 
-These tests mock the HTTP layer (ContentFetcher) and SSRF check, then exercise
-fetch_url() end-to-end. They catch bugs where site detection, URL transforms,
-feed autodiscovery, or content type dispatch interact incorrectly.
+These tests mock the HTTP layer (wafer.AsyncSession) and SSRF check, then
+exercise fetch_url() end-to-end. They catch bugs where site detection, URL
+transforms, feed autodiscovery, or content type dispatch interact incorrectly.
 
 The critical class is TestForumThreadNotHijacked: it verifies that forum thread
 URLs on known domains are NOT hijacked by Tier 2 feed autodiscovery.
@@ -10,60 +10,69 @@ URLs on known domains are NOT hijacked by Tier 2 feed autodiscovery.
 
 from unittest.mock import AsyncMock, patch
 
-from fetchaller.content.fetcher import FetchResult
-
 # ---------------------------------------------------------------------------
-# MockFetcher — returns pre-configured FetchResult objects, tracks calls
+# Mock wafer session — returns pre-configured responses by URL
 # ---------------------------------------------------------------------------
 
 
-class MockFetcher:
-    """Drop-in replacement for ContentFetcher that returns canned responses."""
+class MockResponse:
+    """Mock wafer response object."""
 
-    def __init__(self, responses: dict[str, FetchResult] | None = None, default: FetchResult | None = None):
-        """
-        Args:
-            responses: URL → FetchResult mapping for specific URLs
-            default: FetchResult to return for URLs not in responses
-        """
-        self.responses = responses or {}
-        self.default = default or FetchResult(
-            content=b"<html><body><p>default</p></body></html>",
-            content_type="text/html",
-            status_code=200,
-            final_url="https://example.com",
-            headers={},
-        )
-        self.calls: list[str] = []
-
-    async def fetch(self, url: str, **kwargs) -> FetchResult:
-        self.calls.append(url)
-        return self.responses.get(url, self.default)
-
-    async def close(self):
-        pass
+    def __init__(self, content: bytes, content_type: str, status_code: int, url: str, headers: dict | None = None):
+        self.content = content
+        self.status_code = status_code
+        self.url = url
+        hdrs = headers or {}
+        hdrs.setdefault("content-type", content_type)
+        self.headers = hdrs
+        self.text = content.decode("utf-8", errors="replace")
 
 
-def _html_result(html: str, url: str, content_type: str = "text/html") -> FetchResult:
-    """Build a FetchResult from an HTML string."""
-    return FetchResult(
+def _html_response(html: str, url: str, content_type: str = "text/html") -> MockResponse:
+    """Build a MockResponse from an HTML string."""
+    return MockResponse(
         content=html.encode(),
         content_type=content_type,
         status_code=200,
-        final_url=url,
-        headers={},
+        url=url,
     )
 
 
-def _feed_result(xml: str, url: str) -> FetchResult:
-    """Build a FetchResult from XML feed string."""
-    return FetchResult(
+def _feed_response(xml: str, url: str) -> MockResponse:
+    """Build a MockResponse from XML feed string."""
+    return MockResponse(
         content=xml.encode(),
         content_type="application/rss+xml",
         status_code=200,
-        final_url=url,
-        headers={},
+        url=url,
     )
+
+
+class MockWaferSession:
+    """Drop-in mock for wafer.AsyncSession that returns canned responses."""
+
+    def __init__(self, responses: dict[str, MockResponse] | None = None, default: MockResponse | None = None):
+        self.responses = responses or {}
+        self.default = default or _html_response(
+            "<html><body><p>default</p></body></html>",
+            "https://example.com",
+        )
+        self.calls: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+    async def get(self, url: str, **kwargs) -> MockResponse:
+        self.calls.append(url)
+        return self.responses.get(url, self.default)
+
+
+def _patch_wafer(mock_session):
+    """Create a patch for wafer.AsyncSession that returns the given mock session."""
+    return patch("fetchaller.tools.fetch.wafer.AsyncSession", return_value=mock_session)
 
 
 # Minimal RSS feed for testing
@@ -139,13 +148,14 @@ class TestForumThreadNotHijacked:
         thread_url = "https://www.vwvortex.com/threads/my-thread.12345/"
         thread_html = _xenforo_thread_html()
 
-        fetcher = MockFetcher(default=_html_result(thread_html, thread_url))
-        result = await fetch_url(thread_url, fetcher=fetcher)
+        session = MockWaferSession(default=_html_response(thread_html, thread_url))
+        with _patch_wafer(session):
+            result = await fetch_url(thread_url)
 
         assert result.get("content_type") == "markdown"
         assert "thread content" in result["content"].lower()
         # Only one fetch call — no feed autodiscovery
-        assert len(fetcher.calls) == 1
+        assert len(session.calls) == 1
 
     @_PATCH_SSRF
     async def test_vbulletin_thread_not_hijacked(self, _mock_ssrf):
@@ -155,12 +165,13 @@ class TestForumThreadNotHijacked:
         thread_url = "https://u11.bimmerpost.com/forums/showthread.php?t=12345"
         thread_html = _vbulletin_thread_html()
 
-        fetcher = MockFetcher(default=_html_result(thread_html, thread_url))
-        result = await fetch_url(thread_url, fetcher=fetcher)
+        session = MockWaferSession(default=_html_response(thread_html, thread_url))
+        with _patch_wafer(session):
+            result = await fetch_url(thread_url)
 
         assert result.get("content_type") == "markdown"
         assert "thread body content" in result["content"].lower()
-        assert len(fetcher.calls) == 1
+        assert len(session.calls) == 1
 
     @_PATCH_SSRF
     async def test_phpbb_rfd_thread_not_hijacked(self, _mock_ssrf):
@@ -178,13 +189,14 @@ class TestForumThreadNotHijacked:
 </body>
 </html>"""
 
-        fetcher = MockFetcher(default=_html_result(thread_html, thread_url))
-        result = await fetch_url(thread_url, fetcher=fetcher)
+        session = MockWaferSession(default=_html_response(thread_html, thread_url))
+        with _patch_wafer(session):
+            result = await fetch_url(thread_url)
 
         assert result.get("content_type") == "markdown"
         # Should have thread content, not feed listing
         assert "rfd deal thread content" in result["content"].lower()
-        assert len(fetcher.calls) == 1
+        assert len(session.calls) == 1
 
     @_PATCH_SSRF
     async def test_unknown_domain_xenforo_thread_not_hijacked(self, _mock_ssrf):
@@ -199,16 +211,17 @@ class TestForumThreadNotHijacked:
         feed_url = "https://unknown-forum.example.com/forums/general.1/index.rss"
         thread_html = _xenforo_thread_html(feed_href=feed_url)
 
-        fetcher = MockFetcher(
+        session = MockWaferSession(
             responses={
-                thread_url: _html_result(thread_html, thread_url),
-                feed_url: _feed_result(_SAMPLE_FEED_XML, feed_url),
+                thread_url: _html_response(thread_html, thread_url),
+                feed_url: _feed_response(_SAMPLE_FEED_XML, feed_url),
             },
         )
-        result = await fetch_url(thread_url, fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url(thread_url)
 
         assert "thread content" in result["content"].lower()
-        assert len(fetcher.calls) == 1
+        assert len(session.calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -227,15 +240,16 @@ class TestForumListingFeedDiscovery:
         listing_url = "https://www.vwvortex.com/forums/general.1/"
         feed_url = "https://www.vwvortex.com/forums/general.1/index.rss"
 
-        fetcher = MockFetcher(
-            responses={feed_url: _feed_result(_SAMPLE_FEED_XML, feed_url)},
+        session = MockWaferSession(
+            responses={feed_url: _feed_response(_SAMPLE_FEED_XML, feed_url)},
         )
-        result = await fetch_url(listing_url, fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url(listing_url)
 
         assert result.get("content_type") == "markdown"
         assert "Thread 1" in result["content"]
         # Should fetch the feed URL, not the listing URL
-        assert fetcher.calls == [feed_url]
+        assert session.calls == [feed_url]
 
     @_PATCH_SSRF
     async def test_known_vbulletin_listing_to_feed(self, _mock_ssrf):
@@ -251,14 +265,15 @@ class TestForumListingFeedDiscovery:
 
         # The transform produces this feed URL
         expected_feed = "https://u11.bimmerpost.com/forums/external.php?type=RSS2&forumids=944"
-        fetcher = MockFetcher(
-            responses={expected_feed: _feed_result(feed_xml, expected_feed)},
+        session = MockWaferSession(
+            responses={expected_feed: _feed_response(feed_xml, expected_feed)},
         )
-        result = await fetch_url(listing_url, fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url(listing_url)
 
         assert result.get("content_type") == "markdown"
         assert "New BMW X1" in result["content"]
-        assert fetcher.calls == [expected_feed]
+        assert session.calls == [expected_feed]
 
     @_PATCH_SSRF
     async def test_unknown_forum_with_autodiscoverable_feed(self, _mock_ssrf):
@@ -275,18 +290,19 @@ class TestForumListingFeedDiscovery:
 <body><div class="p-body">Forum listing content</div></body>
 </html>"""
 
-        fetcher = MockFetcher(
+        session = MockWaferSession(
             responses={
-                listing_url: _html_result(listing_html, listing_url),
-                feed_url: _feed_result(_SAMPLE_FEED_XML, feed_url),
+                listing_url: _html_response(listing_html, listing_url),
+                feed_url: _feed_response(_SAMPLE_FEED_XML, feed_url),
             },
         )
-        result = await fetch_url(listing_url, fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url(listing_url)
 
         assert result.get("content_type") == "markdown"
         assert "Thread 1" in result["content"]
         # Two fetches: original page + autodiscovered feed
-        assert len(fetcher.calls) == 2
+        assert len(session.calls) == 2
 
     @_PATCH_SSRF
     async def test_unknown_forum_no_feed_falls_through(self, _mock_ssrf):
@@ -299,12 +315,13 @@ class TestForumListingFeedDiscovery:
 <body><div class="p-body"><p>Forum listing content here</p></div></body>
 </html>"""
 
-        fetcher = MockFetcher(default=_html_result(html, url))
-        result = await fetch_url(url, fetcher=fetcher)
+        session = MockWaferSession(default=_html_response(html, url))
+        with _patch_wafer(session):
+            result = await fetch_url(url)
 
         assert result.get("content_type") == "markdown"
         assert "forum listing content" in result["content"].lower()
-        assert len(fetcher.calls) == 1
+        assert len(session.calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -322,31 +339,33 @@ class TestRedditUrlTransform:
         url = "https://www.reddit.com/r/homelab/"
         expected_fetch_url = "https://old.reddit.com/r/homelab/"
 
-        fetcher = MockFetcher(
-            responses={expected_fetch_url: _html_result(
+        session = MockWaferSession(
+            responses={expected_fetch_url: _html_response(
                 "<html><body><div class='content'><p>Reddit post</p></div></body></html>",
                 expected_fetch_url,
             )},
         )
-        result = await fetch_url(url, fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url(url)
 
         assert result.get("content_type") == "markdown"
         assert "[Fetched via:" in result["content"]
-        assert fetcher.calls == [expected_fetch_url]
+        assert session.calls == [expected_fetch_url]
 
     @_PATCH_SSRF
     async def test_old_not_double_transformed(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
         url = "https://old.reddit.com/r/homelab/"
-        fetcher = MockFetcher(default=_html_result(
+        session = MockWaferSession(default=_html_response(
             "<html><body><p>content</p></body></html>", url,
         ))
-        result = await fetch_url(url, fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url(url)
 
         assert result.get("content_type") == "markdown"
         # The fetch URL should be old.reddit.com, not old.old.reddit.com
-        assert fetcher.calls[0].startswith("https://old.reddit.com/")
+        assert session.calls[0].startswith("https://old.reddit.com/")
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +380,14 @@ class TestContentTypeDispatch:
     async def test_json(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
-        fetcher = MockFetcher(default=FetchResult(
+        session = MockWaferSession(default=MockResponse(
             content=b'{"key": "value"}',
             content_type="application/json",
             status_code=200,
-            final_url="https://api.example.com/data",
-            headers={},
+            url="https://api.example.com/data",
         ))
-        result = await fetch_url("https://api.example.com/data", fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url("https://api.example.com/data")
         assert result["content_type"] == "json"
         assert '"key"' in result["content"]
 
@@ -376,14 +395,14 @@ class TestContentTypeDispatch:
     async def test_plain_text(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
-        fetcher = MockFetcher(default=FetchResult(
+        session = MockWaferSession(default=MockResponse(
             content=b"Hello world",
             content_type="text/plain",
             status_code=200,
-            final_url="https://example.com/file.txt",
-            headers={},
+            url="https://example.com/file.txt",
         ))
-        result = await fetch_url("https://example.com/file.txt", fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/file.txt")
         assert result["content_type"] == "text"
         assert "Hello world" in result["content"]
 
@@ -391,8 +410,9 @@ class TestContentTypeDispatch:
     async def test_rss_xml(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
-        fetcher = MockFetcher(default=_feed_result(_SAMPLE_FEED_XML, "https://example.com/feed.rss"))
-        result = await fetch_url("https://example.com/feed.rss", fetcher=fetcher)
+        session = MockWaferSession(default=_feed_response(_SAMPLE_FEED_XML, "https://example.com/feed.rss"))
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/feed.rss")
         assert result["content_type"] == "markdown"
         assert "Thread 1" in result["content"]
 
@@ -400,11 +420,12 @@ class TestContentTypeDispatch:
     async def test_html(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
-        fetcher = MockFetcher(default=_html_result(
+        session = MockWaferSession(default=_html_response(
             "<html><body><p>Hello</p></body></html>",
             "https://example.com/page",
         ))
-        result = await fetch_url("https://example.com/page", fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/page")
         assert result["content_type"] == "markdown"
         assert "Hello" in result["content"]
 
@@ -436,36 +457,42 @@ class TestErrorHandling:
 
     @_PATCH_SSRF
     async def test_timeout(self, _mock_ssrf):
+        import wafer
+
         from fetchaller.tools.fetch import fetch_url
 
-        fetcher = MockFetcher()
-        fetcher.fetch = AsyncMock(side_effect=TimeoutError("timed out"))
-        result = await fetch_url("https://example.com/slow", fetcher=fetcher)
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.WaferTimeout("https://example.com/slow", 10.0))
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/slow")
         assert "error" in result
         assert "timed out" in result["error"].lower()
 
     @_PATCH_SSRF
     async def test_connection_error(self, _mock_ssrf):
+        import wafer
+
         from fetchaller.tools.fetch import fetch_url
 
-        fetcher = MockFetcher()
-        fetcher.fetch = AsyncMock(side_effect=ConnectionError("ECONNREFUSED"))
-        result = await fetch_url("https://example.com/down", fetcher=fetcher)
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.ConnectionFailed("https://example.com/down", reason="ECONNREFUSED"))
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/down")
         assert "error" in result
-        assert "refused" in result["error"].lower()
+        assert "econnrefused" in result["error"].lower()
 
     @_PATCH_SSRF
     async def test_http_429(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
-        fetcher = MockFetcher(default=FetchResult(
+        session = MockWaferSession(default=MockResponse(
             content=b"rate limited",
             content_type="text/plain",
             status_code=429,
-            final_url="https://example.com/api",
-            headers={},
+            url="https://example.com/api",
         ))
-        result = await fetch_url("https://example.com/api", fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/api")
         assert "error" in result
         assert "429" in result["error"]
 
@@ -473,13 +500,39 @@ class TestErrorHandling:
     async def test_http_404(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
-        fetcher = MockFetcher(default=FetchResult(
+        session = MockWaferSession(default=MockResponse(
             content=b"not found",
             content_type="text/html",
             status_code=404,
-            final_url="https://example.com/missing",
-            headers={},
+            url="https://example.com/missing",
         ))
-        result = await fetch_url("https://example.com/missing", fetcher=fetcher)
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/missing")
         assert "error" in result
         assert "404" in result["error"]
+
+    @_PATCH_SSRF
+    async def test_challenge_detected(self, _mock_ssrf):
+        import wafer
+
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.ChallengeDetected("cloudflare", "https://protected.example.com", 403))
+        with _patch_wafer(session):
+            result = await fetch_url("https://protected.example.com")
+        assert "error" in result
+        assert "cloudflare" in result["error"].lower()
+
+    @_PATCH_SSRF
+    async def test_rate_limited_exception(self, _mock_ssrf):
+        import wafer
+
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.RateLimited("https://api.example.com/limited", retry_after=60.0))
+        with _patch_wafer(session):
+            result = await fetch_url("https://api.example.com/limited")
+        assert "error" in result
+        assert "429" in result["error"] or "rate limited" in result["error"].lower()

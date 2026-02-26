@@ -25,7 +25,7 @@ If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify agai
 
 ## Testing Rules
 
-**ALWAYS use wafer** (not `urllib`, `requests`, or `curl_cffi`) for HTTP requests — wafer handles TLS fingerprinting and bot protection transparently.
+**ALWAYS use wafer** (not `urllib`, `requests`, or `httpx`) for HTTP requests — wafer handles TLS fingerprinting and bot protection transparently.
 
 **ALWAYS manually test** every new feature/site before committing. Unit tests alone are not sufficient. See `docs/testing.md` for full testing guide (writing tests, live testing, test organization).
 

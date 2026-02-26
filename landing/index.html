@@ -1729,7 +1729,7 @@
 <pre id="install-code" style="padding: 0;"><span class="c"># Install</span>
 git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
-uv venv && uv pip install -e .
+uv sync && patchright install chromium
 
 <span class="c"># Add to Claude Code</span>
 claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
@@ -2049,9 +2049,9 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                             </div>
                             <div class="winhelp-page" data-topic="2">
                                 <h3>What do I need?</h3>
-                                <p><strong>Requirements:</strong> Python 3.10+ and <code>uv</code> (recommended) or <code>pip</code>. That's it.</p>
+                                <p><strong>Requirements:</strong> Python 3.12+ and <code>uv</code>. That's it.</p>
                                 <p><strong>Install:</strong></p>
-                                <p><code>git clone https://github.com/Averyy/fetchaller-mcp.git</code><br><code>cd fetchaller-mcp</code><br><code>uv venv &amp;&amp; uv pip install -e .</code></p>
+                                <p><code>git clone https://github.com/Averyy/fetchaller-mcp.git</code><br><code>cd fetchaller-mcp</code><br><code>uv sync &amp;&amp; patchright install chromium</code></p>
                                 <p><strong>Add to Claude Code:</strong></p>
                                 <p><code>claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</code></p>
                                 <p>No API keys required. No Docker. No build step. Restart Claude Code after adding the server and you're ready to go.</p>
@@ -2088,7 +2088,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                             </div>
                             <div class="winhelp-page" data-topic="5">
                                 <h3>Does Reddit work?</h3>
-                                <p>Yes. Reddit is fully supported with three dedicated tools:</p>
+                                <p>Yes. Reddit is fully supported with two dedicated tools plus fetch:</p>
                                 <p>&bull; <strong><code>browse_reddit</code></strong> &mdash; List posts from any subreddit. Sort by hot, new, top, or rising. Includes pagination.</p>
                                 <p>&bull; <strong><code>search_reddit</code></strong> &mdash; Search posts across all of Reddit or within a specific subreddit. Filter by time period.</p>
                                 <p>&bull; <strong><code>fetch</code></strong> &mdash; Read full discussion threads with all comments. URLs are auto-converted to old.reddit.com for cleaner, lighter HTML.</p>

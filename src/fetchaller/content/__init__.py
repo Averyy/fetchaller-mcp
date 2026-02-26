@@ -24,7 +24,6 @@ Module layout:
                    CSS selectors for AEM header/nav/account, regex post-processing
                    for Limited Information message, nav items, About Us boilerplate.
 - wikipedia.py  — Wikipedia: CSS selectors for edit buttons, navboxes, etc.
-- fetcher.py    — HTTP fetching via curl_cffi.
 - pdf.py        — PDF to markdown extraction via pymupdf4llm.
 - url.py        — URL validation and SSRF protection.
 
@@ -35,18 +34,14 @@ Each site module follows the same interface:
 - postprocess_<site>(markdown)    — Regex post-processing on output (optional)
 """
 
-from .fetcher import ContentFetcher, FetchResult, RetryConfig
 from .html import clean_html, html_to_markdown
 from .pdf import PdfResult, extract_pdf
 from .reddit import RedditTransformResult, format_reddit_post, format_relative_time, transform_reddit_url
 from .url import normalize_url
 
 __all__ = [
-    "ContentFetcher",
-    "FetchResult",
     "PdfResult",
     "RedditTransformResult",
-    "RetryConfig",
     "clean_html",
     "extract_pdf",
     "format_reddit_post",

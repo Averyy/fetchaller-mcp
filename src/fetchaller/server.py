@@ -9,10 +9,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool
 
-from .botfighter import ChallengeSolver, CookieCache
 from .cache.response_cache import ResponseCache
-from .config import Config, load_config
-from .content.fetcher import ContentFetcher, RetryConfig
+from .config import Config, load_config, set_wafer_cache_dir
 from .marketplace.search import search_marketplace
 from .queue.reddit_queue import QueueConfig, RedditRequestQueue
 from .tools.browse_reddit import browse_reddit
@@ -28,6 +26,74 @@ from .tools.search_reddit import search_reddit
 def _log(msg: str) -> None:
     """Log with timestamp."""
     print(f"[{datetime.now(UTC).isoformat()}] {msg}", file=sys.stderr)
+
+
+async def cleanup_server(server) -> None:
+    """Clean up server resources (shared between stdio and HTTP shutdown).
+
+    Each cleanup step is wrapped in try/except so one failure doesn't
+    prevent the remaining resources from being released.
+    """
+    try:
+        if hasattr(server, '_reddit_queue'):
+            await server._reddit_queue.stop()
+    except Exception:
+        _log("warning: reddit queue cleanup failed")
+
+    try:
+        if hasattr(server, '_browser_solver') and server._browser_solver is not None:
+            server._browser_solver.close()
+    except Exception:
+        _log("warning: browser solver cleanup failed")
+
+    # Release module-level shared sessions (set to None, GC handles the rest).
+    cleanup_fns = []
+    try:
+        from .search import close_session as close_search_session
+        cleanup_fns.append(close_search_session)
+    except ImportError:
+        pass
+    try:
+        from .facebook_marketplace.graphql import close_session as close_fb_session
+        cleanup_fns.append(close_fb_session)
+    except ImportError:
+        pass
+    try:
+        from .kijiji.api import close_session as close_kijiji_session
+        cleanup_fns.append(close_kijiji_session)
+    except ImportError:
+        pass
+    try:
+        from .aliexpress.product import close_client as close_mtop_client
+        cleanup_fns.append(close_mtop_client)
+    except ImportError:
+        pass
+    try:
+        from .aliexpress.reviews import close_session as close_reviews_session
+        cleanup_fns.append(close_reviews_session)
+    except ImportError:
+        pass
+    try:
+        from .aliexpress.search import close_session as close_ae_search_session
+        cleanup_fns.append(close_ae_search_session)
+    except ImportError:
+        pass
+    try:
+        from .tools.browse_reddit import close_session as close_reddit_session
+        cleanup_fns.append(close_reddit_session)
+    except ImportError:
+        pass
+    try:
+        from .craigslist.sapi import close_session as close_cl_session
+        cleanup_fns.append(close_cl_session)
+    except ImportError:
+        pass
+
+    for fn in cleanup_fns:
+        try:
+            await fn()
+        except Exception:
+            _log(f"warning: {fn.__module__} cleanup failed")
 
 
 def _summarize_args(tool_name: str, args: dict) -> str:
@@ -57,22 +123,18 @@ def _summarize_args(tool_name: str, args: dict) -> str:
 
 def create_server(
     config: Config | None = None,
-    fetcher: ContentFetcher | None = None,
     cache: ResponseCache | None = None,
     reddit_queue: RedditRequestQueue | None = None,
-    cookie_cache: CookieCache | None = None,
-    challenge_solver: ChallengeSolver | None = None,
+    browser_solver=None,
 ) -> Server:
     """
     Create and configure the MCP server.
 
     Args:
         config: Optional configuration (loads from env if not provided)
-        fetcher: Optional ContentFetcher instance
         cache: Optional ResponseCache instance
         reddit_queue: Optional RedditRequestQueue instance
-        cookie_cache: Optional CookieCache for bot challenge cookie persistence
-        challenge_solver: Optional ChallengeSolver for browser-based challenge solving
+        browser_solver: Optional BrowserSolver for browser-based challenges
 
     Returns:
         Configured MCP Server instance
@@ -80,9 +142,8 @@ def create_server(
     if config is None:
         config = load_config()
 
-    # Create shared instances
-    if fetcher is None:
-        fetcher = ContentFetcher(retry_config=RetryConfig.from_config(config))
+    # Set global wafer cache dir so all modules creating sessions use it.
+    set_wafer_cache_dir(config.wafer_cache_dir)
 
     if cache is None:
         cache = ResponseCache.from_config(config)
@@ -92,15 +153,20 @@ def create_server(
         # Note: Queue auto-starts on first enqueue() call when event loop is running
         # Don't call start() here as there may not be a running event loop yet
 
-    if cookie_cache is None:
-        cookie_cache = CookieCache(persist_path=config.cookie_cache_path)
-
-    if challenge_solver is None:
-        challenge_solver = ChallengeSolver(config)
+    # Auto-create BrowserSolver if not provided and patchright is installed.
+    # Lazy browser launch: BrowserSolver only starts Chrome on first challenge.
+    if browser_solver is None:
+        try:
+            from wafer.browser import BrowserSolver
+            browser_solver = BrowserSolver()
+            _log("BrowserSolver available (browser launched on first challenge)")
+        except ImportError:
+            _log("BrowserSolver not available (install wafer-py[browser] for bot challenge solving)")
 
     server = Server("fetchaller")
-    # Store reddit_queue for external cleanup access (e.g., HTTP app lifespan)
+    # Store for external cleanup access (e.g., HTTP app lifespan)
     server._reddit_queue = reddit_queue  # type: ignore[attr-defined]
+    server._browser_solver = browser_solver  # type: ignore[attr-defined]
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -460,11 +526,9 @@ def create_server(
                     max_tokens=max(1, min(250000, arguments.get("maxTokens", config.default_max_tokens))),
                     timeout=max(1, min(300, arguments.get("timeout", config.default_timeout_seconds))),
                     raw=arguments.get("raw", False),
-                    fetcher=fetcher,
                     cache=cache,
                     config=config,
-                    cookie_cache=cookie_cache,
-                    challenge_solver=challenge_solver,
+                    browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)
 
@@ -476,7 +540,6 @@ def create_server(
                     limit=arguments.get("limit", 10),
                     after=arguments.get("after"),
                     timeout=max(1, min(300, arguments.get("timeout", 10))),
-                    fetcher=fetcher,
                     queue=reddit_queue,
                 )
                 return _format_result(name, result, start_time)
@@ -490,7 +553,6 @@ def create_server(
                     limit=arguments.get("limit", 10),
                     after=arguments.get("after"),
                     timeout=max(1, min(300, arguments.get("timeout", 10))),
-                    fetcher=fetcher,
                     queue=reddit_queue,
                 )
                 return _format_result(name, result, start_time)
@@ -505,11 +567,9 @@ def create_server(
             elif name == "get_aliexpress_product":
                 result = await get_aliexpress_product(
                     product_id=arguments["product_id"],
-                    fetcher=fetcher,
                     cache=cache,
                     config=config,
-                    cookie_cache=cookie_cache,
-                    challenge_solver=challenge_solver,
+                    browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)
 
@@ -520,22 +580,18 @@ def create_server(
                     sort=arguments.get("sort", "default"),
                     min_price=arguments.get("min_price"),
                     max_price=arguments.get("max_price"),
-                    fetcher=fetcher,
                     cache=cache,
                     config=config,
-                    cookie_cache=cookie_cache,
-                    challenge_solver=challenge_solver,
+                    browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)
 
             elif name == "get_alibaba_product":
                 result = await get_alibaba_product(
                     product_id=arguments["product_id"],
-                    fetcher=fetcher,
                     cache=cache,
                     config=config,
-                    cookie_cache=cookie_cache,
-                    challenge_solver=challenge_solver,
+                    browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)
 
@@ -546,11 +602,9 @@ def create_server(
                     sort=arguments.get("sort", "default"),
                     min_price=arguments.get("min_price"),
                     max_price=arguments.get("max_price"),
-                    fetcher=fetcher,
                     cache=cache,
                     config=config,
-                    cookie_cache=cookie_cache,
-                    challenge_solver=challenge_solver,
+                    browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)
 
@@ -564,10 +618,8 @@ def create_server(
                     condition=arguments.get("condition"),
                     min_price=arguments.get("min_price"),
                     max_price=arguments.get("max_price"),
-                    fetcher=fetcher,
                     config=config,
-                    cookie_cache=cookie_cache,
-                    challenge_solver=challenge_solver,
+                    browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)
 
@@ -595,12 +647,7 @@ async def run_stdio_server(config: Config | None = None) -> None:
     if config is None:
         config = load_config()
 
-    fetcher = ContentFetcher(retry_config=RetryConfig.from_config(config))
-    challenge_solver = ChallengeSolver(config)
-    cookie_cache = CookieCache(persist_path=config.cookie_cache_path)
-    server = create_server(
-        config, fetcher=fetcher, cookie_cache=cookie_cache, challenge_solver=challenge_solver,
-    )
+    server = create_server(config)
 
     from . import __version__
 
@@ -610,9 +657,4 @@ async def run_stdio_server(config: Config | None = None) -> None:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
     finally:
-        await fetcher.close()
-        await challenge_solver.close()
-        if hasattr(server, '_reddit_queue'):
-            await server._reddit_queue.stop()
-        from .search import close_session as close_search_session
-        await close_search_session()
+        await cleanup_server(server)

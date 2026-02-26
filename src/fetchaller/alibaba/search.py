@@ -160,11 +160,9 @@ async def search_alibaba(
     sort: str = "default",
     min_price: float | None = None,
     max_price: float | None = None,
-    fetcher=None,
     cache=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> dict:
     """Search Alibaba.com products.
 
@@ -176,11 +174,9 @@ async def search_alibaba(
         sort: Sort order (default, price_asc, price_desc).
         min_price: Minimum price filter (USD).
         max_price: Maximum price filter (USD).
-        fetcher: ContentFetcher for HTTP requests.
         cache: ResponseCache instance.
         config: Config instance.
-        cookie_cache: CookieCache for bot challenge cookies.
-        challenge_solver: ChallengeSolver for browser-based challenges.
+        browser_solver: BrowserSolver for browser-based challenges.
 
     Returns:
         Dict with "content" (formatted results) or "error".
@@ -196,11 +192,9 @@ async def search_alibaba(
         max_tokens=500000,  # Full page for JSON extraction
         timeout=30,
         raw=True,  # Get raw HTML, not markdown
-        fetcher=fetcher,
         cache=cache,
         config=config,
-        cookie_cache=cookie_cache,
-        challenge_solver=challenge_solver,
+        browser_solver=browser_solver,
         _skip_alibaba_intercept=True,
     )
 

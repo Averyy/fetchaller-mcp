@@ -31,7 +31,6 @@
 - **`facebook_marketplace.py`** — Facebook Marketplace URL detection only (`/marketplace/*` paths). GraphQL client lives in `facebook_marketplace/` package.
 - **`digikey.py`** — DigiKey (all TLDs): CSS selectors, soup cleanup, regex post-processors. Behind Akamai (wafer handles). HTML fallback when no API key configured.
 - **`ebay.py`** — eBay (all TLDs): CSS selectors, JSON-LD product data extraction, search result DOM extraction (`.s-item` elements), soup cleanup, regex post-processors.
-- **`kijiji.py`** — Kijiji (kijiji.ca): CSS selectors, soup cleanup, regex post-processors for sponsored/filter/nav noise. HTML fallback only — search/listing pages are CSR and routed to GraphQL API instead.
 - **`molex.py`** — Molex (molex.com): JSON-LD Product extraction (additionalProperty specs), AEM header/nav/account CSS selectors, regex post-processors for nav/About Us boilerplate. CSR site — product specs only available via JSON-LD.
 - **`mouser.py`** — Mouser (all TLDs): CSS selectors, soup cleanup, regex post-processors. Behind Akamai (wafer handles). HTML fallback when no API key configured.
 - **`soylent.py`** — Soylent (soylent.com, soylent.ca): Shopify store cleanup, inventory extraction from `gsf_conversion_data`.
@@ -71,6 +70,6 @@ All HTTP fetching is handled by `wafer` (`~/code/wafer`). Fetchaller does NOT co
 - **`wafer.AsyncSession`** — per-request sessions with automatic challenge detection/solving, cookie caching, fingerprint rotation, retry/backoff
 - **`wafer.browser.BrowserSolver`** — Patchright-based browser solver for Cloudflare, Akamai, etc. One shared instance created at server startup, passed to sessions via `browser_solver=`
 - **`wafer.Profile.OPERA_MINI`** — first-class Opera Mini impersonation for search
-- **Challenge types handled by wafer**: ACW, Cloudflare, Akamai, DataDome, PerimeterX, Imperva, Kasada, TMD, Amazon, and more (14 WAF types total)
+- **Challenge types handled by wafer**: ACW, TMD, Cloudflare, Akamai, DataDome, PerimeterX, Imperva, Kasada, F5 Shape, AWS WAF, Amazon, Vercel, Arkose, GeeTest, hCaptcha, reCAPTCHA, and generic JS fallback (17 WAF types total)
 
 If a site blocks requests, **fix it in wafer, not fetchaller**.

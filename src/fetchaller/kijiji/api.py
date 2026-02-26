@@ -8,22 +8,19 @@ the HTML pipeline entirely for search/listing URLs.
 
 from __future__ import annotations
 
-import random
+import asyncio
 import re
 import sys
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
-from curl_cffi.requests import AsyncSession
-from curl_cffi.requests.errors import RequestsError
+import wafer
 
-from ..config import BROWSER_FINGERPRINTS
+from ..config import get_wafer_cache_dir
 from ..ratelimit import kijiji_limiter
 
 _API_URL = "https://www.kijiji.ca/anvil/api"
 
-# curl_cffi sets User-Agent, Sec-Ch-Ua, and TLS fingerprint natively
-# via the impersonate parameter — do not set these manually.
 _HEADERS = {
     "Content-Type": "application/json",
     "Accept-Language": "en_CA",
@@ -33,15 +30,24 @@ _HEADERS = {
 }
 
 # Module-level session for cookie persistence across requests.
-_session: AsyncSession | None = None
+_session: wafer.AsyncSession | None = None
+_session_lock = asyncio.Lock()
 
 
-def _get_session() -> AsyncSession:
-    """Get or create the shared AsyncSession with browser impersonation."""
+async def _get_session() -> wafer.AsyncSession:
+    """Get or create the shared AsyncSession."""
     global _session
     if _session is None:
-        _session = AsyncSession(impersonate=random.choice(BROWSER_FINGERPRINTS))
+        async with _session_lock:
+            if _session is None:
+                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
     return _session
+
+
+async def close_session() -> None:
+    """Release the shared session (for shutdown cleanup)."""
+    global _session
+    _session = None
 
 
 def _log(msg: str) -> None:
@@ -200,7 +206,7 @@ query GetListing($listingId: ID!) {
 async def _graphql(query: str, variables: dict) -> dict:
     """POST a GraphQL query to Kijiji's Apollo endpoint."""
     await kijiji_limiter.wait()
-    session = _get_session()
+    session = await _get_session()
     resp = await session.post(
         _API_URL,
         headers=_HEADERS,
@@ -534,7 +540,7 @@ async def get_listing(url: str) -> dict:
 
         return {"error": f"Could not extract search or listing path from URL: {url}"}
 
-    except RequestsError as e:
+    except wafer.WaferError as e:
         err_str = str(e)
         if "timeout" in err_str.lower():
             return {"error": "Kijiji API request timed out."}

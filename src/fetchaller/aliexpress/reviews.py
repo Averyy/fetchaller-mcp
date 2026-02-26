@@ -5,16 +5,37 @@ Fetches product reviews from feedback.aliexpress.com — no auth required.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import UTC, datetime
 
-from curl_cffi.requests import AsyncSession
+import wafer
 
-from ..config import BROWSER_FINGERPRINTS
+from ..config import get_wafer_cache_dir
 
 
 def _log(msg: str) -> None:
     print(f"[{datetime.now(UTC).isoformat()}] aliexpress reviews: {msg}", file=sys.stderr)
+
+
+# Shared session for feedback.aliexpress.com (reuses TLS connections).
+_session: wafer.AsyncSession | None = None
+_session_lock = asyncio.Lock()
+
+
+async def _get_session() -> wafer.AsyncSession:
+    global _session
+    if _session is None:
+        async with _session_lock:
+            if _session is None:
+                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+    return _session
+
+
+async def close_session() -> None:
+    """Release the shared session (for shutdown cleanup)."""
+    global _session
+    _session = None
 
 
 async def fetch_reviews(
@@ -43,22 +64,22 @@ async def fetch_reviews(
         "sort": "complex_default",
     }
 
-    async with AsyncSession(impersonate=BROWSER_FINGERPRINTS[-1]) as session:
-        try:
-            resp = await session.get(
-                url,
-                params=params,
-                headers={"Referer": f"https://www.aliexpress.com/item/{product_id}.html"},
-                timeout=10,
-            )
-            if resp.status_code >= 400:
-                _log(f"reviews API HTTP {resp.status_code} for product {product_id}")
-                return {"error": f"Reviews API returned HTTP {resp.status_code}"}
+    session = await _get_session()
+    try:
+        resp = await session.get(
+            url,
+            params=params,
+            headers={"Referer": f"https://www.aliexpress.com/item/{product_id}.html"},
+            timeout=10,
+        )
+        if resp.status_code >= 400:
+            _log(f"reviews API HTTP {resp.status_code} for product {product_id}")
+            return {"error": f"Reviews API returned HTTP {resp.status_code}"}
 
-            data = resp.json()
-            if "data" in data:
-                return data["data"]
-            return {"error": "No data field in reviews response"}
-        except Exception as e:
-            _log(f"reviews API error for product {product_id}: {e}")
-            return {"error": f"Reviews API error: {e}"}
+        data = resp.json()
+        if "data" in data:
+            return data["data"]
+        return {"error": "No data field in reviews response"}
+    except Exception as e:
+        _log(f"reviews API error for product {product_id}: {e}")
+        return {"error": f"Reviews API error: {e}"}

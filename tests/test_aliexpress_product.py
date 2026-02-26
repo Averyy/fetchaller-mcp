@@ -1,13 +1,11 @@
 """Unit tests for AliExpress product module."""
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from fetchaller.aliexpress.product import (
     _extract_product_data,
-    _fetch_via_chrome,
     _format_output,
     _format_rating_breakdown,
     _format_reviews,
@@ -290,126 +288,6 @@ class TestFormatOutput:
         assert result == ""
 
 
-# ── Chrome Fallback Tests ────────────────────────────────────────────────────
-
-
-def _mock_execute_script(return_map):
-    """Create a mock tab.execute_script that returns different values per JS snippet.
-
-    return_map: list of (substring_match, value) — first match wins.
-    """
-    async def execute_script(js, **kwargs):
-        for substring, value in return_map:
-            if substring in js:
-                return {"result": {"result": {"value": value}}}
-        return {"result": {"result": {"value": None}}}
-    return execute_script
-
-
-def _mtop_success_json(product_id="1005006367324382"):
-    """Return a valid MTop JSON response string."""
-    return json.dumps({
-        "ret": ["SUCCESS::调用成功"],
-        "data": {
-            "result": {
-                "PRODUCT_TITLE": {"text": "USB-C Hub from MTop"},
-                "PRICE": {"targetSkuPriceInfo": {"salePriceString": "$19.99"}},
-            }
-        },
-    })
-
-
-class TestFetchViaChrome:
-    """Chrome-based fallback extraction strategies."""
-
-    @pytest.mark.asyncio
-    async def test_strategy_a_runparams(self):
-        """Strategy A: populated window.runParams extracted from Chrome."""
-        run_params = json.dumps({
-            "data": {
-                "result": {
-                    "PRODUCT_TITLE": {"text": "USB Hub from runParams"},
-                    "PRICE": {"targetSkuPriceInfo": {"salePriceString": "$14.99"}},
-                }
-            }
-        })
-        tab = MagicMock()
-        tab.execute_script = _mock_execute_script([
-            ("runParams", run_params),
-        ])
-        tab.get_cookies = AsyncMock(return_value=[])
-
-        solver = MagicMock()
-        # with_page calls callback(tab) — simulate that
-        async def fake_with_page(url, callback, wait=5, timeout=20):
-            return await callback(tab)
-        solver.with_page = AsyncMock(side_effect=fake_with_page)
-
-        result = await _fetch_via_chrome("1005006367324382", solver)
-        assert result is not None
-        assert result["title"] == "USB Hub from runParams"
-        assert result["sale_price"] == "$14.99"
-
-    @pytest.mark.asyncio
-    async def test_strategy_b_in_chrome_mtop(self):
-        """Strategy B: runParams empty, in-Chrome MTop fetch() succeeds."""
-        tab = MagicMock()
-        tab.execute_script = _mock_execute_script([
-            ("runParams", None),  # Strategy A fails
-            ("fetch(", _mtop_success_json()),  # Strategy B succeeds
-        ])
-        tab.get_cookies = AsyncMock(return_value=[
-            {"name": "_m_h5_tk", "value": "abc123def_1234567890"},
-        ])
-
-        solver = MagicMock()
-        async def fake_with_page(url, callback, wait=5, timeout=20):
-            return await callback(tab)
-        solver.with_page = AsyncMock(side_effect=fake_with_page)
-
-        result = await _fetch_via_chrome("1005006367324382", solver)
-        assert result is not None
-        assert result["title"] == "USB-C Hub from MTop"
-
-    @pytest.mark.asyncio
-    async def test_strategy_c_dom_fallback(self):
-        """Strategy C: both A and B fail, DOM extraction from outerHTML."""
-        # Build minimal HTML with JSON-LD
-        json_ld = json.dumps({
-            "@type": "Product",
-            "name": "Widget from DOM",
-            "offers": {"priceCurrency": "USD", "price": "9.99"},
-        })
-        html = f'<html><head><script type="application/ld+json">{json_ld}</script></head><body>{"x" * 5000}</body></html>'
-
-        tab = MagicMock()
-        tab.execute_script = _mock_execute_script([
-            ("runParams", None),  # Strategy A fails
-            ("fetch(", ""),  # Strategy B: empty response
-            ("outerHTML", html),  # Strategy C
-        ])
-        tab.get_cookies = AsyncMock(return_value=[])  # No token → skip B
-
-        solver = MagicMock()
-        async def fake_with_page(url, callback, wait=5, timeout=20):
-            return await callback(tab)
-        solver.with_page = AsyncMock(side_effect=fake_with_page)
-
-        result = await _fetch_via_chrome("1005006367324382", solver)
-        assert result is not None
-        assert result["title"] == "Widget from DOM"
-        assert result["sale_price"] == "USD 9.99"
-
-    @pytest.mark.asyncio
-    async def test_chrome_busy_returns_none(self):
-        """When Chrome lock is held, with_page returns None."""
-        solver = MagicMock()
-        solver.with_page = AsyncMock(return_value=None)
-
-        result = await _fetch_via_chrome("1005006367324382", solver)
-        assert result is None
-
-
 class TestFetchMtop:
     """MTop fetch integration with error detection."""
 
@@ -488,8 +366,8 @@ class TestFetchMtop:
         assert data["clientType"] == "pc"
 
 
-class TestGetProductChromeFallback:
-    """Integration: get_product falls through to Chrome when MTop fails."""
+class TestGetProductMTopFailure:
+    """Integration: get_product returns error when MTop fails."""
 
     @pytest.fixture(autouse=True)
     def _skip_rate_limit(self):
@@ -499,40 +377,10 @@ class TestGetProductChromeFallback:
     @pytest.mark.asyncio
     @patch("fetchaller.aliexpress.product.fetch_reviews", new_callable=AsyncMock)
     @patch("fetchaller.aliexpress.product._fetch_mtop", new_callable=AsyncMock)
-    async def test_chrome_fallback_on_mtop_failure(self, mock_mtop, mock_reviews):
-        """MTop blocked → Chrome fallback produces product content."""
+    async def test_mtop_failure_returns_error(self, mock_mtop, mock_reviews):
+        """MTop blocked + no browser solver → error."""
         mock_mtop.return_value = None
         mock_reviews.return_value = {"error": "no reviews"}
 
-        run_params = json.dumps({
-            "data": {
-                "result": {
-                    "PRODUCT_TITLE": {"text": "Chrome Fallback Product"},
-                    "PRICE": {"targetSkuPriceInfo": {"salePriceString": "$29.99"}},
-                }
-            }
-        })
-        tab = MagicMock()
-        tab.execute_script = _mock_execute_script([("runParams", run_params)])
-        tab.get_cookies = AsyncMock(return_value=[])
-
-        solver = MagicMock()
-        async def fake_with_page(url, callback, wait=5, timeout=20):
-            return await callback(tab)
-        solver.with_page = AsyncMock(side_effect=fake_with_page)
-
-        result = await get_product("1005006367324382", challenge_solver=solver)
-        assert "error" not in result
-        assert "Chrome Fallback Product" in result["content"]
-        assert "$29.99" in result["content"]
-
-    @pytest.mark.asyncio
-    @patch("fetchaller.aliexpress.product.fetch_reviews", new_callable=AsyncMock)
-    @patch("fetchaller.aliexpress.product._fetch_mtop", new_callable=AsyncMock)
-    async def test_no_solver_returns_error(self, mock_mtop, mock_reviews):
-        """MTop blocked + no challenge_solver → error."""
-        mock_mtop.return_value = None
-        mock_reviews.return_value = {"error": "no reviews"}
-
-        result = await get_product("1005006367324382", challenge_solver=None)
+        result = await get_product("1005006367324382")
         assert "error" in result

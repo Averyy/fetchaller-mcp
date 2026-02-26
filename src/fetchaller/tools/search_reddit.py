@@ -2,10 +2,9 @@
 
 from urllib.parse import urlencode
 
-from ..content.fetcher import ContentFetcher, RetryConfig
 from ..content.reddit import format_reddit_post
 from ..queue.reddit_queue import RedditRequestQueue
-from .browse_reddit import _SUBREDDIT_PATTERN, fetch_reddit_json
+from .browse_reddit import _SUBREDDIT_PATTERN, _get_session, fetch_reddit_json
 
 
 async def search_reddit(
@@ -16,7 +15,6 @@ async def search_reddit(
     limit: int = 10,
     after: str | None = None,
     timeout: int = 10,
-    fetcher: ContentFetcher | None = None,
     queue: RedditRequestQueue | None = None,
 ) -> dict:
     """
@@ -30,7 +28,6 @@ async def search_reddit(
         limit: Number of results (1-25)
         after: Pagination cursor from previous response
         timeout: Request timeout in seconds
-        fetcher: Optional ContentFetcher instance
         queue: Optional RedditRequestQueue for rate limiting
 
     Returns:
@@ -71,18 +68,14 @@ async def search_reddit(
     else:
         url = f"https://www.reddit.com/search.json?{urlencode(params)}"
 
-    # Create fetcher if not provided
-    owns_fetcher = fetcher is None
-    if owns_fetcher:
-        fetcher = ContentFetcher(retry_config=RetryConfig())
-
     # Get queue if not provided
     owns_queue = queue is None
     if owns_queue:
         queue = RedditRequestQueue()
 
+    session = await _get_session()
     try:
-        result = await fetch_reddit_json(url, fetcher, queue, float(timeout))
+        result = await fetch_reddit_json(url, session, queue, float(timeout))
 
         if "error" in result:
             return result
@@ -107,7 +100,5 @@ async def search_reddit(
 
         return {"content": "\n".join(lines)}
     finally:
-        if owns_fetcher:
-            await fetcher.close()
         if owns_queue:
             await queue.stop()

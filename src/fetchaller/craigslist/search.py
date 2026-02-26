@@ -142,10 +142,8 @@ def format_search_results(
 async def _resolve_area_id(
     hostname: str,
     url: str,
-    fetcher=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> int | None:
     """Resolve hostname to area ID, using cache or fetching HTML.
 
@@ -166,11 +164,9 @@ async def _resolve_area_id(
         max_tokens=500000,
         timeout=15,
         raw=True,
-        fetcher=fetcher,
         cache=None,
         config=config,
-        cookie_cache=cookie_cache,
-        challenge_solver=challenge_solver,
+        browser_solver=browser_solver,
         _skip_craigslist_intercept=True,
     )
 
@@ -196,21 +192,17 @@ async def _resolve_area_id(
 
 async def search_craigslist(
     url: str,
-    fetcher=None,
     cache=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> dict:
     """Search Craigslist via SAPI.
 
     Args:
         url: Craigslist search URL (e.g., ``https://chicago.craigslist.org/search/sss?query=bicycle``).
-        fetcher: ContentFetcher for HTTP requests (used for area ID resolution).
         cache: ResponseCache instance (unused, reserved for interface compat).
         config: Config instance.
-        cookie_cache: CookieCache for bot challenge cookies.
-        challenge_solver: ChallengeSolver for browser-based challenges.
+        browser_solver: BrowserSolver for browser-based challenges.
 
     Returns:
         Dict with ``content`` (formatted results) or ``error``.
@@ -223,10 +215,8 @@ async def search_craigslist(
     area_id = await _resolve_area_id(
         params["hostname"],
         url,
-        fetcher=fetcher,
         config=config,
-        cookie_cache=cookie_cache,
-        challenge_solver=challenge_solver,
+        browser_solver=browser_solver,
     )
     if not area_id:
         return {"error": "Could not resolve Craigslist area ID. Falling back to HTML."}

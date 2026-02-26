@@ -19,4 +19,3 @@ node_modules
 docker-compose*.yml
 Dockerfile
 .dockerignore
-uv.lock

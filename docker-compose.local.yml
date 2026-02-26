@@ -20,7 +20,6 @@ services:
       - RATE_LIMIT_REQUESTS=100
       - MCP_API_KEY=test-api-key-local
       - MCP_SERVER_URL=http://localhost:6000
-      - CHROME_IDLE_TIMEOUT=60
       - MOUSER_API_KEY=${MOUSER_API_KEY:-}
       - DIGIKEY_CLIENT_ID=${DIGIKEY_CLIENT_ID:-}
       - DIGIKEY_CLIENT_SECRET=${DIGIKEY_CLIENT_SECRET:-}

@@ -1,9 +1,8 @@
-"""AliExpress search via Chrome with session warming.
+"""AliExpress search via wafer HTTP client.
 
-AliExpress search pages are always TMD-blocked for curl_cffi — even with
-cached cookies. The only reliable path is Chrome: visit the homepage first
-(establishes a valid session), then navigate to the search page to extract
-``_init_data_`` JSON from the rendered DOM.
+AliExpress search pages embed product data in ``_init_data_`` JSON within the
+HTML. wafer's AsyncSession handles TMD/WAF challenges transparently via
+BrowserSolver, so we fetch the search page directly and extract the data.
 """
 
 from __future__ import annotations
@@ -13,12 +12,39 @@ import sys
 from datetime import UTC, datetime
 from urllib.parse import quote
 
+import wafer
+
+from ..config import get_wafer_cache_dir
 from ..content.aliexpress import extract_init_data, format_search_results
 from ..ratelimit import aliexpress_limiter
 
 
 def _log(msg: str) -> None:
     print(f"[{datetime.now(UTC).isoformat()}] aliexpress search: {msg}", file=sys.stderr)
+
+
+# Module-level session — reuses TLS identity and cookies across searches.
+# browser_solver is set on first call (passed from server singleton).
+_session: wafer.AsyncSession | None = None
+_session_lock = asyncio.Lock()
+
+
+async def _get_session(browser_solver=None) -> wafer.AsyncSession:
+    global _session
+    if _session is None:
+        async with _session_lock:
+            if _session is None:
+                _session = wafer.AsyncSession(
+                    browser_solver=browser_solver,
+                    cache_dir=get_wafer_cache_dir(),
+                )
+    return _session
+
+
+async def close_session() -> None:
+    """Release the shared session (for shutdown cleanup)."""
+    global _session
+    _session = None
 
 # Sort option mapping
 _SORT_MAP = {
@@ -80,112 +106,21 @@ def _parse_search_html(html: str, query: str) -> dict | None:
     return {"content": content}
 
 
-async def _poll_and_extract(tab, url: str, query: str) -> dict | str | None:
-    """Poll for _init_data_ on the current page and extract results.
-
-    Returns:
-        dict with "content" on success, "tmd" string if TMD-blocked, None on failure.
-    """
-    poll_interval = 0.5
-    max_polls = 20  # 10 seconds total
-    for i in range(max_polls):
-        await asyncio.sleep(poll_interval)
-
-        # Check for TMD punish (appears as a redirect)
-        try:
-            url_resp = await tab.execute_script(
-                "return window.location.href", return_by_value=True,
-            )
-            current_url = url_resp.get("result", {}).get("result", {}).get("value", "")
-            if "_____tmd_____" in current_url:
-                _log("Chrome: TMD punish detected")
-                return "tmd"
-        except Exception:
-            continue
-
-        # Check if _init_data_ has been written to the page
-        try:
-            has_data = await tab.execute_script(
-                "return !!(window._dida_config_ && window._dida_config_._init_data_)",
-                return_by_value=True,
-            )
-            if has_data.get("result", {}).get("result", {}).get("value"):
-                _log(f"Chrome: _init_data_ found after {(i + 1) * poll_interval:.1f}s")
-                break
-        except Exception:
-            continue
-    else:
-        _log("Chrome: _init_data_ not found after polling")
-
-    # Extract full HTML and parse
-    try:
-        html_resp = await tab.execute_script(
-            "return document.documentElement.outerHTML",
-            return_by_value=True,
-        )
-        html = html_resp.get("result", {}).get("result", {}).get("value", "")
-        if html:
-            result = _parse_search_html(html, query)
-            if result:
-                _log("Chrome: extracted products from rendered HTML")
-                return result
-    except Exception as e:
-        _log(f"Chrome HTML extraction failed: {e}")
-
-    return None
-
-
-async def _search_via_chrome(url: str, query: str, challenge_solver) -> dict | None:
-    """Search AliExpress via Chrome, reusing existing session when possible.
-
-    Navigates directly to the search URL — if the Chrome instance already has
-    session cookies from a previous request, this works immediately (like a
-    real user searching again). If TMD blocks us (no valid session), warms up
-    by visiting the homepage first, then retries the search.
-    """
-    async def _on_search_page(tab):
-        """with_page already loaded the search URL. Poll and extract."""
-        result = await _poll_and_extract(tab, url, query)
-
-        if result == "tmd":
-            # No valid session yet — warm up from homepage and retry
-            _log("Chrome: no session, warming up from homepage")
-            await tab.go_to("https://www.aliexpress.com/")
-            await asyncio.sleep(3)
-
-            _log("Chrome: retrying search after session warming")
-            await tab.go_to(url)
-            result = await _poll_and_extract(tab, url, query)
-            if result == "tmd":
-                _log("Chrome: TMD punish even after session warming")
-                return None
-
-        return result if isinstance(result, dict) else None
-
-    # with_page loads the search URL, waits briefly for SPA init, then
-    # calls our callback. No homepage detour if session already exists.
-    return await challenge_solver.with_page(
-        url, _on_search_page, wait=1, timeout=30,
-    )
-
-
 async def search_aliexpress(
     query: str,
     page: int = 1,
     sort: str = "default",
     min_price: float | None = None,
     max_price: float | None = None,
-    fetcher=None,
     cache=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> dict:
-    """Search AliExpress products via Chrome with session warming.
+    """Search AliExpress products.
 
-    Always uses Chrome — curl_cffi is guaranteed to get TMD-blocked on
-    AliExpress search pages. Chrome visits the homepage first (establishes
-    session cookies), then navigates to the search page.
+    Fetches the search page via wafer (which handles TMD/WAF challenges
+    transparently via BrowserSolver) and extracts product data from the
+    embedded ``_init_data_`` JSON.
 
     Args:
         query: Search query string.
@@ -193,17 +128,15 @@ async def search_aliexpress(
         sort: Sort order (default, orders, price_asc, price_desc).
         min_price: Minimum price filter.
         max_price: Maximum price filter.
-        fetcher: Unused (kept for interface compatibility).
-        cache: Unused (kept for interface compatibility).
-        config: Unused (kept for interface compatibility).
-        cookie_cache: Unused (kept for interface compatibility).
-        challenge_solver: ChallengeSolver for browser-based session warming.
+        cache: ResponseCache instance.
+        config: Config instance.
+        browser_solver: BrowserSolver for challenge solving.
 
     Returns:
         Dict with "content" (formatted results) or "error".
     """
-    if not challenge_solver:
-        return {"error": "AliExpress search requires Chrome (challenge_solver not available)."}
+    if not browser_solver:
+        return {"error": "AliExpress search requires a browser solver (not available). Install wafer-py[browser]."}
 
     # Domain-level rate limiting (shared with aliexpress product).
     # extra_delay=2.0 → 3.0 base + 2.0 = 5.0s minimum between search requests.
@@ -211,8 +144,33 @@ async def search_aliexpress(
 
     url = _build_search_url(query, page, sort, min_price, max_price)
 
-    result = await _search_via_chrome(url, query, challenge_solver)
+    session = await _get_session(browser_solver)
+    try:
+        resp = await session.get(
+            url,
+            headers={"Referer": "https://www.aliexpress.com/"},
+            timeout=30,
+        )
+    except wafer.ChallengeDetected as e:
+        _log(f"challenge not solved: {e.challenge_type}")
+        return {"error": f"AliExpress search blocked by {e.challenge_type} bot protection."}
+    except wafer.WaferError as e:
+        _log(f"wafer error: {e}")
+        return {"error": f"AliExpress search failed: {e}"}
+
+    if resp.status_code >= 400:
+        _log(f"HTTP {resp.status_code} for search query '{query}'")
+        return {"error": f"AliExpress search returned HTTP {resp.status_code}"}
+
+    html = resp.text
+    result = _parse_search_html(html, query)
     if result:
         return result
 
-    return {"error": "AliExpress search failed. Anti-bot protection blocked the request."}
+    # _init_data_ not found — page might be a challenge page or empty
+    if "_____tmd_____" in html:
+        _log("TMD punish page in response (challenge not solved)")
+        return {"error": "AliExpress search blocked by TMD bot protection."}
+
+    _log(f"no _init_data_ found in response ({len(html)} chars)")
+    return {"error": "AliExpress search failed. Could not extract product data from response."}

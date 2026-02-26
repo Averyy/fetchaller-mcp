@@ -1,16 +1,11 @@
 """Tests for configuration."""
 
 import os
-from enum import Enum
-from unittest.mock import patch
 
 import pytest
 
 from fetchaller.config import (
-    _FALLBACK_FINGERPRINTS,
     Config,
-    _chrome_version,
-    _discover_chrome_fingerprints,
     load_config,
 )
 
@@ -99,85 +94,3 @@ class TestConfig:
             load_config()
 
 
-class TestChromeVersion:
-    """Test _chrome_version sort key."""
-
-    def test_base_version(self):
-        assert _chrome_version("chrome133") == (133, "")
-
-    def test_sub_version(self):
-        assert _chrome_version("chrome133a") == (133, "a")
-
-    def test_sub_version_sorts_after_base(self):
-        assert _chrome_version("chrome133a") > _chrome_version("chrome133")
-
-    def test_ordering(self):
-        fps = ["chrome99", "chrome133a", "chrome133", "chrome136"]
-        assert sorted(fps, key=_chrome_version) == [
-            "chrome99", "chrome133", "chrome133a", "chrome136",
-        ]
-
-    def test_non_chrome_returns_zero(self):
-        assert _chrome_version("firefox120") == (0, "firefox120")
-
-
-class TestDiscoverChromeFingerprints:
-    """Test _discover_chrome_fingerprints auto-discovery and fallback."""
-
-    def test_live_discovery_returns_up_to_3_sorted(self):
-        """Live discovery from curl_cffi returns 1-3 sorted Chrome desktop fps."""
-        result = _discover_chrome_fingerprints()
-        assert 1 <= len(result) <= 3
-        # All must be chrome desktop (no android)
-        for fp in result:
-            assert fp.startswith("chrome")
-            assert "android" not in fp
-        # Must be sorted ascending by version
-        versions = [_chrome_version(fp) for fp in result]
-        assert versions == sorted(versions)
-
-    def test_fallback_on_import_error(self):
-        """Falls back to _FALLBACK_FINGERPRINTS when curl_cffi unavailable."""
-        # Setting sys.modules entry to None makes `from X import Y` raise ImportError
-        with patch.dict(
-            "sys.modules",
-            {"curl_cffi": None, "curl_cffi.requests": None},
-        ):
-            result = _discover_chrome_fingerprints()
-        expected = sorted(_FALLBACK_FINGERPRINTS, key=_chrome_version)[-3:]
-        assert result == expected
-
-    def test_fallback_when_no_chrome_entries(self):
-        """Falls back when BrowserType has no chrome desktop entries."""
-
-        class NoChromeBrowserType(Enum):
-            safari17 = "safari17"
-            firefox120 = "firefox120"
-
-        # Replace the real module with a fake that has no chrome entries
-        import types
-        fake_mod = types.ModuleType("curl_cffi.requests")
-        fake_mod.BrowserType = NoChromeBrowserType
-        with patch.dict("sys.modules", {"curl_cffi.requests": fake_mod}):
-            result = _discover_chrome_fingerprints()
-        expected = sorted(_FALLBACK_FINGERPRINTS, key=_chrome_version)[-3:]
-        assert result == expected
-
-    def test_selects_newest_3_from_many(self):
-        """With many versions, returns only the newest 3 (excluding android)."""
-
-        class ManyBrowserType(Enum):
-            c99 = "chrome99"
-            c110 = "chrome110"
-            c120 = "chrome120"
-            c133 = "chrome133"
-            c133a = "chrome133a"
-            c136 = "chrome136"
-            android = "chrome_android"
-
-        import types
-        fake_mod = types.ModuleType("curl_cffi.requests")
-        fake_mod.BrowserType = ManyBrowserType
-        with patch.dict("sys.modules", {"curl_cffi.requests": fake_mod}):
-            result = _discover_chrome_fingerprints()
-        assert result == ["chrome133", "chrome133a", "chrome136"]

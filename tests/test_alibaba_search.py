@@ -260,8 +260,8 @@ class TestSearchIntegration:
 
     @pytest.mark.asyncio
     @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
-    async def test_curl_success(self, mock_fetch):
-        """curl_cffi returns valid SSR HTML with embedded JSON."""
+    async def test_fetch_success(self, mock_fetch):
+        """Fetch returns valid SSR HTML with embedded JSON."""
         offers = [{"enPureTitle": "Fast Widget", "productId": "789"}]
         page_data = {
             "_offer_list": {

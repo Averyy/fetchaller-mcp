@@ -1,7 +1,7 @@
 """DigiKey API client with OAuth2 token management.
 
 Uses the official DigiKey API (free, OAuth2 client_credentials) for structured
-product data. Falls through to HTML pipeline (botfighter) when no credentials
+product data. Falls through to HTML pipeline when no credentials
 are configured.
 
 API docs: https://developer.digikey.com/products/product-information/partsearch

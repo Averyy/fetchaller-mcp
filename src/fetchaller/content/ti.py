@@ -16,11 +16,7 @@ import re
 import sys
 from datetime import UTC, datetime
 from html import escape
-from typing import TYPE_CHECKING
 from urllib.parse import urlparse
-
-if TYPE_CHECKING:
-    from .fetcher import ContentFetcher
 
 
 def is_ti(url: str) -> bool:
@@ -138,19 +134,19 @@ def extract_section_urls(html: str) -> list[str]:
 
 
 async def fetch_document_sections(
-    fetcher: ContentFetcher,
+    session,
     initial_html: str,
     timeout: float,
     max_concurrent: int = 5,
 ) -> str | None:
     """Fetch all lazy-loaded sections from a TI document viewer page.
 
-    Uses the same fetcher (with TLS impersonation and any botfighter cookies)
-    to look like a single browser session. Concurrency is limited and requests
-    are staggered to avoid triggering TI's rate limiter.
+    Uses the same wafer session to look like a single browser session.
+    Concurrency is limited and requests are staggered to avoid triggering
+    TI's rate limiter.
 
     Args:
-        fetcher: ContentFetcher to use for requests.
+        session: wafer.AsyncSession to use for requests.
         initial_html: The initial page HTML containing the TOC.
         timeout: Per-request timeout in seconds.
         max_concurrent: Maximum concurrent section requests.
@@ -178,9 +174,9 @@ async def fetch_document_sections(
             # (~25ms per slot so a batch of 8 spreads over ~200ms)
             await asyncio.sleep(index * 0.025)
             try:
-                result = await fetcher.fetch(url, timeout=timeout)
-                if result.status_code < 400:
-                    return result.content.decode("utf-8", errors="replace")
+                resp = await session.get(url, timeout=timeout)
+                if resp.status_code < 400:
+                    return resp.text
                 failed += 1
             except Exception:
                 failed += 1

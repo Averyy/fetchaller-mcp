@@ -1,7 +1,7 @@
 """Tests for Kijiji GraphQL API client (kijiji/api.py).
 
 Tests URL detection, price formatting, listing/search formatting, and error handling.
-GraphQL calls are mocked with curl_cffi session.
+GraphQL calls are mocked with wafer session.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from curl_cffi.requests.errors import RequestsError
+from wafer import WaferError
 
 from fetchaller.kijiji.api import (
     _format_listing_detail,
@@ -510,7 +510,7 @@ class TestGetListing:
 
     @pytest.mark.asyncio
     async def test_http_error_returns_error(self):
-        with _mock_session_error(RequestsError("Server returned HTTP 500")):
+        with _mock_session_error(WaferError("Server returned HTTP 500")):
             _reset_limiter()
             result = await get_listing("https://www.kijiji.ca/v-cars-trucks/city/slug/1234567890")
             assert "error" in result
@@ -518,7 +518,7 @@ class TestGetListing:
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
-        with _mock_session_error(RequestsError("Connection timeout")):
+        with _mock_session_error(WaferError("Connection timeout")):
             _reset_limiter()
             result = await get_listing("https://www.kijiji.ca/v-cars-trucks/city/slug/1234567890")
             assert "error" in result

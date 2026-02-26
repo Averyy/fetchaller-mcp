@@ -6,11 +6,10 @@ import asyncio
 import json
 import re
 import sys
-import time
 from datetime import UTC, datetime
 
 from ..ratelimit import aliexpress_limiter
-from .mtop import MTopClient, compute_sign
+from .mtop import MTopClient
 from .reviews import fetch_reviews
 
 _PRODUCT_ID_RE = re.compile(r"(?:aliexpress\.com/item/|(?<!\d))(\d{8,20})(?!\d)(?:\.html)?")
@@ -91,17 +90,24 @@ def _extract_product_data(result: dict) -> dict:
     # Price
     price_mod = data.get("PRICE") or data.get("priceModule") or {}
     target = price_mod.get("targetSkuPriceInfo") or price_mod.get("formattedActivityPrice") or {}
-    info["sale_price"] = (
+    sale = (
         target.get("salePriceString")
         or target.get("salePriceLocal")
         or target.get("salePrice")
         or price_mod.get("formattedPrice", "")
     )
-    info["original_price"] = (
+    if isinstance(sale, dict):
+        sale = sale.get("formatedAmount") or sale.get("formattedAmount", "")
+    info["sale_price"] = sale
+    orig = (
         target.get("originalPriceString")
         or target.get("originalPrice")
         or price_mod.get("formattedOriginalPrice", "")
     )
+    # originalPrice can be a dict like {"currency": "USD", "formatedAmount": "$6.67", "value": 6.67}
+    if isinstance(orig, dict):
+        orig = orig.get("formatedAmount") or orig.get("formattedAmount", "")
+    info["original_price"] = orig
     info["discount"] = target.get("discount") or price_mod.get("discount", "")
 
     # SKU pricing map
@@ -177,7 +183,7 @@ def _extract_from_chrome_html(html: str) -> dict:
 
     Falls back to JSON-LD structured data and DOM scraping when MTop API fails.
     AliExpress product pages are SPA-rendered, so this only works with
-    Chrome-rendered HTML (not raw curl_cffi responses).
+    Chrome-rendered HTML (not raw HTTP responses).
     """
     from bs4 import BeautifulSoup
 
@@ -355,43 +361,37 @@ def _format_output(
     return "\n".join(lines).strip()
 
 
-# Shared client instance (created on first use, recreated when deps change)
+# Shared client instance (created on first use)
 _client: MTopClient | None = None
 _client_lock = asyncio.Lock()
-_client_cookie_cache = None
-_client_challenge_solver = None
 
 
-async def _get_client(cookie_cache=None, challenge_solver=None) -> MTopClient:
-    global _client, _client_cookie_cache, _client_challenge_solver
+async def close_client() -> None:
+    """Release the shared MTopClient (for shutdown cleanup)."""
+    global _client
+    if _client is not None:
+        await _client.close()
+        _client = None
 
-    needs_check = (
-        _client is None
-        or (_client is not None and not _client_cookie_cache and cookie_cache is not None)
-        or (_client is not None and not _client_challenge_solver and challenge_solver is not None)
-    )
-    if needs_check:
+
+async def _get_client(browser_solver=None) -> MTopClient:
+    global _client
+
+    needs_create = _client is None or (browser_solver and not _client.browser_solver)
+    if needs_create:
         async with _client_lock:
-            # Recompute inside lock to avoid stale flag from pre-lock check
-            needs_recreate = (
-                (_client is not None and not _client_cookie_cache and cookie_cache is not None)
-                or (_client is not None and not _client_challenge_solver and challenge_solver is not None)
-            )
-            if _client is None or needs_recreate:
+            needs_create = _client is None or (browser_solver and not _client.browser_solver)
+            if needs_create:
+                # Release old client (sets session to None for GC)
                 if _client is not None:
                     await _client.close()
-                _client = MTopClient(
-                    cookie_cache=cookie_cache,
-                    challenge_solver=challenge_solver,
-                )
-                _client_cookie_cache = cookie_cache
-                _client_challenge_solver = challenge_solver
+                _client = MTopClient(browser_solver=browser_solver)
     return _client
 
 
-async def _fetch_mtop(product_id: str, cookie_cache=None, challenge_solver=None) -> dict | None:
+async def _fetch_mtop(product_id: str, browser_solver=None) -> dict | None:
     """Try MTop APIs in fallback order. Returns product data dict or None."""
-    client = await _get_client(cookie_cache, challenge_solver)
+    client = await _get_client(browser_solver)
 
     # Include locale params that the browser sends — the API may return
     # empty data without them.
@@ -443,158 +443,21 @@ async def _fetch_mtop(product_id: str, cookie_cache=None, challenge_solver=None)
     return None
 
 
-async def _fetch_via_chrome(product_id: str, challenge_solver) -> dict | None:
-    """Fetch product data using Chrome's genuine TLS fingerprint.
-
-    Three strategies in priority order:
-    A) window.runParams — SPA populates this after rendering
-    B) In-Chrome MTop fetch() — uses Chrome's TLS, bypasses TMD
-    C) DOM extraction — fallback to JSON-LD / scraping
-
-    Returns extracted product data dict, or None on failure.
-    """
-    url = f"https://www.aliexpress.com/item/{product_id}.html"
-
-    async def _chrome_callback(tab):
-        # Strategy A: Check window.runParams (populated by SPA JS on older page versions)
-        try:
-            run_params_js = """
-                (function() {
-                    if (typeof runParams !== 'undefined' && runParams) {
-                        var keys = Object.keys(runParams);
-                        if (keys.length > 0 && runParams.data) {
-                            return JSON.stringify(runParams);
-                        }
-                    }
-                    return null;
-                })()
-            """
-            resp = await tab.execute_script(run_params_js, return_by_value=True)
-            value = resp.get("result", {}).get("result", {}).get("value")
-            if value and value != "null":
-                _log("Strategy A: extracted runParams from Chrome")
-                run_params = json.loads(value)
-                data = _extract_product_data(run_params)
-                if data.get("title"):
-                    return data
-        except Exception as e:
-            _log(f"Strategy A (runParams) failed: {e}")
-
-        # Strategy B: In-Chrome MTop fetch() with genuine TLS
-        try:
-            # Get _m_h5_tk token from cookies (set by SPA's own MTop calls)
-            cookies = await tab.get_cookies()
-            token = ""
-            for c in cookies:
-                if c.get("name") == "_m_h5_tk":
-                    token = c.get("value", "").split("_")[0]
-                    break
-
-            if token:
-                timestamp = str(int(time.time() * 1000))
-                app_key = MTopClient.APP_KEY
-                data_str = json.dumps({
-                    "productId": product_id,
-                    "_lang": "en_US",
-                    "_currency": "USD",
-                    "country": "US",
-                    "clientType": "pc",
-                }, separators=(",", ":"))
-                sign = compute_sign(token, timestamp, app_key, data_str)
-
-                api_name = "mtop.aliexpress.pdp.pc.query"
-                # Build query string for the fetch URL
-                from urllib.parse import urlencode
-                params = {
-                    "jsv": "2.5.1",
-                    "appKey": app_key,
-                    "t": timestamp,
-                    "sign": sign,
-                    "api": api_name,
-                    "v": "1.0",
-                    "timeout": "5000",
-                    "type": "originaljson",
-                    "dataType": "json",
-                    "data": data_str,
-                }
-                fetch_url = f"https://acs.aliexpress.com/h5/{api_name}/1.0/?{urlencode(params)}"
-
-                # Execute fetch() inside Chrome — inherits genuine TLS fingerprint
-                # json.dumps escapes quotes/backslashes for safe JS embedding
-                safe_url = json.dumps(fetch_url)
-                fetch_js = f"""
-                    (async () => {{
-                        const r = await fetch({safe_url}, {{
-                            credentials: "include",
-                            headers: {{"Referer": "https://www.aliexpress.com/"}}
-                        }});
-                        return await r.text();
-                    }})()
-                """
-                resp = await tab.execute_script(fetch_js, await_promise=True, return_by_value=True)
-                body = resp.get("result", {}).get("result", {}).get("value", "")
-                if body:
-                    # Strip JSONP wrapper if present
-                    jsonp_match = re.match(r"^\s*\w+\(([\s\S]+)\)\s*;?\s*$", body)
-                    if jsonp_match:
-                        body = jsonp_match.group(1)
-                    result = json.loads(body)
-                    ret = result.get("ret", [])
-                    ret_str = " ".join(ret) if isinstance(ret, list) else str(ret)
-                    if "SUCCESS" in ret_str:
-                        _log("Strategy B: in-Chrome MTop fetch succeeded")
-                        data = _extract_product_data(result)
-                        if data.get("title"):
-                            return data
-                    else:
-                        _log(f"Strategy B: MTop returned {ret_str}")
-            else:
-                _log("Strategy B: no _m_h5_tk token in cookies")
-        except Exception as e:
-            _log(f"Strategy B (in-Chrome MTop) failed: {e}")
-
-        # Strategy C: DOM extraction (JSON-LD + scraping)
-        try:
-            html_resp = await tab.execute_script(
-                "return document.documentElement.outerHTML",
-                return_by_value=True,
-            )
-            html = html_resp.get("result", {}).get("result", {}).get("value", "")
-            if html and len(html) > 5000:
-                _log("Strategy C: extracting from Chrome DOM")
-                data = _extract_from_chrome_html(html)
-                if data.get("title"):
-                    return data
-        except Exception as e:
-            _log(f"Strategy C (DOM extraction) failed: {e}")
-
-        return None
-
-    result = await challenge_solver.with_page(url, _chrome_callback, wait=5, timeout=20)
-    return result
-
-
 async def get_product(
     product_id: str,
-    fetcher=None,
     cache=None,
     config=None,
-    cookie_cache=None,
-    challenge_solver=None,
+    browser_solver=None,
 ) -> dict:
     """Get AliExpress product details with reviews.
 
-    Tries MTop API first (curl_cffi). If blocked by TMD, falls back to
-    Chrome-based extraction (runParams → in-Chrome MTop fetch → DOM scraping).
-    Reviews are always fetched in parallel.
+    Tries MTop API first. Reviews are always fetched in parallel.
 
     Args:
         product_id: Numeric product ID or full AliExpress URL.
-        fetcher: ContentFetcher for HTTP requests (unused, kept for API compat).
-        cache: ResponseCache instance (unused, kept for API compat).
-        config: Config instance (unused, kept for API compat).
-        cookie_cache: CookieCache for bot challenge cookies.
-        challenge_solver: ChallengeSolver for Chrome-based fallback and TMD solving.
+        cache: ResponseCache instance.
+        config: Config instance.
+        browser_solver: Optional BrowserSolver for browser-based challenges.
 
     Returns:
         Dict with ``content`` (formatted text) or ``error``.
@@ -609,9 +472,9 @@ async def get_product(
     # Reviews (feedback.aliexpress.com) are exempt — different service.
     await aliexpress_limiter.wait()
 
-    # Fetch MTop (with botfighter integration) and reviews in parallel
+    # Fetch MTop and reviews in parallel
     mtop_task = asyncio.create_task(
-        _fetch_mtop(pid, cookie_cache=cookie_cache, challenge_solver=challenge_solver)
+        _fetch_mtop(pid, browser_solver=browser_solver)
     )
     reviews_task = asyncio.create_task(fetch_reviews(pid))
 
@@ -626,16 +489,6 @@ async def get_product(
         content = _format_output(pid, product_data, reviews_data)
         return {"content": content}
 
-    # MTop failed (TMD blocks curl_cffi) — try Chrome-based extraction
-    if challenge_solver:
-        _log("MTop failed, trying Chrome-based fallback")
-        chrome_data = await _fetch_via_chrome(pid, challenge_solver)
-        if chrome_data and chrome_data.get("title"):
-            _log(f"Chrome fallback succeeded: {chrome_data.get('title', '')[:60]}")
-            content = _format_output(pid, chrome_data, reviews_data)
-            if content:
-                return {"content": content}
-
     # Nothing worked — return reviews-only if there's actual review content
     if reviews_data and "error" not in reviews_data:
         stats = reviews_data.get("productEvaluationStatistic", {})
@@ -647,4 +500,4 @@ async def get_product(
             if content:
                 return {"content": content}
 
-    return {"error": "Could not retrieve product details. MTop API blocked and Chrome unavailable."}
+    return {"error": "Could not retrieve product details. MTop API may be blocked."}

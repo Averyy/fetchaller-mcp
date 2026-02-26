@@ -1,20 +1,44 @@
 """Browse Reddit tool - browse subreddit listings."""
 
-import json
+import asyncio
 import re
 from urllib.parse import urlencode
 
-from ..content.fetcher import ContentFetcher, RetryConfig
+import wafer
+
+from ..config import get_wafer_cache_dir
 from ..content.reddit import format_reddit_post
 from ..queue.reddit_queue import RedditRequestQueue
 
 # Pre-compiled regex for subreddit name validation
 _SUBREDDIT_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_]{0,20}$")
 
+# Shared session for Reddit requests (reuses TLS identity and cookies)
+_session: wafer.AsyncSession | None = None
+_session_lock = asyncio.Lock()
+
+
+async def _get_session() -> wafer.AsyncSession:
+    global _session
+    if _session is None:
+        async with _session_lock:
+            if _session is None:
+                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+    return _session
+
+
+async def close_session() -> None:
+    global _session
+    _session = None
+
+_JSON_HEADERS = {
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+}
+
 
 async def fetch_reddit_json(
     url: str,
-    fetcher: ContentFetcher,
+    session: wafer.AsyncSession,
     queue: RedditRequestQueue | None = None,
     timeout: float = 10.0,
 ) -> dict:
@@ -23,7 +47,7 @@ async def fetch_reddit_json(
 
     Args:
         url: Reddit API URL (must end in .json)
-        fetcher: ContentFetcher instance
+        session: wafer AsyncSession instance
         queue: Optional RedditRequestQueue for rate limiting
         timeout: Request timeout
 
@@ -33,26 +57,26 @@ async def fetch_reddit_json(
 
     async def _do_fetch() -> dict:
         try:
-            result = await fetcher.fetch(url, timeout=timeout, use_json_headers=True)
+            resp = await session.get(url, headers=_JSON_HEADERS, timeout=timeout)
 
-            if result.status_code == 429:
-                retry_after = result.headers.get("retry-after", "60")
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("retry-after", "60")
                 if queue:
                     queue.set_backoff(429)
                 return {"error": f"Rate limited. Reddit allows ~10 requests/min. Retry after {retry_after}s."}
 
-            if result.status_code == 403:
+            if resp.status_code == 403:
                 if queue:
                     queue.set_backoff(403)
                 return {"error": "Access forbidden (403). Reddit may be blocking requests."}
 
-            if result.status_code >= 400:
-                return {"error": f"HTTP {result.status_code}"}
+            if resp.status_code >= 400:
+                return {"error": f"HTTP {resp.status_code}"}
 
-            data = json.loads(result.content.decode("utf-8"))
+            data = resp.json()
             return {"data": data}
 
-        except TimeoutError:
+        except wafer.WaferTimeout:
             return {"error": f"Request timed out ({timeout}s limit)"}
         except Exception as e:
             return {"error": f"Fetch failed: {e}"}
@@ -70,7 +94,6 @@ async def browse_reddit(
     limit: int = 10,
     after: str | None = None,
     timeout: int = 10,
-    fetcher: ContentFetcher | None = None,
     queue: RedditRequestQueue | None = None,
 ) -> dict:
     """
@@ -83,7 +106,6 @@ async def browse_reddit(
         limit: Number of posts (1-25)
         after: Pagination cursor from previous response
         timeout: Request timeout in seconds
-        fetcher: Optional ContentFetcher instance
         queue: Optional RedditRequestQueue for rate limiting
 
     Returns:
@@ -113,18 +135,14 @@ async def browse_reddit(
 
     url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?{urlencode(params)}"
 
-    # Create fetcher if not provided
-    owns_fetcher = fetcher is None
-    if owns_fetcher:
-        fetcher = ContentFetcher(retry_config=RetryConfig())
-
     # Get queue if not provided
     owns_queue = queue is None
     if owns_queue:
         queue = RedditRequestQueue()
 
+    session = await _get_session()
     try:
-        result = await fetch_reddit_json(url, fetcher, queue, float(timeout))
+        result = await fetch_reddit_json(url, session, queue, float(timeout))
 
         if "error" in result:
             return result
@@ -147,7 +165,5 @@ async def browse_reddit(
 
         return {"content": "\n".join(lines)}
     finally:
-        if owns_fetcher:
-            await fetcher.close()
         if owns_queue:
             await queue.stop()
