@@ -39,14 +39,14 @@ async def test_success_returns_is_error_false(server):
 
 
 @pytest.mark.asyncio
-async def test_error_returns_is_error_true(server):
-    """Error results return CallToolResult with isError=True."""
+async def test_content_error_returns_is_error_false(server):
+    """Content errors return isError=False so parallel sibling calls aren't cancelled."""
     with patch("fetchaller.server.fetch_url", new_callable=AsyncMock) as mock_fetch:
         mock_fetch.return_value = {"error": "Connection timeout"}
         result = await _call_tool(server, "fetch", {"url": "https://example.com"})
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
-        assert "Connection timeout" in result.content[0].text
+        assert result.isError is False
+        assert "Error: Connection timeout" in result.content[0].text
 
 
 @pytest.mark.asyncio
@@ -56,7 +56,7 @@ async def test_error_with_partial_body(server):
         mock_fetch.return_value = {"error": "Truncated", "body": "partial content here"}
         result = await _call_tool(server, "fetch", {"url": "https://example.com"})
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.isError is False
         text = result.content[0].text
         assert "Truncated" in text
         assert "partial content here" in text

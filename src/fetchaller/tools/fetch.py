@@ -448,7 +448,7 @@ async def fetch_url(
             headers=dict(resp.headers),
         )
     except wafer.ChallengeDetected as e:
-        return {"error": f"Protected by {e.challenge_type} bot detection and could not be bypassed."}
+        return {"error": f"Protected by {e.challenge_type} bot detection and could not be bypassed. Try again — this sometimes resolves on retry."}
     except wafer.RateLimited as e:
         retry_msg = f" Retry after {e.retry_after:.0f} seconds." if e.retry_after else ""
         return {"error": f"Rate limited (HTTP 429).{retry_msg}"}

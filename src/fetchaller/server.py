@@ -498,14 +498,19 @@ def create_server(
         ]
 
     def _format_result(name: str, result: dict, start_time: float) -> CallToolResult:
-        """Format a tool result into CallToolResult, with logging."""
+        """Format a tool result into CallToolResult, with logging.
+
+        Content errors (bot detection, timeouts, 404s) return isError=False so
+        that parallel sibling tool calls are not cancelled by the client.  The
+        error message is still in the text content for the LLM to read.
+        """
         elapsed = (time.time() - start_time) * 1000
         if "error" in result:
             _log(f"TOOL END: {name} ERROR={result['error']} time={elapsed:.1f}ms")
             text = f"Error: {result['error']}"
             if "body" in result:
                 text += f"\n\nPartial content:\n{result['body']}"
-            return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+            return CallToolResult(content=[TextContent(type="text", text=text)], isError=False)
 
         content = result.get("content", "")
         _log(f"TOOL END: {name} OK content_len={len(content)} time={elapsed:.1f}ms")
