@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 keywords = ["mcp", "claude", "fetch", "web", "markdown", "wafer"]
 dependencies = [
     "mcp>=1.2.0",
-    "wafer-py[browser]>=0.1.6",
+    "wafer-py[browser]>=0.1.8",
     "fastapi>=0.115",
     "uvicorn>=0.34",
     "pydantic>=2.0",
