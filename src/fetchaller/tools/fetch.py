@@ -20,6 +20,9 @@ from ..content.alibaba import (
 )
 from ..content.aliexpress import extract_product_id_from_url, extract_search_products, is_aliexpress_search_url
 from ..content.amazon import is_amazon_store
+from ..content.costco import is_costco as _is_costco
+from ..content.costco import is_costco_category_url as _is_costco_category
+from ..content.costco import is_costco_search_url as _is_costco_search
 from ..content.craigslist import is_craigslist_search_url as _is_craigslist_search
 from ..content.digikey import is_digikey as _is_digikey
 from ..content.facebook_marketplace import (
@@ -339,6 +342,44 @@ async def fetch_url(
                 return result
             _log(f"FETCH {url} -> Kijiji GraphQL couldn't parse URL, falling through to HTML")
 
+    # Costco search/category pages — CSR, use search API when available
+    _costco_redirect_fallback = False
+    _costco_fallback_url: str | None = None
+    if _is_costco_search(url) or _is_costco_category(url):
+        try:
+            from ..costco.search import search_costco
+
+            result = await search_costco(url, cache=cache, config=config, browser_solver=browser_solver)
+            if "content" in result:
+                content = result["content"]
+                # If returned 0 results, try category page fallback.
+                # Costco's JS frontend redirects some searches (e.g. "macbook",
+                # "samsung") to brand/category pages. We can't follow JS redirects
+                # so we construct the likely category URL: /{query}.html
+                if "No products found" in content:
+                    from ..costco.search import extract_search_params
+                    sp = extract_search_params(url)
+                    if sp:
+                        q = sp["query"].strip().lower().replace(" ", "-")
+                        d = sp["domain"]
+                        _costco_fallback_url = f"https://www.costco.{d}/{q}.html"
+                        _costco_redirect_fallback = True
+                        _log(f"FETCH {url} -> Costco search returned 0 results, trying category fallback: {_costco_fallback_url}")
+                    else:
+                        _log(f"FETCH {url} -> Costco search returned 0 results, no fallback available")
+                else:
+                    content = truncate(content, max_tokens)
+                    if cache:
+                        cache.set(normalize_url(url), content, "text")
+                    _log(f"FETCH {url} -> Costco search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                    return {"content": content, "content_type": "text", "url": url}
+            if not _costco_redirect_fallback:
+                if "Could not extract" not in result.get("error", ""):
+                    return result
+                _log(f"FETCH {url} -> Costco search failed, falling through to HTML")
+        except ImportError:
+            _log(f"FETCH {url} -> Costco search module not yet implemented, falling through to HTML")
+
     # Craigslist search pages — CSR, use SAPI
     if not _skip_craigslist_intercept and _is_craigslist_search(url):
         from ..craigslist.search import search_craigslist
@@ -403,6 +444,10 @@ async def fetch_url(
     if is_forum_feed:
         fetch_url_str = forum_result.url
 
+    # Costco fallback: when search API returns 0 results, fetch the category page
+    if _costco_redirect_fallback and _costco_fallback_url:
+        fetch_url_str = _costco_fallback_url
+
     # Compute normalized URL once for cache operations
     cache_key = normalize_url(fetch_url_str) if cache else None
 
@@ -423,7 +468,10 @@ async def fetch_url(
             return result_dict
 
     # Per-domain rate limiting for sites that aggressively block rapid requests
-    if is_reddit:
+    if _is_costco(fetch_url_str):
+        from ..ratelimit import costco_limiter
+        await costco_limiter.wait()
+    elif is_reddit:
         from ..ratelimit import reddit_limiter
         await reddit_limiter.wait()
     elif _is_soylent(fetch_url_str):
@@ -485,6 +533,15 @@ async def fetch_url(
 
     # Handle errors
     if result.status_code >= 400:
+        # Costco fallback 404: the category page doesn't exist, return 0-results message
+        if _costco_redirect_fallback and result.status_code == 404:
+            _log(f"FETCH {url} -> Costco category fallback 404, returning no-results")
+            return {
+                "content": f"Costco search returned no results for this query. "
+                f"The category page ({_costco_fallback_url}) also does not exist.",
+                "content_type": "text",
+                "url": url,
+            }
         body = _decode_content(result.content, content_type)[:1000]
         _log(f"FETCH {url} -> ERROR: HTTP {result.status_code} ({time.monotonic() - start:.1f}s)")
         return {"error": f"HTTP {result.status_code}", "body": body}
@@ -710,7 +767,12 @@ async def fetch_url(
         }
 
         # Note if we transformed the URL
-        if is_reddit and fetch_url_str != url:
+        if _costco_redirect_fallback:
+            note = "[Costco search returned no direct results and redirected to a category page]"
+            if result.final_url and result.final_url != fetch_url_str:
+                note += f"\n[Redirected to: {result.final_url}]"
+            response["content"] = f"{note}\n\n{content}"
+        elif is_reddit and fetch_url_str != url:
             response["content"] = f"[Fetched via: {fetch_url_str}]\n\n{content}"
         elif github_result.is_blob and fetch_url_str != url:
             response["content"] = f"[Fetched raw: {fetch_url_str}]\n\n{content}"

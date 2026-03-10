@@ -116,7 +116,9 @@ def _extract_pdf_sync(
             )
 
         page_count = len(doc)
-        raw = pymupdf4llm.to_markdown(doc, ignore_images=True, show_progress=False)
+        raw = pymupdf4llm.to_markdown(
+            doc, ignore_images=True, ignore_graphics=True, show_progress=False
+        )
 
         # Check if PDF is empty/scanned
         if not raw or not raw.strip():

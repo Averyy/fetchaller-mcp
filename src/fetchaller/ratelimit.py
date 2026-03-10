@@ -88,6 +88,10 @@ kijiji_limiter = DomainRateLimiter(min_interval=1.0, jitter=(0.2, 0.5))
 # SAPI is the same endpoint the CL frontend uses. Rate limit to be polite.
 craigslist_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 
+# Costco: search.costco.com / search.costco.ca (API key-authed JSON search)
+# Conservative rate limit — API key rotation on 401 means we want to be gentle.
+costco_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
+
 # Facebook: www.facebook.com/api/graphql/ (unauthenticated GraphQL)
 # IP reputation is a concern — conservative rate limiting.
 facebook_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))

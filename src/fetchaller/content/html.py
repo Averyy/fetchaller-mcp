@@ -19,6 +19,7 @@ from markdownify import markdownify
 from . import alibaba as _alibaba
 from . import aliexpress as _aliexpress
 from . import amazon as _amazon
+from . import costco as _costco
 from . import craigslist as _craigslist
 from . import digikey as _digikey
 from . import ebay as _ebay
@@ -29,6 +30,7 @@ from . import huggingface as _huggingface
 from . import medium as _medium
 from . import molex as _molex
 from . import mouser as _mouser
+from . import petsmart as _petsmart
 from . import reddit as _reddit
 from . import redflagdeals as _redflagdeals
 from . import soylent as _soylent
@@ -108,6 +110,8 @@ _JUNK_AND_MEDIUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _medium.SELECTORS_L
 _JUNK_AND_REDFLAGDEALS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST + _redflagdeals.SELECTORS_LIST)
 _JUNK_AND_STACKOVERFLOW_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _stackoverflow.SELECTORS_LIST)
 _JUNK_AND_FORUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST)
+_JUNK_AND_COSTCO_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _costco.SELECTORS_LIST)
+_JUNK_AND_PETSMART_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _petsmart.SELECTORS_LIST)
 _JUNK_AND_CRAIGSLIST_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _craigslist.SELECTORS_LIST)
 _JUNK_AND_DIGIKEY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _digikey.SELECTORS_LIST)
 _JUNK_AND_EBAY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _ebay.SELECTORS_LIST)
@@ -344,6 +348,10 @@ def _detect_site(
         return "aliexpress"
     if url and _amazon.is_amazon(url):
         return "amazon"
+    if url and _costco.is_costco(url):
+        return "costco"
+    if url and _petsmart.is_petsmart(url):
+        return "petsmart"
     if url and _craigslist.is_craigslist(url):
         return "craigslist"
     if url and _digikey.is_digikey(url):
@@ -389,6 +397,8 @@ _SITE_SELECTORS = {
     "alibaba": _JUNK_AND_ALIBABA_SELECTOR,
     "aliexpress": _JUNK_AND_ALIEXPRESS_SELECTOR,
     "amazon": _JUNK_AND_AMAZON_SELECTOR,
+    "costco": _JUNK_AND_COSTCO_SELECTOR,
+    "petsmart": _JUNK_AND_PETSMART_SELECTOR,
     "craigslist": _JUNK_AND_CRAIGSLIST_SELECTOR,
     "digikey": _JUNK_AND_DIGIKEY_SELECTOR,
     "ebay": _JUNK_AND_EBAY_SELECTOR,
@@ -452,6 +462,10 @@ def clean_html(
     # Soylent: extract inventory from gsf_conversion_data before scripts are removed
     if site == "soylent":
         _soylent.extract_inventory(soup)
+
+    # PetSmart: extract rating from JSON-LD before scripts are removed
+    if site == "petsmart":
+        _petsmart.pre_clean_petsmart(soup)
 
     # Generic: extract JSON-LD Product data for sites without dedicated modules
     if site is None:
@@ -553,6 +567,10 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _aliexpress.postprocess_aliexpress(markdown)
     elif site == "amazon":
         markdown = _amazon.postprocess_amazon(markdown)
+    elif site == "costco":
+        markdown = _costco.postprocess_costco(markdown)
+    elif site == "petsmart":
+        markdown = _petsmart.postprocess_petsmart(markdown)
     elif site == "craigslist":
         markdown = _craigslist.postprocess_craigslist(markdown)
     elif site == "digikey":

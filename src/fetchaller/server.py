@@ -88,6 +88,11 @@ async def cleanup_server(server) -> None:
         cleanup_fns.append(close_cl_session)
     except ImportError:
         pass
+    try:
+        from .costco.api import close_session as close_costco_session
+        cleanup_fns.append(close_costco_session)
+    except ImportError:
+        pass
 
     for fn in cleanup_fns:
         try:
