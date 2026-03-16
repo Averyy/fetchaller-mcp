@@ -65,6 +65,9 @@ class MockWaferSession:
     async def __aexit__(self, *args):
         pass
 
+    def add_cookie(self, raw_set_cookie: str, url: str) -> None:
+        pass
+
     async def get(self, url: str, **kwargs) -> MockResponse:
         self.calls.append(url)
         return self.responses.get(url, self.default)

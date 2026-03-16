@@ -6,12 +6,6 @@ MCP server for fetching any URL without domain restrictions. Full Reddit support
 
 fetchaller owns content processing + MCP tools. wafer (`~/code/wafer`) owns HTTP transport + anti-detection. fetchaller NEVER does bot solving, impersonation, or cookie management — if a site blocks requests, fix it in wafer. See `docs/architecture.md` for full details.
 
-## Debugging Rules
-
-**NEVER blame external services** (Claude, Anthropic, Google, Reddit, etc.) for issues. The problem is in THIS codebase. Investigate our code first.
-
-**NEVER dismiss issues as "pre-existing" or "known".** Every issue is an issue. The bar for shipping is: does it work?
-
 ## Pre-Commit Rules
 
 **ALWAYS run lint and tests before EVERY commit. No exceptions.**
@@ -28,17 +22,6 @@ If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify agai
 **ALWAYS use wafer** (not `urllib`, `requests`, or `httpx`) for HTTP requests — wafer handles TLS fingerprinting and bot protection transparently.
 
 **ALWAYS manually test** every new feature/site before committing. Unit tests alone are not sufficient. See `docs/testing.md` for full testing guide (writing tests, live testing, test organization).
-
-## Web Fetching & Search
-
-**ALWAYS use fetchaller MCP tools instead of WebFetch and WebSearch.** fetchaller has no domain restrictions, bypasses bot protection, and produces cleaner markdown.
-
-- **fetch** — Fetch any URL as clean markdown
-- **search** — Web search (Google + DuckDuckGo combined)
-- **browse_reddit** / **search_reddit** — Reddit listings and search
-- **search_marketplace** — Search Kijiji + Craigslist + Facebook Marketplace
-
-Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via `gh` CLI), prefer that instead.
 
 ## Development & Testing
 

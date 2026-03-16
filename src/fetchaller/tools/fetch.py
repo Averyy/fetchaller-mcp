@@ -486,6 +486,9 @@ async def fetch_url(
         timeout=timedelta(seconds=timeout),
         cache_dir=get_wafer_cache_dir(),
     )
+    # Bypass Reddit NSFW age gate on old.reddit.com
+    if is_reddit:
+        session.add_cookie("over18=1; Path=/; Domain=.reddit.com", fetch_url_str)
     try:
         resp = await session.get(fetch_url_str)
         result = FetchResult(
