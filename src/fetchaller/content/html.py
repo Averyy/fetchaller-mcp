@@ -23,6 +23,7 @@ from . import costco as _costco
 from . import craigslist as _craigslist
 from . import digikey as _digikey
 from . import ebay as _ebay
+from . import fcc as _fcc
 from . import forums as _forums
 from . import github as _github
 from . import hackernews as _hackernews
@@ -115,6 +116,7 @@ _JUNK_AND_PETSMART_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _petsmart.SELECTO
 _JUNK_AND_CRAIGSLIST_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _craigslist.SELECTORS_LIST)
 _JUNK_AND_DIGIKEY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _digikey.SELECTORS_LIST)
 _JUNK_AND_EBAY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _ebay.SELECTORS_LIST)
+_JUNK_AND_FCC_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _fcc.SELECTORS_LIST)
 _JUNK_AND_MOLEX_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _molex.SELECTORS_LIST)
 _JUNK_AND_MOUSER_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _mouser.SELECTORS_LIST)
 _JUNK_AND_SOYLENT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _soylent.SELECTORS_LIST)
@@ -358,6 +360,8 @@ def _detect_site(
         return "digikey"
     if url and _ebay.is_ebay(url):
         return "ebay"
+    if url and _fcc.is_fcc(url):
+        return "fcc"
     if url and _molex.is_molex(url):
         return "molex"
     if url and _mouser.is_mouser(url):
@@ -402,6 +406,7 @@ _SITE_SELECTORS = {
     "craigslist": _JUNK_AND_CRAIGSLIST_SELECTOR,
     "digikey": _JUNK_AND_DIGIKEY_SELECTOR,
     "ebay": _JUNK_AND_EBAY_SELECTOR,
+    "fcc": _JUNK_AND_FCC_SELECTOR,
     "molex": _JUNK_AND_MOLEX_SELECTOR,
     "mouser": _JUNK_AND_MOUSER_SELECTOR,
     "reddit": _JUNK_AND_REDDIT_SELECTOR,
@@ -437,6 +442,11 @@ def clean_html(
     site = _detect_site(url, is_reddit, soup)
 
     # Discourse: content lives inside <noscript> for SEO crawlers.
+    # FCC: fix broken nav nesting and extract structured data before selectors fire
+    if site == "fcc":
+        _fcc.fix_fcc_nav(soup)
+        _fcc.extract_fcc_data(soup)
+
     # Unwrap the noscript containing #main-outlet before generic selectors strip it.
     if site == "discourse":
         for noscript in soup.find_all("noscript"):
@@ -490,6 +500,8 @@ def clean_html(
         _digikey.strip_digikey_junk(soup)
     elif site == "ebay":
         _ebay.strip_ebay_junk(soup)
+    elif site == "fcc":
+        _fcc.strip_fcc_junk(soup)
     elif site == "molex":
         _molex.strip_molex_junk(soup)
     elif site == "mouser":
@@ -577,6 +589,8 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _digikey.postprocess_digikey(markdown)
     elif site == "ebay":
         markdown = _ebay.postprocess_ebay(markdown)
+    elif site == "fcc":
+        markdown = _fcc.postprocess_fcc(markdown)
     elif site == "molex":
         markdown = _molex.postprocess_molex(markdown)
     elif site == "mouser":

@@ -33,6 +33,7 @@
 - **`ebay.py`** — eBay (all TLDs): CSS selectors, JSON-LD product data extraction, search result DOM extraction (`.s-item` elements), soup cleanup, regex post-processors.
 - **`molex.py`** — Molex (molex.com): JSON-LD Product extraction (additionalProperty specs), AEM header/nav/account CSS selectors, regex post-processors for nav/About Us boilerplate. CSR site — product specs only available via JSON-LD.
 - **`mouser.py`** — Mouser (all TLDs): CSS selectors, soup cleanup, regex post-processors. Behind Akamai (wafer handles). HTML fallback when no API key configured.
+- **`fcc.py`** — FCC filings (fcc.report, fcc.gov EAS): fix broken nav nesting (lxml absorbs body content into unclosed navbar-collapse div), structured data extraction from frequency authorization / exhibit / application detail tables, CSS selectors for FCC navigation chrome, regex post-processors for boilerplate. Behind Cloudflare (wafer handles via BrowserSolver).
 - **`soylent.py`** — Soylent (soylent.com, soylent.ca): Shopify store cleanup, inventory extraction from `gsf_conversion_data`.
 - **`ti.py`** — Texas Instruments (ti.com): CSS selectors, document viewer support for lazy-loaded datasheets, inventory placeholder extraction.
 

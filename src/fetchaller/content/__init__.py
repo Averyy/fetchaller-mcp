@@ -23,6 +23,9 @@ Module layout:
 - molex.py     — Molex: JSON-LD Product extraction (additionalProperty specs),
                    CSS selectors for AEM header/nav/account, regex post-processing
                    for Limited Information message, nav items, About Us boilerplate.
+- fcc.py       — FCC filings (fcc.report, fcc.gov EAS): fix broken lxml nav nesting,
+                   structured data extraction from frequency/exhibit/detail tables,
+                   CSS selectors for FCC chrome, regex post-processing for boilerplate.
 - wikipedia.py  — Wikipedia: CSS selectors for edit buttons, navboxes, etc.
 - pdf.py        — PDF to markdown extraction via pymupdf4llm.
 - url.py        — URL validation and SSRF protection.
