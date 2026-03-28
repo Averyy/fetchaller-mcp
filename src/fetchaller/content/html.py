@@ -156,6 +156,29 @@ def _extract_code_language(el):
     return None
 
 
+_YOUTUBE_EMBED_RE = re.compile(
+    r"https?://(?:www\.)?youtube(?:-nocookie)?\.com/embed/([a-zA-Z0-9_-]{11})"
+)
+
+
+_GENERIC_IFRAME_TITLES = {"youtube video player", "youtube video", ""}
+
+
+def _convert_youtube_iframes(soup: BeautifulSoup) -> None:
+    """Convert YouTube iframes to plain <a> links before iframe removal."""
+    for iframe in list(soup.find_all("iframe")):
+        src = iframe.get("src") or iframe.get("data-src") or ""
+        m = _YOUTUBE_EMBED_RE.search(src)
+        if m:
+            video_id = m.group(1)
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            link = soup.new_tag("a", href=url)
+            # Use iframe title as link text if it's a real video title
+            title = (iframe.get("title") or "").strip()
+            link.string = url if title.lower() in _GENERIC_IFRAME_TITLES else title
+            iframe.replace_with(link)
+
+
 def _fix_lazy_images(soup: BeautifulSoup) -> None:
     """Swap data-src into src for lazy-loaded images."""
     for img in soup.find_all("img"):
@@ -480,6 +503,10 @@ def clean_html(
     # Generic: extract JSON-LD Product data for sites without dedicated modules
     if site is None:
         _extract_generic_jsonld(soup)
+
+    # Convert YouTube iframes to plain links before the generic iframe selector
+    # destroys them.  A link is always more useful than a silent removal.
+    _convert_youtube_iframes(soup)
 
     # Single-pass removal using combined CSS selector
     selector = _SITE_SELECTORS.get(site, _JUNK_SELECTOR)

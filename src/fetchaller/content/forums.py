@@ -12,6 +12,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
+from html import unescape as _html_unescape
 from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
@@ -72,6 +73,7 @@ _KNOWN_DOMAINS: dict[str, str] = {
     "g80.bimmerpost.com": "vbulletin",
     "g05.bimmerpost.com": "vbulletin",
     # XenForo sites
+    "www.avsforum.com": "xenforo",
     "www.vwvortex.com": "xenforo",
     "www.golfmk7.com": "xenforo",
     "www.rdforum.org": "xenforo",
@@ -330,8 +332,9 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _strip_html(text: str) -> str:
-    """Strip HTML tags and collapse whitespace."""
+    """Strip HTML tags, decode HTML entities, and collapse whitespace."""
     text = _HTML_TAG_RE.sub(" ", text)
+    text = _html_unescape(text)
     text = _WHITESPACE_RE.sub(" ", text)
     return text.strip()
 
@@ -685,7 +688,13 @@ SELECTORS_LIST = [
     # California theme: OP thread card header (category name, view/reply stats)
     # Only target the original post, not reply headers (which have useful author info)
     ".MessageCard__container__original-post .MessageCard__header",
-    ".MessageCard__nested-postbit",
+
+    # California theme: collapse/expand buttons and collapsed-state preview image
+    ".MessageCard__collapse-link",
+    ".MessageCard__content-preview-image",
+
+    # California theme: toggle-replies buttons ("Show more replies", "N Reply/Replies")
+    ".toggle-replies-button",
 
     # Page structure
     ".p-nav",
@@ -696,8 +705,9 @@ SELECTORS_LIST = [
     ".p-body-sidebar",
     ".p-body-sidebarCol",
 
-    # User info column (left side of each post — avatar, name, title, badges)
-    ".message-cell--user",
+    # User info column: handled in strip_forum_junk to preserve username link
+    # (classic XenForo renders usernames only inside .message-cell--user on
+    #  paginated pages; California theme uses MessageCard__user-info instead)
 
     # Signatures
     ".message-signature",
@@ -869,7 +879,7 @@ SELECTORS_LIST = [
 # Soup-level cleanup
 # ---------------------------------------------------------------------------
 
-
+# YouTube/video embed URL patterns → canonical watch URL
 def strip_forum_junk(soup: BeautifulSoup) -> None:
     """Remove forum-specific junk that CSS selectors can't easily catch."""
     # Quick-reply / reply forms
@@ -961,6 +971,77 @@ def strip_forum_junk(soup: BeautifulSoup) -> None:
                 parent.decompose()
             else:
                 img.decompose()
+
+    # XenForo classic: slim .message-cell--user to just the username link.
+    # On paginated pages, this cell is the ONLY place the author name appears.
+    # (California theme uses MessageCard__user-info instead, which is preserved.)
+    for cell in list(soup.select(".message-cell--user")):
+        name_link = cell.select_one(".message-name a.username, .message-name a")
+        if name_link:
+            name_link = name_link.extract()
+            wrapper = soup.new_tag("div")
+            wrapper.append(name_link)
+            cell.replace_with(wrapper)
+        else:
+            cell.decompose()
+
+    # XenForo/VerticalScope: unwrap PhraseLinker auto-affiliate links.
+    # These are server-injected <a> tags wrapping common product terms
+    # (e.g. "dolby atmos" → <a href="https://amazon.com/s?k=Dolby&tag=vs-phraselinker-20">dolby atmos</a>).
+    # Replace with just the link text to avoid token-wasting affiliate noise.
+    for a_tag in list(soup.find_all("a")):
+        href = a_tag.get("href", "")
+        if "tag=vs-phraselinker-20" in href:
+            a_tag.replace_with(a_tag.get_text())
+
+    # XenForo: strip smiley <img> tags (class="smilie" or data-shortname).
+    # These render as `:ROFLMAO:`, `:cool:`, etc. in markdown alt text.
+    # Remove them entirely — they're noise for LLM consumption.
+    for img in list(soup.find_all("img", class_="smilie")):
+        img.decompose()
+    # Some XenForo installs use data-shortname instead of class="smilie"
+    for img in list(soup.find_all("img", attrs={"data-shortname": True})):
+        if "smilie" in (img.get("class") or []) or img.get("data-shortname"):
+            img.decompose()
+    # Old-style smiley images (pre-XenForo 2.x): no class/data-shortname,
+    # only identifiable by src path containing /smilies/ (e.g.
+    # files.avsforum.com/images/smilies/smile.gif, avs-vb/images/smilies/wink.gif).
+    # Also strip gallery thumbnail duplicates (full-size images already present).
+    # Check data-src too — lazy-loaded images won't have src yet.
+    for img in list(soup.find_all("img")):
+        src = img.get("src") or img.get("data-src") or ""
+        if "/smilies/" in src:
+            img.decompose()
+            continue
+        if "attachment_gallery_thumbnails" in src:
+            img.decompose()
+
+    # XenForo: strip [View attachment XXXXXX] links inside blockquotes.
+    # When a post with images is quoted, images become useless
+    # [View attachment 1234](url) references.
+    for bq in soup.find_all("blockquote"):
+        for a_tag in list(bq.find_all("a")):
+            text = a_tag.get_text(strip=True)
+            if re.match(r"View attachment \d+", text):
+                a_tag.decompose()
+
+    # XenForo: slim down link unfurl cards (bbCodeBlock--unfurl).
+    # Keep title link + description, remove favicon image and bare domain name.
+    for unfurl in list(soup.select(".bbCodeBlock--unfurl")):
+        # Remove favicon row: <span class="contentRow-figure"> containing the favicon <img>
+        for fig in list(unfurl.select(".contentRow-figure")):
+            fig.decompose()
+        # Remove the bare domain <span class="contentRow-minor">
+        for minor in list(unfurl.select(".contentRow-minor")):
+            minor.decompose()
+
+    # XenForo: remove "Discussion starter" badge and its adjacent dot-separator
+    # from .message-attribution-main (the post number/date area)
+    for el in list(soup.select(".message-attribution-discussion-starter")):
+        next_sib = el.find_next_sibling()
+        if next_sib and "dot-separator" in (next_sib.get("class") or []):
+            next_sib.decompose()
+        el.decompose()
 
     # vBulletin: badge images, rank images, and status icons
     # (InternetBrands forums like CorvetteForum, Rennlist)
@@ -1079,9 +1160,10 @@ _XF_SITE_STATS_RE = re.compile(
     r"(?:Since\n:\s+\d+\n?)?"
 )
 
-# "[Full Forum Listing](/forums/)" or "Show Less"
+# "[Full Forum Listing](/forums/)" or "Show Less" / "See less" / "See more"
 _XF_FULL_LISTING_RE = re.compile(r"(?:^|\n)\[Full Forum Listing\]\([^\)]+\)(?:\n|$)")
 _XF_SHOW_LESS_RE = re.compile(r"(?:^|\n)Show Less(?:\n|$)")
+_XF_SEE_LESS_MORE_RE = re.compile(r"(?:^|\n)See (?:less|more)(?:\n|$)")
 
 # "Add to quote" link: "- [Add to quote](/threads/.../reply?quote=...)"
 _XF_ADD_QUOTE_RE = re.compile(r"(?:^|\n)-?\s*\[Add to quote\]\([^\)]+\)(?:\n|$)")
@@ -1146,8 +1228,10 @@ _XF_NUMERAL_NAV_RE = re.compile(r"(?:^|\n)\[\d+\]\(/forums/[^\)]*\)(?:\n|$)")
 # "Install\n\nInstall" duplicate (from mobile overlay)
 _XF_INSTALL_DUPE_RE = re.compile(r"(?:^|\n)Install(?:\n+Install)+(?:\n|$)")
 
-# XenForo "#post-NNNN" or "#reply" anchors
-_XF_POST_ANCHOR_RE = re.compile(r"(?:^|\n)\[#\d*\]\(#[^\)]*\)\n·\n\[[^\]]*\]\(#[^\)]*\)(?:\n|$)")
+# XenForo "#post-NNNN" or "#reply" anchors — transform to readable separators
+_XF_POST_ANCHOR_RE = re.compile(
+    r"(?:^|\n)\[#([\d,]+)\]\(#[^\)]*\)\n·\n\[([^\]]*)\]\(#[^\)]*\)(?:\n|$)"
+)
 
 # XenForo 1.x: "### [Log in or Sign up](login/)" header
 _XF1_LOGIN_RE = re.compile(r"(?:^|\n)#{1,4}\s*\[Log in or Sign up\]\([^\)]+\)(?:\n|$)")
@@ -1262,11 +1346,11 @@ _XF_SEARCH_MEDIA_RE = re.compile(r"(?:^|\n)\s*\[Search media\]\([^\)]+\)(?:\n|$)
 # "[Top](#top)" link
 _XF_TOP_LINK_RE = re.compile(r"(?:^|\n)\[Top\]\(#top\)(?:\n|$)")
 
-# Standalone single-letter avatar placeholders "[M](/members/...)"
-_XF_AVATAR_PLACEHOLDER_RE = re.compile(r"(?:^|\n)\[[A-Z]\]\(/members/[^\)]+\)(?:\n|$)")
+# Standalone single-character avatar placeholders "[M](/members/...)" or "[1](/members/...)"
+_XF_AVATAR_PLACEHOLDER_RE = re.compile(r"(?:^|\n)\[[A-Z0-9]\]\(/members/[^\)]+\)(?:\n|$)")
 
 # "0\n \nReply" remnants from reaction/reply bar (may have whitespace-only lines)
-_XF_REPLY_REMNANT_RE = re.compile(r"(?:^|\n)\d+[\s\n]+Reply(?:\n|$)")
+_XF_REPLY_REMNANT_RE = re.compile(r"(?:^|\n)(?:\d+|Show more)[\s\n]+Repl(?:y|ies)(?:\n|$)", re.IGNORECASE)
 
 # XenForo user info block: "[username](/members/...) + (Discussion starter)? + NNN posts · Joined YYYY"
 _XF_USER_INFO_BLOCK_RE = re.compile(
@@ -1277,6 +1361,63 @@ _XF_USER_INFO_BLOCK_RE = re.compile(
 
 # Standalone username (no link) at very start of page (XenForo thread preview)
 _XF_STANDALONE_USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_ -]{1,30}\n\n")
+
+# "You have insufficient privileges to reply here." (classified/locked threads)
+_XF_INSUFFICIENT_PRIV_RE = re.compile(
+    r"(?:^|\n)You have insufficient privileges to reply here\.(?:\n|$)"
+)
+
+# Unresolved emoji placeholders: [emoji846], [emoji1234] etc.
+_XF_EMOJI_PLACEHOLDER_RE = re.compile(r"\[emoji\d+\]")
+
+# U+FFFC Object Replacement Character — placeholder for unresolved inline objects
+_OBJECT_REPLACEMENT_RE = re.compile(r"\ufffc")
+
+# XenForo smiley alt text remnants: :ROFLMAO:, :cool:, :LOL:, :oops: etc.
+# Only match XenForo-style codes (2+ alpha chars between colons, all-alpha),
+# NOT common text emoticons like :) :( :D :P which people type naturally.
+_XF_SMILEY_TEXT_RE = re.compile(r":(?:[A-Za-z]{2,}):")
+
+# Old smiley images surviving as markdown: ![Image](url containing /smilies/)
+_XF_SMILEY_IMG_RE = re.compile(r"!\[[^\]]*\]\([^\)]*\/smilies\/[^\)]+\)\s*")
+
+# XenForo gallery alt text noise: "Preview image for gallery." → just the image
+_XF_GALLERY_ALT_RE = re.compile(r"!\[Preview image for gallery\.\]")
+
+# XenForo NSFW/spoiler toggle label (content follows, just strip the label/button)
+_XF_SENSITIVE_CONTENT_RE = re.compile(
+    r"(?:^|\n)Sensitive content, not recommended for those under 18\n+Show Content(?:\n|$)"
+)
+
+# XenForo attachment metadata: file size + view count under each attachment image
+# e.g. "  126.4 KB\n  Views: 1,266"
+_XF_ATTACHMENT_META_RE = re.compile(
+    r"\n[ \t]+[\d.,]+\s+[KMG]?B\n[ \t]+Views:[ \t]+[\d.,]+"
+)
+
+# Old quote attribution: strip dead path after "Originally Posted by **username**"
+# Matches /forum/post/NNNNN (vBulletin) and /t/NNNNN/slug#post_NNNNN (XenForo 1.x)
+_OLD_QUOTE_ATTRIB_RE = re.compile(
+    r"(Originally Posted by \*\*[^\*]+\*\*)\s+/(?:forum/post/\d+|t/\d+/[^\s]+)"
+)
+
+# Old quote label: "> Quote:" line at start of blockquote — always redundant.
+# Covers "Quote:" before "Originally posted/Posted by" AND standalone "Quote:" labels.
+_BLOCKQUOTE_QUOTE_LABEL_RE = re.compile(
+    r"^>[ \t]*Quote:[ \t]*\n",
+    re.MULTILINE,
+)
+
+# [View attachment XXXXXX] links that survived as markdown text
+_XF_VIEW_ATTACHMENT_RE = re.compile(
+    r"\[View attachment \d+\]\(https?://[^\)]+\)\s*"
+)
+
+# BBCode remnants from vBulletin→XenForo migration: [URL], [/URL], [IMG], [/IMG], etc.
+_BBCODE_TAG_RE = re.compile(
+    r"\[/?(?:URL|IMG|B|I|U|SIZE|COLOR|FONT|INDENT|LEFT|RIGHT|CENTER|MEDIA)(?:=[^\]]*)?\]",
+    re.IGNORECASE,
+)
 
 # XenForo secondary heading that's the forum category name (before "last post by")
 _XF_CATEGORY_LAST_POST_RE = re.compile(
@@ -1438,6 +1579,7 @@ def postprocess_forum(markdown: str) -> str:
     markdown = _XF_SITE_STATS_RE.sub("\n", markdown)
     markdown = _XF_FULL_LISTING_RE.sub("\n", markdown)
     markdown = _XF_SHOW_LESS_RE.sub("\n", markdown)
+    markdown = _XF_SEE_LESS_MORE_RE.sub("\n", markdown)
     markdown = _XF_ADD_QUOTE_RE.sub("\n", markdown)
     markdown = _XF_THREAD_META_RE.sub("\n", markdown)
     markdown = _XF_POST_ATTRIB_RE.sub("\n", markdown)
@@ -1451,7 +1593,12 @@ def postprocess_forum(markdown: str) -> str:
     markdown = _XF_CROSSSITE_NAV_RE.sub("\n", markdown)
     markdown = _XF_NUMERAL_NAV_RE.sub("\n", markdown)
     markdown = _XF_INSTALL_DUPE_RE.sub("\n", markdown)
-    markdown = _XF_POST_ANCHOR_RE.sub("\n", markdown)
+    def _format_post_anchor(m: re.Match) -> str:
+        num = m.group(1)
+        date = m.group(2).replace("\n", " ").strip()
+        return f"\n\n---\n**#{num}** · {date}\n"
+
+    markdown = _XF_POST_ANCHOR_RE.sub(_format_post_anchor, markdown)
 
     # --- XenForo 1.x ---
     markdown = _XF1_LOGIN_RE.sub("\n", markdown)
@@ -1534,6 +1681,42 @@ def postprocess_forum(markdown: str) -> str:
 
     # XenForo: remove standalone username at very start (thread preview duplicate)
     markdown = _XF_STANDALONE_USERNAME_RE.sub("", markdown)
+
+    # XenForo: "You have insufficient privileges to reply here." (and variants)
+    markdown = _XF_INSUFFICIENT_PRIV_RE.sub("\n", markdown)
+
+    # XenForo: unresolved emoji placeholders like [emoji846]
+    markdown = _XF_EMOJI_PLACEHOLDER_RE.sub("", markdown)
+
+    # U+FFFC object replacement characters (unresolved inline images/emoji)
+    markdown = _OBJECT_REPLACEMENT_RE.sub("", markdown)
+
+    # XenForo: smiley alt text like :ROFLMAO:, :cool:, :LOL:
+    markdown = _XF_SMILEY_TEXT_RE.sub("", markdown)
+
+    # XenForo: [View attachment XXXXXX](url) remnants (especially in quotes)
+    markdown = _XF_VIEW_ATTACHMENT_RE.sub("", markdown)
+
+    # Old smiley images that survived HTML cleanup (fallback)
+    markdown = _XF_SMILEY_IMG_RE.sub("", markdown)
+
+    # XenForo gallery alt text: "Preview image for gallery." → clean image
+    markdown = _XF_GALLERY_ALT_RE.sub("![]", markdown)
+
+    # Old quote attribution: strip dead path fragments
+    markdown = _OLD_QUOTE_ATTRIB_RE.sub(r"\1", markdown)
+
+    # Old quote label: remove redundant "Quote:" line from blockquotes
+    markdown = _BLOCKQUOTE_QUOTE_LABEL_RE.sub("", markdown)
+
+    # XenForo NSFW/spoiler toggle label
+    markdown = _XF_SENSITIVE_CONTENT_RE.sub("\n", markdown)
+
+    # XenForo attachment metadata (file size + views)
+    markdown = _XF_ATTACHMENT_META_RE.sub("", markdown)
+
+    # BBCode remnants from vBulletin→XenForo migration
+    markdown = _BBCODE_TAG_RE.sub("", markdown)
 
     # Collapse excessive newlines
     markdown = _EXCESSIVE_NEWLINES.sub("\n\n", markdown).strip()
