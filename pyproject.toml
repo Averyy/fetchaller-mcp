@@ -1,13 +1,13 @@
 [project]
 name = "fetchaller-mcp"
-version = "3.1.0"
+version = "3.1.1"
 description = "MCP server that fetches any URL and returns clean markdown - no domain restrictions. Uses wafer for TLS fingerprint impersonation to bypass bot protection."
 license = "MIT"
 requires-python = ">=3.12"
 keywords = ["mcp", "claude", "fetch", "web", "markdown", "wafer"]
 dependencies = [
     "mcp>=1.26.0,<2",
-    "wafer-py[browser]>=0.1.9",
+    "wafer-py[browser]>=0.2.0",
     "fastapi>=0.135.1",
     "uvicorn>=0.41.0",
     "pydantic>=2.12.5",
@@ -40,11 +40,6 @@ packages = ["src/fetchaller"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.uv]
-# if-necessary-or-explicit: allow prereleases only when explicitly pinned (rnet>=3.0.0rc*)
-# or when no stable version exists. "allow" was pulling httpx 1.0.dev which breaks httpx_sse
-prerelease = "if-necessary-or-explicit"
 
 [tool.ruff]
 line-length = 120
