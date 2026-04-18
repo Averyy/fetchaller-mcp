@@ -20,6 +20,7 @@ from ..content.alibaba import (
 )
 from ..content.aliexpress import extract_product_id_from_url, extract_search_products, is_aliexpress_search_url
 from ..content.amazon import is_amazon_store
+from ..content.ashby import is_ashby_embed_url, resolve_ashby_embed_url
 from ..content.costco import is_costco as _is_costco
 from ..content.costco import is_costco_category_url as _is_costco_category
 from ..content.costco import is_costco_search_url as _is_costco_search
@@ -43,12 +44,33 @@ from ..content.forums import (
     parse_feed,
     transform_forum_url,
 )
+from ..content.gem import (
+    extract_gem_params,
+    fetch_gem_job,
+    is_gem_url,
+    render_gem_job,
+)
 from ..content.github import (
     extract_github_file_listing,
     extract_github_issue,
     transform_github_url,
 )
+from ..content.greenhouse import (
+    extract_greenhouse_params,
+    extract_greenhouse_params_from_html,
+    extract_greenhouse_params_guess,
+    fetch_greenhouse_job,
+    is_greenhouse_html,
+    is_greenhouse_url,
+    render_greenhouse_job,
+)
 from ..content.html import html_to_markdown
+from ..content.lever import (
+    extract_lever_params,
+    fetch_lever_job,
+    is_lever_url,
+    render_lever_job,
+)
 from ..content.mouser import is_mouser as _is_mouser
 from ..content.pdf import extract_pdf
 from ..content.reddit import transform_reddit_url
@@ -427,6 +449,117 @@ async def fetch_url(
                 return {"content": content, "content_type": "text", "url": url}
             return result
 
+    # Greenhouse direct URL (boards.greenhouse.io / job-boards.greenhouse.io
+    # / embed iframe URL / any URL carrying ?gh_jid=&gh_src=): fetch the
+    # public JSON API directly and render. Skips the SPA body entirely.
+    # Also handles company-site URLs like ``dropbox.jobs/en/jobs/{id}?gh_src=X``
+    # via a hostname-derived board-token guess that's probed against the API.
+    gh_params = extract_greenhouse_params(url)
+    gh_guess = None
+    if not gh_params:
+        gh_guess = extract_greenhouse_params_guess(url)
+    if gh_params and is_greenhouse_url(url):
+        _gh_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _gh_cache_key:
+            _gh_cached = cache.get(_gh_cache_key)
+            if _gh_cached:
+                content = truncate(_gh_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Greenhouse CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _gh_cached.content_type, "url": url, "cached": True}
+        _gh_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _gh_token, _gh_jid = gh_params
+        _gh_data = await fetch_greenhouse_job(_gh_token, _gh_jid, _gh_session)
+        if _gh_data:
+            markdown = render_greenhouse_job(_gh_data, source_url=url)
+            if cache and _gh_cache_key:
+                cache.set(_gh_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Greenhouse API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # API failed — fall through to normal HTML fetch.
+
+    # Greenhouse hostname-derived guess (e.g. dropbox.jobs/en/jobs/{id}?gh_src=X).
+    # The board token isn't in the page HTML, so we derive it from the hostname
+    # and probe the API. A 404 falls through to normal HTML fetch.
+    if gh_guess:
+        _gh_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _gh_cache_key:
+            _gh_cached = cache.get(_gh_cache_key)
+            if _gh_cached:
+                content = truncate(_gh_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Greenhouse CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _gh_cached.content_type, "url": url, "cached": True}
+        _gh_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _gh_token, _gh_jid = gh_guess
+        _gh_data = await fetch_greenhouse_job(_gh_token, _gh_jid, _gh_session)
+        if _gh_data:
+            markdown = render_greenhouse_job(_gh_data, source_url=url)
+            if cache and _gh_cache_key:
+                cache.set(_gh_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Greenhouse API (hostname guess: {_gh_token}, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Guess wrong or API unavailable — fall through to normal HTML fetch.
+
+    # Gem direct URL (jobs.gem.com/{board}/{extId}): fetch via public GraphQL.
+    if is_gem_url(url):
+        _gm_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _gm_cache_key:
+            _gm_cached = cache.get(_gm_cache_key)
+            if _gm_cached:
+                content = truncate(_gm_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Gem CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _gm_cached.content_type, "url": url, "cached": True}
+        _gm_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _gm_board, _gm_ext = extract_gem_params(url)
+        _gm_data = await fetch_gem_job(_gm_board, _gm_ext, _gm_session)
+        if _gm_data and _gm_data.get("oatsExternalJobPosting"):
+            markdown = render_gem_job(_gm_data, source_url=url)
+            if cache and _gm_cache_key:
+                cache.set(_gm_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Gem GraphQL ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Gem API failed — fall through to normal HTML fetch.
+
+    # Lever direct URL (jobs.lever.co/{company}/{id}): fetch JSON API +
+    # parse /apply page for the application form, then render as markdown.
+    if is_lever_url(url):
+        _lv_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _lv_cache_key:
+            _lv_cached = cache.get(_lv_cache_key)
+            if _lv_cached:
+                content = truncate(_lv_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Lever CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _lv_cached.content_type, "url": url, "cached": True}
+        _lv_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _lv_company, _lv_id = extract_lever_params(url)
+        _lv_data = await fetch_lever_job(_lv_company, _lv_id, _lv_session)
+        if _lv_data and _lv_data.get("posting"):
+            markdown = render_lever_job(_lv_data, source_url=url)
+            if cache and _lv_cache_key:
+                cache.set(_lv_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Lever API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # API failed — fall through to normal HTML fetch.
+
     # Transform Reddit URLs
     reddit_result = transform_reddit_url(url)
     fetch_url_str = reddit_result.url
@@ -489,6 +622,27 @@ async def fetch_url(
     # Bypass Reddit NSFW age gate on old.reddit.com
     if is_reddit:
         session.add_cookie("over18=1; Path=/; Domain=.reddit.com", fetch_url_str)
+
+    # Resolve Ashby embed URLs (e.g. company.com/careers?ashby_jid=<uuid>) to
+    # the canonical jobs.ashbyhq.com/{org}/{jid} form before fetching.
+    if is_ashby_embed_url(fetch_url_str):
+        canonical = await resolve_ashby_embed_url(fetch_url_str, session)
+        if canonical:
+            _log(f"FETCH {url} -> Ashby embed resolved to {canonical}")
+            fetch_url_str = canonical
+            cache_key = normalize_url(fetch_url_str) if cache else None
+            if cache and not raw and cache_key:
+                cached = cache.get(cache_key)
+                if cached:
+                    content = truncate(cached.content, max_tokens)
+                    _log(f"FETCH {url} -> CACHED via embed resolution ({time.monotonic() - start:.1f}s)")
+                    return {
+                        "content": content,
+                        "content_type": cached.content_type,
+                        "url": fetch_url_str,
+                        "cached": True,
+                    }
+
     try:
         resp = await session.get(fetch_url_str)
         result = FetchResult(
@@ -662,6 +816,24 @@ async def fetch_url(
                 "content_type": "html",
                 "url": result.final_url,
             }
+
+        # Greenhouse embed on a company career site (iframe / div#grnhse_app):
+        # extract board token + job ID, fetch the public API, and return
+        # rendered markdown instead of the JS-loader HTML body.
+        from bs4 import BeautifulSoup as _Soup  # noqa: N812
+        _gh_soup = _Soup(html, "lxml")
+        if is_greenhouse_html(_gh_soup):
+            _gh_params = extract_greenhouse_params_from_html(_gh_soup, page_url=result.final_url or url)
+            if _gh_params:
+                _gh_token, _gh_jid = _gh_params
+                _gh_data = await fetch_greenhouse_job(_gh_token, _gh_jid, session)
+                if _gh_data:
+                    markdown = render_greenhouse_job(_gh_data, source_url=result.final_url or url)
+                    if cache and cache_key:
+                        cache.set(cache_key, markdown, "markdown")
+                    content = truncate(markdown, max_tokens)
+                    _log(f"FETCH {url} -> Greenhouse embed API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                    return {"content": content, "content_type": "markdown", "url": result.final_url}
 
         # Tier 2: Forum autodiscovery
         if not is_forum_feed and forum_result.forum_software and not forum_result.is_thread:

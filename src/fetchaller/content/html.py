@@ -19,6 +19,7 @@ from markdownify import markdownify
 from . import alibaba as _alibaba
 from . import aliexpress as _aliexpress
 from . import amazon as _amazon
+from . import ashby as _ashby
 from . import costco as _costco
 from . import craigslist as _craigslist
 from . import digikey as _digikey
@@ -373,6 +374,8 @@ def _detect_site(
         return "aliexpress"
     if url and _amazon.is_amazon(url):
         return "amazon"
+    if url and _ashby.is_ashby(url):
+        return "ashby"
     if url and _costco.is_costco(url):
         return "costco"
     if url and _petsmart.is_petsmart(url):
@@ -480,6 +483,11 @@ def clean_html(
     # Amazon: extract related products before CSS selectors remove sims-* sections
     if site == "amazon":
         _amazon.extract_related_products(soup)
+
+    # Ashby: extract posting + application form from window.__appData before
+    # the generic script selector fires and decomposes it.
+    if site == "ashby":
+        _ashby.extract_ashby_data(soup, url)
 
     # eBay: extract structured data before scripts are removed
     if site == "ebay":
@@ -606,6 +614,8 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _aliexpress.postprocess_aliexpress(markdown)
     elif site == "amazon":
         markdown = _amazon.postprocess_amazon(markdown)
+    elif site == "ashby":
+        markdown = _ashby.postprocess_ashby(markdown)
     elif site == "costco":
         markdown = _costco.postprocess_costco(markdown)
     elif site == "petsmart":

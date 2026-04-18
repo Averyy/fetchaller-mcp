@@ -6,7 +6,7 @@
 
 ### fetch(url, maxTokens?, timeout?, raw?)
 
-Fetch any URL and return clean markdown. Handles HTML, JSON, XML, CSV, PDF. Site-specific cleanup for 20+ sites (GitHub, Reddit, Amazon, eBay, Stack Overflow, HN, Wikipedia, Medium, Hugging Face, DigiKey, Mouser, Molex, FCC (fcc.report, fcc.gov), Craigslist, Kijiji, Facebook Marketplace, Alibaba, AliExpress, RedFlagDeals, forums, TI, Soylent). All other sites get universal junk removal.
+Fetch any URL and return clean markdown. Handles HTML, JSON, XML, CSV, PDF. Site-specific cleanup for 20+ sites (GitHub, Reddit, Amazon, eBay, Stack Overflow, HN, Wikipedia, Medium, Hugging Face, DigiKey, Mouser, Molex, FCC (fcc.report, fcc.gov), Craigslist, Kijiji, Facebook Marketplace, Alibaba, AliExpress, RedFlagDeals, forums, TI, Soylent, Ashby + Greenhouse + Lever + Gem job boards). All other sites get universal junk removal.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
