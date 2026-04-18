@@ -39,6 +39,7 @@ from . import soylent as _soylent
 from . import stackoverflow as _stackoverflow
 from . import ti as _ti
 from . import wikipedia as _wikipedia
+from . import workatastartup as _workatastartup
 
 # ---------------------------------------------------------------------------
 # Generic junk selectors (apply to all sites)
@@ -410,6 +411,8 @@ def _detect_site(
         return "ti"
     if url and _wikipedia.is_wikipedia(url):
         return "wikipedia"
+    if url and _workatastartup.is_workatastartup(url):
+        return "workatastartup"
     # HTML-based fallback for Medium custom domains
     if soup is not None and _medium.is_medium_html(soup):
         return "medium"
@@ -488,6 +491,10 @@ def clean_html(
     # the generic script selector fires and decomposes it.
     if site == "ashby":
         _ashby.extract_ashby_data(soup, url)
+
+    # Work at a Startup: extract Inertia data-page JSON before script removal.
+    if site == "workatastartup":
+        _workatastartup.extract_workatastartup_data(soup, url)
 
     # eBay: extract structured data before scripts are removed
     if site == "ebay":
@@ -650,6 +657,8 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
         markdown = _redflagdeals.postprocess_rfd(markdown)
     elif site == "forum":
         markdown = _forums.postprocess_forum(markdown)
+    elif site == "workatastartup":
+        markdown = _workatastartup.postprocess_workatastartup(markdown)
     elif site is None:
         markdown = _postprocess_generic_jsonld(markdown)
 
