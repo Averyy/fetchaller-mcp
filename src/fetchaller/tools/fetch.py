@@ -2,6 +2,7 @@
 
 import os
 import re
+import struct
 import sys
 import time
 from dataclasses import dataclass
@@ -129,6 +130,100 @@ def truncate(text: str, max_tokens: int, chars_per_token: int = 4) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + f"\n\n[Truncated at ~{max_tokens} tokens]"
+
+
+def _format_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    size = float(n)
+    for unit in ("KB", "MB", "GB"):
+        size /= 1024
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+    return f"{size / 1024:.1f} TB"
+
+
+def _image_dimensions(data: bytes, content_type: str) -> tuple[int, int] | None:
+    """Parse pixel dimensions from the file header. PNG, GIF, JPEG, WebP."""
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+            w, h = struct.unpack(">II", data[16:24])
+            return w, h
+        if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+            w, h = struct.unpack("<HH", data[6:10])
+            return w, h
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 30:
+            fourcc = data[12:16]
+            if fourcc == b"VP8 ":  # lossy
+                w, h = struct.unpack("<HH", data[26:30])
+                return w & 0x3FFF, h & 0x3FFF
+            if fourcc == b"VP8L" and len(data) >= 25:  # lossless
+                b0, b1, b2, b3 = data[21], data[22], data[23], data[24]
+                w = ((b1 & 0x3F) << 8 | b0) + 1
+                h = ((b3 & 0x0F) << 10 | b2 << 2 | (b1 & 0xC0) >> 6) + 1
+                return w, h
+            if fourcc == b"VP8X" and len(data) >= 30:  # extended
+                w = (data[24] | data[25] << 8 | data[26] << 16) + 1
+                h = (data[27] | data[28] << 8 | data[29] << 16) + 1
+                return w, h
+        if data[:3] == b"\xff\xd8\xff":  # JPEG: scan for SOFn marker
+            i = 2
+            while i < len(data) - 8:
+                if data[i] != 0xFF:
+                    break
+                marker = data[i + 1]
+                if marker in (0xD8, 0xD9):
+                    break
+                sof = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                       0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+                if marker in sof:
+                    h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                    return w, h
+                seg_len = struct.unpack(">H", data[i + 2:i + 4])[0]
+                i += 2 + seg_len
+    except (struct.error, IndexError):
+        pass
+    return None
+
+
+_FILENAME_RE = re.compile(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', re.IGNORECASE)
+
+
+def _format_image_summary(result: "FetchResult", url: str) -> str:
+    """Build a short text summary for binary images — they can't be rendered as text."""
+    lines = [f"[Image: {result.content_type or 'unknown'}]"]
+
+    filename = None
+    disp = result.headers.get("content-disposition", "")
+    m = _FILENAME_RE.search(disp) if disp else None
+    if m:
+        filename = m.group(1).strip()
+    else:
+        path = urlparse(result.final_url or url).path
+        tail = path.rsplit("/", 1)[-1] if path else ""
+        if tail:
+            filename = tail
+    if filename:
+        lines.append(f"Filename: {filename}")
+
+    cl = result.headers.get("content-length", "")
+    size = int(cl) if cl.isdigit() else len(result.content)
+    lines.append(f"Size: {_format_bytes(size)}")
+
+    dims = _image_dimensions(result.content, result.content_type)
+    if dims:
+        lines.append(f"Dimensions: {dims[0]}x{dims[1]}")
+
+    lm = result.headers.get("last-modified")
+    if lm:
+        lines.append(f"Modified: {lm}")
+
+    etag = result.headers.get("etag")
+    if etag:
+        lines.append(f"ETag: {etag}")
+
+    lines.append(f"URL: {result.final_url or url}")
+    return "\n".join(lines)
 
 
 async def fetch_url(
@@ -956,6 +1051,24 @@ async def fetch_url(
 
         _log(f"FETCH {url} -> {response['content_type']} ({len(response['content'])} chars, {time.monotonic() - start:.1f}s)")
         return response
+
+    # SVG - textual XML, return as raw
+    if "image/svg+xml" in content_type or "image/svg" in content_type:
+        text = _decode_content(result.content, content_type)
+        return {
+            "content": truncate(text, max_tokens),
+            "content_type": "svg",
+            "url": result.final_url,
+        }
+
+    # Binary images - return metadata only (can't render bytes as text)
+    if content_type.startswith("image/"):
+        summary = _format_image_summary(result, fetch_url_str)
+        return {
+            "content": summary,
+            "content_type": "text",
+            "url": result.final_url,
+        }
 
     # Any other text-based content type
     if content_type.startswith("text/") or content_type.startswith("application/javascript"):

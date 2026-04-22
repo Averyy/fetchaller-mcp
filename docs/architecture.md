@@ -8,6 +8,8 @@
 
 - **fetchaller-mcp** owns ALL content processing and MCP tooling: takes raw HTML/JSON/PDF from wafer and turns it into clean markdown for LLMs. Site-specific CSS selectors, BeautifulSoup cleanup, regex post-processors, HTML→markdown conversion, PDF extraction, JSON-LD extraction, search result parsing, response caching, MCP tool definitions.
 
+Content-type dispatch in `src/fetchaller/tools/fetch.py` handles: `application/json` (as-is), `text/plain`/`text/csv` (as-is), XML/RSS/Atom (feed-parse then markdown, or raw XML fallback), `application/pdf` (text extraction via pymupdf), HTML (site dispatch → markdown, or raw with `raw=true`), `image/svg+xml` (returned as raw XML text), other `image/*` (metadata summary — type, filename, size, dimensions for PNG/GIF/JPEG/WebP, Last-Modified, ETag), and any other `text/*`/`application/javascript` (raw text). Everything else returns an "Unsupported content type" error.
+
 **The rule**: fetchaller NEVER does bot solving, impersonation, challenge detection, or cookie management. If a site blocks requests, that's a wafer bug — fix it in wafer, not fetchaller. Fetchaller passes a `BrowserSolver` instance to wafer sessions at construction time (dependency injection), but never calls methods on it directly.
 
 ## Content Processing Architecture

@@ -432,6 +432,53 @@ class TestContentTypeDispatch:
         assert result["content_type"] == "markdown"
         assert "Hello" in result["content"]
 
+    @_PATCH_SSRF
+    async def test_svg_returned_as_raw_xml(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        svg = b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'
+        session = MockWaferSession(default=MockResponse(
+            content=svg,
+            content_type="image/svg+xml",
+            status_code=200,
+            url="https://example.com/logo.svg",
+        ))
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/logo.svg")
+        assert result["content_type"] == "svg"
+        assert "<svg" in result["content"]
+        assert "<rect" in result["content"]
+
+    @_PATCH_SSRF
+    async def test_png_returns_metadata_summary(self, _mock_ssrf):
+        import struct
+
+        from fetchaller.tools.fetch import fetch_url
+
+        # Minimal PNG: 8-byte signature + IHDR chunk declaring 42x17
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 42, 17) + b"\x08\x06\x00\x00\x00" + b"\x00" * 4
+        session = MockWaferSession(default=MockResponse(
+            content=png,
+            content_type="image/png",
+            status_code=200,
+            url="https://example.com/pic.png",
+            headers={
+                "content-type": "image/png",
+                "content-length": str(len(png)),
+                "last-modified": "Wed, 14 Aug 2024 19:19:46 GMT",
+                "etag": '"abc123"',
+            },
+        ))
+        with _patch_wafer(session):
+            result = await fetch_url("https://example.com/pic.png")
+        assert result["content_type"] == "text"
+        content = result["content"]
+        assert "[Image: image/png]" in content
+        assert "Filename: pic.png" in content
+        assert "Dimensions: 42x17" in content
+        assert "Modified: Wed, 14 Aug 2024" in content
+        assert "abc123" in content
+
 
 # ---------------------------------------------------------------------------
 # Error handling
