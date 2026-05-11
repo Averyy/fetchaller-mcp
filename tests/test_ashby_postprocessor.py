@@ -13,10 +13,13 @@ from fetchaller.content.ashby import (
     _extract_ashby_jid,
     _extract_org_slug_from_js,
     _find_careers_chunk_url,
+    extract_ashby_board_slug,
     extract_ashby_data,
     is_ashby,
+    is_ashby_board_url,
     is_ashby_embed_url,
     postprocess_ashby,
+    render_ashby_board,
 )
 from fetchaller.content.html import _detect_site
 
@@ -40,6 +43,97 @@ class TestIsAshby:
 class TestSiteDetection:
     def test_ashby_detected(self):
         assert _detect_site("https://jobs.ashbyhq.com/ramp/abc", False) == "ashby"
+
+
+class TestIsAshbyBoardUrl:
+    def test_org_root(self):
+        assert is_ashby_board_url("https://jobs.ashbyhq.com/openai")
+
+    def test_org_root_with_slash(self):
+        assert is_ashby_board_url("https://jobs.ashbyhq.com/openai/")
+
+    def test_org_root_with_query(self):
+        # Filtered board view (departmentId filter) is still a board URL
+        assert is_ashby_board_url("https://jobs.ashbyhq.com/openai?departmentId=abc")
+
+    def test_posting_not_board(self):
+        # Two-segment URLs are postings, not boards
+        assert not is_ashby_board_url(
+            "https://jobs.ashbyhq.com/openai/eca54d0e-232a-4c3e-bfcc-d6c6add393f5"
+        )
+
+    def test_different_host(self):
+        assert not is_ashby_board_url("https://example.com/openai")
+
+    def test_extract_slug(self):
+        assert extract_ashby_board_slug("https://jobs.ashbyhq.com/openai") == "openai"
+        assert extract_ashby_board_slug("https://jobs.ashbyhq.com/ramp/") == "ramp"
+        assert extract_ashby_board_slug("https://jobs.ashbyhq.com/openai?x=1") == "openai"
+        assert extract_ashby_board_slug("https://jobs.ashbyhq.com/openai/abc") is None
+
+
+class TestRenderAshbyBoard:
+    def test_groups_and_filters_unlisted(self):
+        data = {
+            "apiVersion": "1",
+            "jobs": [
+                {
+                    "id": "j1",
+                    "title": "Research Engineer",
+                    "department": "Research",
+                    "team": "Alignment",
+                    "employmentType": "FullTime",
+                    "location": "San Francisco",
+                    "isRemote": False,
+                    "isListed": True,
+                    "jobUrl": "https://jobs.ashbyhq.com/openai/j1",
+                },
+                {
+                    "id": "j2",
+                    "title": "Designer",
+                    "department": "Design",
+                    "team": "Design",
+                    "employmentType": "FullTime",
+                    "location": "Remote",
+                    "isRemote": True,
+                    "isListed": True,
+                    "jobUrl": "https://jobs.ashbyhq.com/openai/j2",
+                },
+                {
+                    "id": "j3",
+                    "title": "Hidden Role",
+                    "department": "Research",
+                    "isListed": False,  # should be filtered out
+                    "jobUrl": "https://jobs.ashbyhq.com/openai/j3",
+                },
+            ],
+        }
+        out = render_ashby_board(data, "openai", source_url="https://jobs.ashbyhq.com/openai")
+        assert "# openai — Job Board (2 open positions)" in out
+        assert "**apiVersion**: 1" in out
+        assert "## Research (1)" in out
+        assert "## Design (1)" in out
+        assert "**Research Engineer**" in out
+        assert "San Francisco" in out
+        assert "team: Alignment" in out  # team differs from dept
+        assert "Remote" in out
+        assert "Hidden Role" not in out  # isListed=False filtered
+        # Alphabetical: Design < Research
+        assert out.index("## Design") < out.index("## Research")
+
+    def test_empty_board(self):
+        out = render_ashby_board({"jobs": []}, "freshstart")
+        assert "# freshstart — Job Board (0 open positions)" in out
+
+    def test_missing_department(self):
+        data = {
+            "jobs": [
+                {"title": "Stealth", "isListed": True, "jobUrl": "https://jobs.ashbyhq.com/x/1"},
+            ],
+        }
+        out = render_ashby_board(data, "x")
+        assert "## Other (1)" in out
+        assert "**Stealth**" in out
 
 
 def _build_app_data_html(posting: dict, organization: dict | None = None) -> str:

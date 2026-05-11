@@ -29,12 +29,33 @@ from markdownify import markdownify
 # ---------------------------------------------------------------------------
 
 _ASHBY_HOST_RE = re.compile(r"^jobs\.ashbyhq\.com$")
+_ASHBY_BOARD_PATH_RE = re.compile(r"^/([a-z0-9][a-z0-9_-]*)/?$")
 
 
 def is_ashby(url: str) -> bool:
     """Check if URL is an Ashby job board posting."""
     hostname = (urlparse(url).hostname or "").lower()
     return bool(_ASHBY_HOST_RE.match(hostname))
+
+
+def is_ashby_board_url(url: str) -> bool:
+    return extract_ashby_board_slug(url) is not None
+
+
+def extract_ashby_board_slug(url: str) -> str | None:
+    """Match Ashby board-index URLs like ``jobs.ashbyhq.com/{org}`` (one path segment only).
+
+    Individual postings have two path segments (``/{org}/{uuid}``) and won't match.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    hostname = (parsed.hostname or "").lower()
+    if not _ASHBY_HOST_RE.match(hostname):
+        return None
+    m = _ASHBY_BOARD_PATH_RE.match(parsed.path)
+    return m.group(1) if m else None
 
 
 SELECTORS_LIST: list[str] = []
@@ -406,3 +427,97 @@ async def resolve_ashby_embed_url(url: str, session) -> str | None:
             return None
         _ORG_SLUG_CACHE[hostname] = slug
     return f"https://jobs.ashbyhq.com/{slug}/{jid}"
+
+
+# ---------------------------------------------------------------------------
+# Board-index (public posting-api REST endpoint)
+# ---------------------------------------------------------------------------
+
+_BOARD_API_BASE = "https://api.ashbyhq.com/posting-api/job-board"
+
+
+async def fetch_ashby_board(org: str, session) -> dict | None:
+    """Fetch the full job-board listing for ``jobs.ashbyhq.com/{org}``.
+
+    Returns the raw API payload (``{"jobs": [...], "apiVersion": "..."}``) or
+    ``None`` on any error so callers can fall through to the normal HTML fetch.
+    """
+    try:
+        resp = await session.get(f"{_BOARD_API_BASE}/{org}")
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = json.loads(resp.text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def render_ashby_board(data: dict, org: str, source_url: str | None = None) -> str:
+    """Render an Ashby board listing as markdown grouped by department."""
+    jobs = data.get("jobs") or []
+    listed = [j for j in jobs if isinstance(j, dict) and j.get("isListed", True)]
+
+    header = f"# {org} — Job Board ({len(listed)} open positions)"
+    parts: list[str] = [header, ""]
+    api_version = (data.get("apiVersion") or "").strip()
+    if api_version:
+        parts.append(f"**apiVersion**: {api_version}")
+    parts.append(f"**source**: {_BOARD_API_BASE}/{org}")
+    if source_url:
+        parts.append(f"**boardUrl**: {source_url}")
+    parts.append("")
+
+    # Group by department for readability.
+    by_dept: dict[str, list[dict]] = {}
+    for j in listed:
+        dept = (j.get("department") or "").strip() or "Other"
+        by_dept.setdefault(dept, []).append(j)
+
+    for dept in sorted(by_dept.keys()):
+        dept_jobs = by_dept[dept]
+        parts.append(f"## {dept} ({len(dept_jobs)})")
+        parts.append("")
+        for j in dept_jobs:
+            title = (j.get("title") or "").strip() or "(untitled)"
+            line = f"- **{title}**"
+            details: list[str] = []
+            loc = (j.get("location") or "").strip()
+            if loc:
+                details.append(loc)
+            secondary = j.get("secondaryLocations") or []
+            if isinstance(secondary, list) and secondary:
+                more_locs = []
+                for s in secondary:
+                    if isinstance(s, dict):
+                        n = (s.get("location") or "").strip()
+                        if n:
+                            more_locs.append(n)
+                    elif isinstance(s, str):
+                        more_locs.append(s)
+                if more_locs:
+                    details.append("+ " + ", ".join(more_locs))
+            if j.get("isRemote"):
+                details.append("Remote")
+            wtype = (j.get("workplaceType") or "").strip()
+            if wtype:
+                details.append(wtype)
+            etype = (j.get("employmentType") or "").strip()
+            if etype:
+                details.append(etype)
+            team = (j.get("team") or "").strip()
+            if team and team != dept:
+                details.append(f"team: {team}")
+            if details:
+                line += " — " + " · ".join(details)
+            parts.append(line)
+            url = (j.get("jobUrl") or "").strip()
+            if url:
+                parts.append(f"  - {url}")
+        parts.append("")
+
+    return "\n".join(parts).rstrip() + "\n"

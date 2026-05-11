@@ -21,7 +21,14 @@ from ..content.alibaba import (
 )
 from ..content.aliexpress import extract_product_id_from_url, extract_search_products, is_aliexpress_search_url
 from ..content.amazon import is_amazon_store
-from ..content.ashby import is_ashby_embed_url, resolve_ashby_embed_url
+from ..content.ashby import (
+    extract_ashby_board_slug,
+    fetch_ashby_board,
+    is_ashby_board_url,
+    is_ashby_embed_url,
+    render_ashby_board,
+    resolve_ashby_embed_url,
+)
 from ..content.costco import is_costco as _is_costco
 from ..content.costco import is_costco_category_url as _is_costco_category
 from ..content.costco import is_costco_search_url as _is_costco_search
@@ -46,9 +53,13 @@ from ..content.forums import (
     transform_forum_url,
 )
 from ..content.gem import (
+    extract_gem_board_slug,
     extract_gem_params,
+    fetch_gem_board,
     fetch_gem_job,
+    is_gem_board_url,
     is_gem_url,
+    render_gem_board,
     render_gem_job,
 )
 from ..content.github import (
@@ -604,6 +615,33 @@ async def fetch_url(
             return {"content": content, "content_type": "markdown", "url": url}
         # Guess wrong or API unavailable — fall through to normal HTML fetch.
 
+    # Ashby board index (jobs.ashbyhq.com/{org}): fetch listings via public REST.
+    # Must run before the generic HTML fetch — without this, board pages return
+    # just the SPA spinner and our postprocessor strips it to the page title.
+    if is_ashby_board_url(url):
+        _ab_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _ab_cache_key:
+            _ab_cached = cache.get(_ab_cache_key)
+            if _ab_cached:
+                content = truncate(_ab_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Ashby board CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _ab_cached.content_type, "url": url, "cached": True}
+        _ab_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _ab_org = extract_ashby_board_slug(url)
+        _ab_data = await fetch_ashby_board(_ab_org, _ab_session)
+        if _ab_data is not None:
+            markdown = render_ashby_board(_ab_data, _ab_org, source_url=url)
+            if cache and _ab_cache_key:
+                cache.set(_ab_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Ashby board ({len(_ab_data.get('jobs') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # API 404 (not an Ashby-hosted board) or transient failure — fall through.
+
     # Gem direct URL (jobs.gem.com/{board}/{extId}): fetch via public GraphQL.
     if is_gem_url(url):
         _gm_cache_key = normalize_url(url) if cache else None
@@ -628,6 +666,31 @@ async def fetch_url(
             _log(f"FETCH {url} -> Gem GraphQL ({len(content)} chars, {time.monotonic() - start:.1f}s)")
             return {"content": content, "content_type": "markdown", "url": url}
         # Gem API failed — fall through to normal HTML fetch.
+
+    # Gem board index (jobs.gem.com/{board}): fetch listings via public REST.
+    if is_gem_board_url(url):
+        _gmb_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _gmb_cache_key:
+            _gmb_cached = cache.get(_gmb_cache_key)
+            if _gmb_cached:
+                content = truncate(_gmb_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Gem board CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _gmb_cached.content_type, "url": url, "cached": True}
+        _gmb_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _gmb_slug = extract_gem_board_slug(url)
+        _gmb_jobs = await fetch_gem_board(_gmb_slug, _gmb_session)
+        if _gmb_jobs is not None:
+            markdown = render_gem_board(_gmb_jobs, _gmb_slug, source_url=url)
+            if cache and _gmb_cache_key:
+                cache.set(_gmb_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Gem board ({len(_gmb_jobs)} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # API 404 (not a Gem-hosted board) or transient failure — fall through.
 
     # Lever direct URL (jobs.lever.co/{company}/{id}): fetch JSON API +
     # parse /apply page for the application form, then render as markdown.

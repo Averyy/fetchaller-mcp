@@ -20,6 +20,7 @@ from markdownify import markdownify
 
 _GEM_HOST_RE = re.compile(r"^jobs\.gem\.com$")
 _GEM_PATH_RE = re.compile(r"^/([a-z0-9][a-z0-9_-]*)/([A-Za-z0-9_-]{8,})/?$")
+_GEM_BOARD_PATH_RE = re.compile(r"^/([a-z0-9][a-z0-9_-]*)/?$")
 
 
 def is_gem_url(url: str) -> bool:
@@ -38,6 +39,23 @@ def extract_gem_params(url: str) -> tuple[str, str] | None:
     if not m:
         return None
     return m.group(1), m.group(2)
+
+
+def is_gem_board_url(url: str) -> bool:
+    return extract_gem_board_slug(url) is not None
+
+
+def extract_gem_board_slug(url: str) -> str | None:
+    """Match board-index URLs like ``jobs.gem.com/{board-slug}`` (one path segment only)."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    hostname = (parsed.hostname or "").lower()
+    if not _GEM_HOST_RE.match(hostname):
+        return None
+    m = _GEM_BOARD_PATH_RE.match(parsed.path)
+    return m.group(1) if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -291,4 +309,97 @@ def render_gem_job(data: dict, source_url: str | None = None) -> str:
         parts.append("")
     if apply_url:
         parts.append(f"**sourceUrl**: {apply_url}")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Board-index (Greenhouse-style REST API)
+# ---------------------------------------------------------------------------
+
+_BOARD_API_BASE = "https://api.gem.com/job_board/v0"
+
+
+async def fetch_gem_board(board_slug: str, session) -> list[dict] | None:
+    """Fetch the full job-board listing for ``jobs.gem.com/{board_slug}``.
+
+    Returns the raw list of job posts (Greenhouse-shaped) or ``None`` on any
+    error so callers can fall through to the normal HTML fetch.
+    """
+    try:
+        resp = await session.get(f"{_BOARD_API_BASE}/{board_slug}/job_posts/")
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = json.loads(resp.text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, list):
+        return None
+    return data
+
+
+def _gem_job_location(job: dict) -> str:
+    loc = job.get("location")
+    if isinstance(loc, dict):
+        name = (loc.get("name") or "").strip()
+        if name:
+            return name
+    offices = job.get("offices") or []
+    if isinstance(offices, list):
+        names = []
+        for o in offices:
+            if isinstance(o, dict):
+                n = (o.get("name") or "").strip()
+                if n:
+                    names.append(n)
+        if names:
+            return ", ".join(names)
+    return ""
+
+
+def render_gem_board(jobs: list[dict], board_slug: str, source_url: str | None = None) -> str:
+    """Render a Gem board listing as markdown grouped by department."""
+    header = f"# {board_slug} — Job Board ({len(jobs)} open positions)"
+    parts: list[str] = [header, ""]
+    parts.append(f"**source**: {_BOARD_API_BASE}/{board_slug}/job_posts/")
+    if source_url:
+        parts.append(f"**boardUrl**: {source_url}")
+    parts.append("")
+
+    # Group by department name (using the first listed department per job).
+    by_dept: dict[str, list[dict]] = {}
+    for j in jobs:
+        depts = j.get("departments") or []
+        dept_name = "Other"
+        if isinstance(depts, list) and depts and isinstance(depts[0], dict):
+            dept_name = (depts[0].get("name") or "").strip() or "Other"
+        by_dept.setdefault(dept_name, []).append(j)
+
+    for dept in sorted(by_dept.keys()):
+        dept_jobs = by_dept[dept]
+        parts.append(f"## {dept} ({len(dept_jobs)})")
+        parts.append("")
+        for j in dept_jobs:
+            title = (j.get("title") or "").strip() or "(untitled)"
+            line = f"- **{title}**"
+            details: list[str] = []
+            loc = _gem_job_location(j)
+            if loc:
+                details.append(loc)
+            ltype = (j.get("location_type") or "").strip()
+            if ltype:
+                details.append(ltype)
+            etype = (j.get("employment_type") or "").strip()
+            if etype:
+                details.append(etype)
+            if details:
+                line += " — " + " · ".join(details)
+            parts.append(line)
+            url = (j.get("absolute_url") or "").strip()
+            if url:
+                parts.append(f"  - {url}")
+        parts.append("")
+
     return "\n".join(parts).rstrip() + "\n"
