@@ -61,6 +61,8 @@ For each new site module:
 - `test_mouser_api.py` — Mouser API client: URL parsing, part formatting, search, error handling
 - `test_facebook_marketplace_graphql.py` — Facebook Marketplace URL detection (search/listing/browse/reserved paths), price filter extraction, GraphQL variable building (search + listing), response parsing (search + listing detail + images), search result formatting
 - `test_marketplace_search.py` — Unified marketplace search: Craigslist location resolution (exact/alias/fuzzy/province), Kijiji location cross-check, cross-platform alias mapping (sort/category/condition completeness + resolution), orchestrator tests (all-succeed, partial-fail, all-fail, exception handling, platform filtering, price headers, FB location disambiguation for Canadian cities)
+- `test_dayforce.py` — Dayforce URL detection (posting + board), `__NEXT_DATA__` parsing, posting render (metadata, postingLocations, jobPostingAttributes, jobDescriptionHeader/Body/Footer, skipped internal handles), board render (header, posting lines, link construction)
+- `test_cornerstone.py` — Cornerstone (CSOD) URL detection (posting + board, hyphenated tenants), `csod.context` parsing, posting render (header with corp, metadata, primary/additional locations, externalDescription, skipped internal handles), board render (header, location formatting, link construction, hyphen-postingDate suppression)
 - `test_ratelimit.py` — Per-domain rate limiter (DomainRateLimiter) unit tests
 - Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
 

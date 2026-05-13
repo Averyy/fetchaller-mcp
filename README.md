@@ -246,7 +246,7 @@ Kijiji is Canada-only and automatically skipped for US locations. Location match
 3. Fetches with browser-like TLS fingerprints via wafer (Rust/BoringSSL) — rotates Chrome versions automatically
 4. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
 5. Detects content type
-6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (20+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, and more), converts to markdown
+6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Work-at-a-Startup job boards, and more), converts to markdown
 7. For JSON/XML/CSV/text: returns raw
 8. For PDF: extracts text
 9. Truncates to token limit
@@ -304,6 +304,7 @@ All challenge solving is handled by wafer's `BrowserSolver` (Patchright-based). 
 - **`mouser.py`** — All TLDs. CSS selectors, soup cleanup. Behind Akamai. HTML fallback without API key.
 - **`soylent.py`** — Shopify store cleanup, inventory extraction from `gsf_conversion_data`.
 - **`ti.py`** — Document viewer support for lazy-loaded datasheets.
+- **`ashby.py`** / **`greenhouse.py`** / **`lever.py`** / **`gem.py`** / **`dayforce.py`** / **`cornerstone.py`** / **`workatastartup.py`** — Job-board platforms. All preserve the source's own field names, enum values, and section titles. Each posting and (where supported) board listing is dispatched to the platform's API/JSON shell before the generic HTML pipeline — see `docs/site-apis.md` for endpoints.
 
 ### Search
 
@@ -322,6 +323,8 @@ CSR sites where HTML scraping produces garbage are intercepted in `fetch_url()` 
 - **Mouser** (`src/fetchaller/mouser/`) — Search API client. Requires `MOUSER_API_KEY`.
 - **DigiKey** (`src/fetchaller/digikey/`) — OAuth2 client_credentials API. Requires `DIGIKEY_CLIENT_ID` + `DIGIKEY_CLIENT_SECRET`.
 - **Marketplace Search** (`src/fetchaller/marketplace/`) — Unified orchestrator searching Kijiji, Craigslist, and Facebook Marketplace concurrently. Human-readable params mapped to platform-specific values. Auto-skips Kijiji for non-Canadian locations.
+- **Dayforce HCM** (`src/fetchaller/content/dayforce.py`) — Posting detail from SSR'd `__NEXT_DATA__`. Board listing via CSRF-protected POST to `/api/geo/{namespace}/jobposting/search` (NextAuth `/api/auth/csrf` round-trip required).
+- **Cornerstone OnDemand** (`src/fetchaller/content/cornerstone.py`) — SPA shell carries a JWT in `csod.context`. Posting from `services/x/job-requisition/v2/requisitions/{reqid}/jobDetails`; board listing POSTed to `rec-job-search/external/jobs` on the regional cloud host (`us|eu|uk|au.api.csod.com`).
 
 ### HTTP Transport (Wafer)
 

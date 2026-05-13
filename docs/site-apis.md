@@ -79,7 +79,7 @@ Key behaviors:
 
 eBay search pages are SSR — no API intercept needed. Search results are extracted from `.s-item` DOM elements in `clean_html()` (before CSS selectors fire), formatted as a numbered list, and injected as a marker div. The postprocessor replaces all markdownified noise with the clean extracted data.
 
-## Job Boards (Ashby, Gem, Lever, Greenhouse)
+## Job Boards (Ashby, Gem, Lever, Greenhouse, Dayforce, Cornerstone)
 
 Every supported job board platform exposes both an individual-posting API and a board-listing API. `fetch_url()` intercepts both URL shapes per platform and skips the SPA body entirely.
 
@@ -89,12 +89,16 @@ Every supported job board platform exposes both an individual-posting API and a 
 | Gem      | `jobs.gem.com/{board}/{extId}`  | `jobs.gem.com/{board}`   | `api.gem.com/job_board/v0/{board}/job_posts/` (REST, Greenhouse-shaped) + `jobs.gem.com/api/public/graphql` (per posting) |
 | Lever    | `jobs.lever.co/{company}/{id}`  | `jobs.lever.co/{company}` (SSR — no intercept) | `api.lever.co/v0/postings/{company}/{id}` |
 | Greenhouse | `boards.greenhouse.io/{token}/jobs/{id}` (and `?gh_jid=&gh_src=` variants) | `boards.greenhouse.io/{token}` (SSR — no intercept) | `boards-api.greenhouse.io/v1/boards/{token}/jobs/{id}` |
+| Dayforce | `jobs.dayforcehcm.com/{lang}/{namespace}/{board}/jobs/{id}` | `jobs.dayforcehcm.com/{lang}/{namespace}/{board}` | Posting: `__NEXT_DATA__` in SSR'd HTML (no API). Board: POST `jobs.dayforcehcm.com/api/geo/{namespace}/jobposting/search` (CSRF-protected) |
+| Cornerstone (CSOD) | `{tenant}.csod.com/ux/ats/careersite/{cid}/home/requisition/{reqid}` | `{tenant}.csod.com/ux/ats/careersite/{cid}/home` | Posting: `{tenant}.csod.com/services/x/job-requisition/v2/requisitions/{reqid}/jobDetails?cultureId={n}`. Board: POST `{us\|eu\|uk\|au}.api.csod.com/rec-job-search/external/jobs` (regional cloud host from `csod.context.endpoints.cloud`) |
 
 - **`src/fetchaller/content/ashby.py`** — Postings extracted from `window.__appData.posting` in the SSR'd HTML (no API needed per-posting). Board index uses the public posting-api REST endpoint. Board response is grouped by `department` for readability; `isListed=False` jobs are filtered out.
 - **`src/fetchaller/content/gem.py`** — Postings via Apollo GraphQL (`ExternalJobPostingQuery`). Board listings via the public REST endpoint, which is Greenhouse-shaped (flat list of jobs with `departments[]`, `location.name`, `location_type`, `employment_type`, `absolute_url`).
 - **`src/fetchaller/content/lever.py`** + **`src/fetchaller/content/greenhouse.py`** — Posting API paths only. Their board index pages are SSR'd and render correctly through the generic HTML pipeline.
+- **`src/fetchaller/content/dayforce.py`** — Postings extracted from `__NEXT_DATA__.props.pageProps.jobData` in the SSR'd HTML; `site-info` (clientNamespace/jobBoardCode/cultureCode) also pulled from `dehydratedState.queries`. Board listing needs three round-trips: (1) GET the board page for session cookies + `site-info`, (2) GET `/api/auth/csrf` for the NextAuth token, (3) POST `/api/geo/{namespace}/jobposting/search` with `X-CSRF-TOKEN`, `Content-Type: application/json`, and body `{clientNamespace, jobBoardCode, cultureCode, pageNumber, pageSize}`. The validator is strict — `jobBoardId` instead of `jobBoardCode` returns 400 "Culture not found".
+- **`src/fetchaller/content/cornerstone.py`** — Both posting and board fetchers start by parsing the inline `csod.context = {...}` blob from the SPA shell for the per-page JWT, `cultureID`, `cultureName`, `corp` tenant slug, and `endpoints.cloud` regional host (one of `us.api.csod.com`, `eu.api.csod.com`, `uk.api.csod.com`, `au.api.csod.com` — the tenant's data residency dictates which). All API calls send `Authorization: Bearer <jwt>` + `CSOD-Accept-Language: {cultureName}`. The JWT carries an explicit `rurls` allowlist of permitted endpoint paths and short expiry, so callers must extract it fresh per request rather than cache it.
 
 Key behaviors:
 - **API 404 fall-through**: When an org/board isn't hosted on that platform (e.g. `jobs.ashbyhq.com/anthropic` — Anthropic doesn't use Ashby), the API returns 404 and the dispatch falls through to the normal HTML fetch. No error surfaced to the caller.
-- **Order in dispatch matters**: Posting URLs are checked before board URLs (`/{org}/{uuid}` is more specific than `/{org}`). Posting regex requires two path segments; board regex requires exactly one.
-- **Renderers preserve raw field names**: Each platform's renderer dumps the API's own keys/enums (`FullTime`, `REMOTE`, `full_time`, `hybrid`) without translation — companies expose different metadata, and translation loses signal.
+- **Order in dispatch matters**: Posting URLs are checked before board URLs (`/{org}/{uuid}` is more specific than `/{org}`). Posting regex requires two path segments; board regex requires exactly one. For Dayforce and CSOD the URL shapes already disambiguate (`.../jobs/{id}` vs `.../home/requisition/{reqid}` for postings; bare board paths otherwise).
+- **Renderers preserve raw field names**: Each platform's renderer dumps the API's own keys/enums (`FullTime`, `REMOTE`, `full_time`, `hybrid`, `postingType`, `availableCultures`) without translation — companies expose different metadata, and translation loses signal.

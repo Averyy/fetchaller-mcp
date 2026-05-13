@@ -29,10 +29,26 @@ from ..content.ashby import (
     render_ashby_board,
     resolve_ashby_embed_url,
 )
+from ..content.cornerstone import (
+    fetch_cornerstone_board,
+    fetch_cornerstone_job,
+    is_cornerstone_board_url,
+    is_cornerstone_url,
+    render_cornerstone_board,
+    render_cornerstone_job,
+)
 from ..content.costco import is_costco as _is_costco
 from ..content.costco import is_costco_category_url as _is_costco_category
 from ..content.costco import is_costco_search_url as _is_costco_search
 from ..content.craigslist import is_craigslist_search_url as _is_craigslist_search
+from ..content.dayforce import (
+    fetch_dayforce_board,
+    fetch_dayforce_job,
+    is_dayforce_board_url,
+    is_dayforce_url,
+    render_dayforce_board,
+    render_dayforce_job,
+)
 from ..content.digikey import is_digikey as _is_digikey
 from ..content.facebook_marketplace import (
     extract_listing_id as _extract_fb_listing_id,
@@ -717,6 +733,107 @@ async def fetch_url(
             _log(f"FETCH {url} -> Lever API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
             return {"content": content, "content_type": "markdown", "url": url}
         # API failed — fall through to normal HTML fetch.
+
+    # Dayforce posting (jobs.dayforcehcm.com/{lang}/{namespace}/{board}/jobs/{id}):
+    # the page is SSR'd with full jobData in __NEXT_DATA__. Without this block
+    # the generic HTML pipeline strips the Next.js shell down to "Sign In".
+    if is_dayforce_url(url):
+        _df_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _df_cache_key:
+            _df_cached = cache.get(_df_cache_key)
+            if _df_cached:
+                content = truncate(_df_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Dayforce CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _df_cached.content_type, "url": url, "cached": True}
+        _df_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _df_data = await fetch_dayforce_job(url, _df_session)
+        if _df_data:
+            markdown = render_dayforce_job(_df_data, source_url=url)
+            if cache and _df_cache_key:
+                cache.set(_df_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Dayforce posting ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Parse failed — fall through to normal HTML fetch.
+
+    # Dayforce board index: list of postings comes from a CSRF-protected
+    # POST to /api/geo/{namespace}/jobposting/search after hydration.
+    if is_dayforce_board_url(url):
+        _dfb_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _dfb_cache_key:
+            _dfb_cached = cache.get(_dfb_cache_key)
+            if _dfb_cached:
+                content = truncate(_dfb_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Dayforce board CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _dfb_cached.content_type, "url": url, "cached": True}
+        _dfb_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _dfb_data = await fetch_dayforce_board(url, _dfb_session)
+        if _dfb_data is not None:
+            markdown = render_dayforce_board(_dfb_data, source_url=url)
+            if cache and _dfb_cache_key:
+                cache.set(_dfb_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Dayforce board ({len(_dfb_data.get('jobPostings') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Search call failed — fall through to normal HTML fetch.
+
+    # Cornerstone OnDemand (CSOD) posting: SPA shell with a JWT in
+    # csod.context. Hit services/x/job-requisition/v2/requisitions/{id}/jobDetails.
+    if is_cornerstone_url(url):
+        _cs_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _cs_cache_key:
+            _cs_cached = cache.get(_cs_cache_key)
+            if _cs_cached:
+                content = truncate(_cs_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Cornerstone CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _cs_cached.content_type, "url": url, "cached": True}
+        _cs_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _cs_data = await fetch_cornerstone_job(url, _cs_session)
+        if _cs_data:
+            markdown = render_cornerstone_job(_cs_data, source_url=url)
+            if cache and _cs_cache_key:
+                cache.set(_cs_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Cornerstone posting ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # API failed — fall through to normal HTML fetch.
+
+    # Cornerstone board index: rec-job-search/external/jobs on the regional
+    # cloud host carried in csod.context.endpoints.cloud.
+    if is_cornerstone_board_url(url):
+        _csb_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _csb_cache_key:
+            _csb_cached = cache.get(_csb_cache_key)
+            if _csb_cached:
+                content = truncate(_csb_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Cornerstone board CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _csb_cached.content_type, "url": url, "cached": True}
+        _csb_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _csb_data = await fetch_cornerstone_board(url, _csb_session)
+        if _csb_data is not None:
+            markdown = render_cornerstone_board(_csb_data, source_url=url)
+            if cache and _csb_cache_key:
+                cache.set(_csb_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Cornerstone board ({len(_csb_data.get('requisitions') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Search call failed — fall through to normal HTML fetch.
 
     # Transform Reddit URLs
     reddit_result = transform_reddit_url(url)
