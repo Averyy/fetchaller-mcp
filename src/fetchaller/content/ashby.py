@@ -2,7 +2,8 @@
 
 Exports the standard site interface (SELECTORS_LIST, is_ashby,
 extract_ashby_data, postprocess_ashby) plus embed URL resolution
-(is_ashby_embed_url, resolve_ashby_embed_url).
+(is_ashby_embed_url, resolve_ashby_embed_url,
+extract_ashby_embed_slug_from_html).
 
 Ashby job pages (jobs.ashbyhq.com) are React SPAs — the rendered body
 is just a spinner. All posting data lives in ``window.__appData.posting``.
@@ -380,6 +381,27 @@ def _extract_ashby_jid(url: str) -> str | None:
 
 def is_ashby_embed_url(url: str) -> bool:
     return _extract_ashby_jid(url) is not None
+
+
+_ASHBY_EMBED_SCRIPT_RE = re.compile(
+    r'<script[^>]+src\s*=\s*["\']https?://jobs\.ashbyhq\.com/([a-z0-9][a-z0-9_-]*)/embed[^"\']*["\']',
+    re.IGNORECASE,
+)
+
+
+def extract_ashby_embed_slug_from_html(html: str) -> str | None:
+    """Return the Ashby org slug if the page embeds a ``jobs.ashbyhq.com/{org}/embed`` script.
+
+    Used to detect company career pages that pull job listings from Ashby via
+    the embed script tag (e.g. ``skywatch.com/careers/``).
+    """
+    m = _ASHBY_EMBED_SCRIPT_RE.search(html)
+    if not m:
+        return None
+    slug = m.group(1).lower()
+    if slug in {"api", "embed", "assets", "_next", "static"}:
+        return None
+    return slug
 
 
 def _find_careers_chunk_url(html: str, base_url: str) -> str | None:

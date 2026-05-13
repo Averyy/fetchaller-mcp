@@ -43,6 +43,8 @@ If ruff fails, fix with `.venv/bin/ruff check --fix src/ tests/` and verify agai
 
 Do NOT test against the production version (Docker image from GHCR).
 
+**The MCP server caches loaded module code.** Even with the local config, the running fetchaller process loaded `src/fetchaller/**/*.py` at Claude Code startup. New modules and edits do NOT take effect until you restart Claude Code (or otherwise restart the MCP server process). When live-testing changes inline, run them via `.venv/bin/python -c "..."` against the fresh source on disk to confirm the code is correct before restarting.
+
 ## Landing Page
 
 `landing/` contains the static site deployed to fetchaller.com. Read `docs/design-style-guide.md` before any visual changes. Always invoke the `frontend-design` skill (`/frontend-design`) when making visual changes.
@@ -52,5 +54,5 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction. Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR.
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

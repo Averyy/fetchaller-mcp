@@ -23,11 +23,23 @@ from ..content.aliexpress import extract_product_id_from_url, extract_search_pro
 from ..content.amazon import is_amazon_store
 from ..content.ashby import (
     extract_ashby_board_slug,
+    extract_ashby_embed_slug_from_html,
     fetch_ashby_board,
     is_ashby_board_url,
     is_ashby_embed_url,
     render_ashby_board,
     resolve_ashby_embed_url,
+)
+from ..content.bamboohr import (
+    extract_bamboohr_board_params,
+    extract_bamboohr_embed_tenant,
+    extract_bamboohr_params,
+    fetch_bamboohr_board,
+    fetch_bamboohr_job,
+    is_bamboohr_board_url,
+    is_bamboohr_url,
+    render_bamboohr_board,
+    render_bamboohr_job,
 )
 from ..content.cornerstone import (
     fetch_cornerstone_board,
@@ -42,6 +54,7 @@ from ..content.costco import is_costco_category_url as _is_costco_category
 from ..content.costco import is_costco_search_url as _is_costco_search
 from ..content.craigslist import is_craigslist_search_url as _is_craigslist_search
 from ..content.dayforce import (
+    extract_dayforce_canonical_board_url,
     fetch_dayforce_board,
     fetch_dayforce_job,
     is_dayforce_board_url,
@@ -93,6 +106,18 @@ from ..content.greenhouse import (
     render_greenhouse_job,
 )
 from ..content.html import html_to_markdown
+from ..content.jazzhr import (
+    extract_jazzhr_embed_tenants,
+    extract_jazzhr_params,
+    extract_jazzhr_tenant,
+    fetch_jazzhr_board,
+    fetch_jazzhr_job,
+    is_jazzhr_board_url,
+    is_jazzhr_url,
+    render_jazzhr_board,
+    render_jazzhr_boards,
+    render_jazzhr_job,
+)
 from ..content.lever import (
     extract_lever_params,
     fetch_lever_job,
@@ -105,6 +130,14 @@ from ..content.reddit import transform_reddit_url
 from ..content.soylent import is_soylent as _is_soylent
 from ..content.ti import extract_ti_part_from_pdf_url, fetch_document_sections, is_ti_document_viewer
 from ..content.url import normalize_url
+from ..content.workday import (
+    fetch_workday_board,
+    fetch_workday_job,
+    is_workday_board_url,
+    is_workday_url,
+    render_workday_board,
+    render_workday_job,
+)
 from ..kijiji.api import is_kijiji as _is_kijiji
 from ..security.ssrf import is_private_host
 
@@ -835,6 +868,158 @@ async def fetch_url(
             return {"content": content, "content_type": "markdown", "url": url}
         # Search call failed — fall through to normal HTML fetch.
 
+    # Workday posting ({tenant}.wd{N}.myworkdayjobs.com/[lang/]{site}/job/{path}):
+    # the page is a SPA shell; the full posting JSON lives at
+    # /wday/cxs/{tenant}/{site}/job{externalPath}.
+    if is_workday_url(url):
+        _wd_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _wd_cache_key:
+            _wd_cached = cache.get(_wd_cache_key)
+            if _wd_cached:
+                content = truncate(_wd_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Workday CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _wd_cached.content_type, "url": url, "cached": True}
+        _wd_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _wd_data = await fetch_workday_job(url, _wd_session)
+        if _wd_data:
+            markdown = render_workday_job(_wd_data, source_url=url)
+            if cache and _wd_cache_key:
+                cache.set(_wd_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Workday posting ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # API failed — fall through to normal HTML fetch.
+
+    # Workday board index: paginated POST to /wday/cxs/{tenant}/{site}/jobs.
+    if is_workday_board_url(url):
+        _wdb_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _wdb_cache_key:
+            _wdb_cached = cache.get(_wdb_cache_key)
+            if _wdb_cached:
+                content = truncate(_wdb_cached.content, max_tokens)
+                _log(f"FETCH {url} -> Workday board CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _wdb_cached.content_type, "url": url, "cached": True}
+        _wdb_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _wdb_data = await fetch_workday_board(url, _wdb_session)
+        if _wdb_data is not None:
+            markdown = render_workday_board(_wdb_data, source_url=url)
+            if cache and _wdb_cache_key:
+                cache.set(_wdb_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Workday board ({len(_wdb_data.get('jobPostings') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Search call failed — fall through to normal HTML fetch.
+
+    # BambooHR posting ({tenant}.bamboohr.com/careers/{id}): JSON at
+    # /careers/{id}/detail returns the full jobOpening incl. description HTML.
+    if is_bamboohr_url(url):
+        _bh_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _bh_cache_key:
+            _bh_cached = cache.get(_bh_cache_key)
+            if _bh_cached:
+                content = truncate(_bh_cached.content, max_tokens)
+                _log(f"FETCH {url} -> BambooHR CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _bh_cached.content_type, "url": url, "cached": True}
+        _bh_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _bh_tenant, _bh_id = extract_bamboohr_params(url)
+        _bh_data = await fetch_bamboohr_job(_bh_tenant, _bh_id, _bh_session)
+        if _bh_data:
+            markdown = render_bamboohr_job(_bh_data, source_url=url)
+            if cache and _bh_cache_key:
+                cache.set(_bh_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> BambooHR posting ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # API failed — fall through to normal HTML fetch.
+
+    # BambooHR board index: GET /careers/list returns the full job list as JSON.
+    if is_bamboohr_board_url(url):
+        _bhb_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _bhb_cache_key:
+            _bhb_cached = cache.get(_bhb_cache_key)
+            if _bhb_cached:
+                content = truncate(_bhb_cached.content, max_tokens)
+                _log(f"FETCH {url} -> BambooHR board CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _bhb_cached.content_type, "url": url, "cached": True}
+        _bhb_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _bhb_tenant = extract_bamboohr_board_params(url)
+        _bhb_data = await fetch_bamboohr_board(_bhb_tenant, _bhb_session)
+        if _bhb_data is not None:
+            markdown = render_bamboohr_board(_bhb_data, _bhb_tenant, source_url=url)
+            if cache and _bhb_cache_key:
+                cache.set(_bhb_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> BambooHR board ({len(_bhb_data.get('result') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Search call failed — fall through to normal HTML fetch.
+
+    # JazzHR posting ({tenant}.applytojob.com/apply/{id}/{slug}): the page
+    # carries a schema.org JobPosting JSON-LD block we can render directly.
+    if is_jazzhr_url(url):
+        _jz_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _jz_cache_key:
+            _jz_cached = cache.get(_jz_cache_key)
+            if _jz_cached:
+                content = truncate(_jz_cached.content, max_tokens)
+                _log(f"FETCH {url} -> JazzHR CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _jz_cached.content_type, "url": url, "cached": True}
+        _jz_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _jz_tenant, _jz_id = extract_jazzhr_params(url)
+        _jz_data = await fetch_jazzhr_job(_jz_tenant, _jz_id, _jz_session)
+        if _jz_data:
+            markdown = render_jazzhr_job(_jz_data, source_url=url)
+            if cache and _jz_cache_key:
+                cache.set(_jz_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> JazzHR posting ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Parse failed — fall through to normal HTML fetch.
+
+    # JazzHR board index ({tenant}.applytojob.com/apply): parse SSR'd listing.
+    if is_jazzhr_board_url(url):
+        _jzb_cache_key = normalize_url(url) if cache else None
+        if cache and not raw and _jzb_cache_key:
+            _jzb_cached = cache.get(_jzb_cache_key)
+            if _jzb_cached:
+                content = truncate(_jzb_cached.content, max_tokens)
+                _log(f"FETCH {url} -> JazzHR board CACHED ({time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": _jzb_cached.content_type, "url": url, "cached": True}
+        _jzb_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+        )
+        _jzb_tenant = extract_jazzhr_tenant(url)
+        _jzb_jobs = await fetch_jazzhr_board(_jzb_tenant, _jzb_session)
+        if _jzb_jobs is not None:
+            markdown = render_jazzhr_board(_jzb_jobs, _jzb_tenant, source_url=url)
+            if cache and _jzb_cache_key:
+                cache.set(_jzb_cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> JazzHR board ({len(_jzb_jobs)} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        # Parse failed — fall through to normal HTML fetch.
+
     # Transform Reddit URLs
     reddit_result = transform_reddit_url(url)
     fetch_url_str = reddit_result.url
@@ -1109,6 +1294,75 @@ async def fetch_url(
                     content = truncate(markdown, max_tokens)
                     _log(f"FETCH {url} -> Greenhouse embed API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                     return {"content": content, "content_type": "markdown", "url": result.final_url}
+
+        # White-label Dayforce: company sites host the Dayforce Next.js
+        # candidate portal under their own domain (e.g.
+        # synaptivemedical.com/job-openings). __NEXT_DATA__ carries the
+        # canonical clientNamespace + careerSiteXRefCode, which we use to
+        # rewrite to the jobs.dayforcehcm.com board flow.
+        _df_canonical = extract_dayforce_canonical_board_url(html)
+        if _df_canonical:
+            _df_data = await fetch_dayforce_board(_df_canonical, session)
+            if _df_data is not None:
+                markdown = render_dayforce_board(_df_data, source_url=result.final_url or url)
+                if cache and cache_key:
+                    cache.set(cache_key, markdown, "markdown")
+                content = truncate(markdown, max_tokens)
+                _log(f"FETCH {url} -> Dayforce white-label board via {_df_canonical} ({len(_df_data.get('jobPostings') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": f"[Dayforce-hosted board: {_df_canonical}]\n\n{content}", "content_type": "markdown", "url": result.final_url}
+
+        # Ashby script-tag embed on a company career site
+        # (<script src="https://jobs.ashbyhq.com/{org}/embed">): pull the
+        # canonical board listing instead of returning the empty spinner.
+        _ab_embed_slug = extract_ashby_embed_slug_from_html(html)
+        if _ab_embed_slug:
+            _ab_data = await fetch_ashby_board(_ab_embed_slug, session)
+            if _ab_data is not None:
+                markdown = render_ashby_board(_ab_data, _ab_embed_slug, source_url=result.final_url or url)
+                if cache and cache_key:
+                    cache.set(cache_key, markdown, "markdown")
+                content = truncate(markdown, max_tokens)
+                _log(f"FETCH {url} -> Ashby embed board {_ab_embed_slug} ({len(_ab_data.get('jobs') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": f"[Ashby-hosted board: jobs.ashbyhq.com/{_ab_embed_slug}]\n\n{content}", "content_type": "markdown", "url": result.final_url}
+
+        # BambooHR widget on a company career site
+        # (<div id="BambooHR" data-domain="{tenant}.bamboohr.com">): pull
+        # the full job list via /careers/list on the BambooHR subdomain.
+        _bh_embed = extract_bamboohr_embed_tenant(html)
+        if _bh_embed:
+            _bh_data = await fetch_bamboohr_board(_bh_embed, session)
+            if _bh_data is not None:
+                markdown = render_bamboohr_board(_bh_data, _bh_embed, source_url=result.final_url or url)
+                if cache and cache_key:
+                    cache.set(cache_key, markdown, "markdown")
+                content = truncate(markdown, max_tokens)
+                _log(f"FETCH {url} -> BambooHR embed board {_bh_embed} ({len(_bh_data.get('result') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": f"[BambooHR-hosted board: {_bh_embed}.bamboohr.com]\n\n{content}", "content_type": "markdown", "url": result.final_url}
+
+        # JazzHR embed: company sites pull jobs from one or more
+        # ``*.applytojob.com`` boards via JS (e.g. earthdaily.com/job-openings
+        # pulls from earthdaily + earthdailyagro). Aggregate any tenants we
+        # find in the page markup.
+        _jz_embed_tenants = extract_jazzhr_embed_tenants(html)
+        if _jz_embed_tenants:
+            _jz_boards: list[tuple[str, list[dict]]] = []
+            for _jz_t in _jz_embed_tenants:
+                _jz_jobs = await fetch_jazzhr_board(_jz_t, session)
+                if _jz_jobs is not None:
+                    _jz_boards.append((_jz_t, _jz_jobs))
+            if _jz_boards:
+                if len(_jz_boards) == 1:
+                    _jz_t, _jz_jobs = _jz_boards[0]
+                    markdown = render_jazzhr_board(_jz_jobs, _jz_t, source_url=result.final_url or url)
+                else:
+                    markdown = render_jazzhr_boards(_jz_boards, source_url=result.final_url or url)
+                if cache and cache_key:
+                    cache.set(cache_key, markdown, "markdown")
+                content = truncate(markdown, max_tokens)
+                _tot = sum(len(j) for _, j in _jz_boards)
+                _log(f"FETCH {url} -> JazzHR embed ({len(_jz_boards)} tenants, {_tot} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)")
+                _hint = ", ".join(f"{t}.applytojob.com" for t, _ in _jz_boards)
+                return {"content": f"[JazzHR-hosted boards: {_hint}]\n\n{content}", "content_type": "markdown", "url": result.final_url}
 
         # Tier 2: Forum autodiscovery
         if not is_forum_feed and forum_result.forum_software and not forum_result.is_thread:

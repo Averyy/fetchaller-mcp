@@ -246,7 +246,7 @@ Kijiji is Canada-only and automatically skipped for US locations. Location match
 3. Fetches with browser-like TLS fingerprints via wafer (Rust/BoringSSL) — rotates Chrome versions automatically
 4. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
 5. Detects content type
-6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Work-at-a-Startup job boards, and more), converts to markdown
+6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Workday/BambooHR/JazzHR/Work-at-a-Startup job boards with embed + white-label detection, and more), converts to markdown
 7. For JSON/XML/CSV/text: returns raw
 8. For PDF: extracts text
 9. Truncates to token limit
@@ -304,7 +304,7 @@ All challenge solving is handled by wafer's `BrowserSolver` (Patchright-based). 
 - **`mouser.py`** — All TLDs. CSS selectors, soup cleanup. Behind Akamai. HTML fallback without API key.
 - **`soylent.py`** — Shopify store cleanup, inventory extraction from `gsf_conversion_data`.
 - **`ti.py`** — Document viewer support for lazy-loaded datasheets.
-- **`ashby.py`** / **`greenhouse.py`** / **`lever.py`** / **`gem.py`** / **`dayforce.py`** / **`cornerstone.py`** / **`workatastartup.py`** — Job-board platforms. All preserve the source's own field names, enum values, and section titles. Each posting and (where supported) board listing is dispatched to the platform's API/JSON shell before the generic HTML pipeline — see `docs/site-apis.md` for endpoints.
+- **`ashby.py`** / **`greenhouse.py`** / **`lever.py`** / **`gem.py`** / **`dayforce.py`** / **`cornerstone.py`** / **`workday.py`** / **`bamboohr.py`** / **`jazzhr.py`** / **`workatastartup.py`** — Job-board platforms. All preserve the source's own field names, enum values, and section titles. Each posting and (where supported) board listing is dispatched to the platform's API/JSON shell before the generic HTML pipeline. Five embed/white-label detectors run during the HTML phase so company career pages like `synaptivemedical.com/job-openings` (white-label Dayforce), `skywatch.com/careers/` (Ashby `<script src="…/embed">`), `avidbots.com/company/careers/` (BambooHR `<div id="BambooHR">`), and `earthdaily.com/job-openings` (JazzHR multi-tenant) are upgraded to structured ATS output instead of returning empty SPA shells. See `docs/site-apis.md` for endpoints and detection details.
 
 ### Search
 
@@ -323,8 +323,11 @@ CSR sites where HTML scraping produces garbage are intercepted in `fetch_url()` 
 - **Mouser** (`src/fetchaller/mouser/`) — Search API client. Requires `MOUSER_API_KEY`.
 - **DigiKey** (`src/fetchaller/digikey/`) — OAuth2 client_credentials API. Requires `DIGIKEY_CLIENT_ID` + `DIGIKEY_CLIENT_SECRET`.
 - **Marketplace Search** (`src/fetchaller/marketplace/`) — Unified orchestrator searching Kijiji, Craigslist, and Facebook Marketplace concurrently. Human-readable params mapped to platform-specific values. Auto-skips Kijiji for non-Canadian locations.
-- **Dayforce HCM** (`src/fetchaller/content/dayforce.py`) — Posting detail from SSR'd `__NEXT_DATA__`. Board listing via CSRF-protected POST to `/api/geo/{namespace}/jobposting/search` (NextAuth `/api/auth/csrf` round-trip required).
+- **Dayforce HCM** (`src/fetchaller/content/dayforce.py`) — Posting detail from SSR'd `__NEXT_DATA__`. Board listing via CSRF-protected POST to `/api/geo/{namespace}/jobposting/search` (NextAuth `/api/auth/csrf` round-trip required). White-label deployments on company domains are detected via `__NEXT_DATA__.runtimeConfig.BASE_URL` and rewritten to the canonical `jobs.dayforcehcm.com` board URL.
 - **Cornerstone OnDemand** (`src/fetchaller/content/cornerstone.py`) — SPA shell carries a JWT in `csod.context`. Posting from `services/x/job-requisition/v2/requisitions/{reqid}/jobDetails`; board listing POSTed to `rec-job-search/external/jobs` on the regional cloud host (`us|eu|uk|au.api.csod.com`).
+- **Workday** (`src/fetchaller/content/workday.py`) — `{tenant}.wd{1-103}.myworkdayjobs.com` boards and postings. Posting GET `/wday/cxs/{tenant}/{site}/job{externalPath}`; board POST `/wday/cxs/{tenant}/{site}/jobs` paginated in batches of 20 (capped at 200).
+- **BambooHR** (`src/fetchaller/content/bamboohr.py`) — `{tenant}.bamboohr.com/careers`. Board GET `/careers/list`; posting GET `/careers/{id}/detail`. Both return clean JSON unauthenticated. Widget embeds (`<div id="BambooHR" data-domain="{tenant}.bamboohr.com">`) on company sites are auto-detected and resolved to the tenant subdomain.
+- **JazzHR** (`src/fetchaller/content/jazzhr.py`) — `{tenant}.applytojob.com/apply`. Board SSR'd HTML (`.list-group .list-group-item`); posting reads schema.org `JobPosting` JSON-LD. Company sites that reference one or more JazzHR tenants via JS (e.g. `earthdaily.com/job-openings`) are auto-aggregated into a combined board.
 
 ### HTTP Transport (Wafer)
 

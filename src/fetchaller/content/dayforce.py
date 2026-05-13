@@ -77,6 +77,39 @@ def is_dayforce_board_url(url: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# White-label deployment detection
+# ---------------------------------------------------------------------------
+#
+# Some companies host the Dayforce Next.js candidate portal on their own
+# domain (e.g. ``www.synaptivemedical.com/job-openings``). The SSR'd
+# ``__NEXT_DATA__`` carries the canonical clientNamespace + careerSiteXRefCode
+# in ``query`` and exposes ``runtimeConfig.BASE_URL = 'https://jobs.dayforcehcm.com/'``
+# — enough to rewrite the URL to the canonical Dayforce-hosted board.
+
+
+def extract_dayforce_canonical_board_url(html: str) -> str | None:
+    """If ``html`` is a white-label Dayforce candidate portal, return the
+    canonical ``jobs.dayforcehcm.com`` board URL it corresponds to.
+
+    Returns ``None`` if the HTML is not a Dayforce-hosted page.
+    """
+    next_data = extract_next_data(html)
+    if not isinstance(next_data, dict):
+        return None
+    rt = next_data.get("runtimeConfig") or {}
+    base_url = (rt.get("BASE_URL") or "").strip().rstrip("/")
+    if base_url != "https://jobs.dayforcehcm.com":
+        return None
+    query = next_data.get("query") or {}
+    namespace = (query.get("clientNamespace") or "").strip()
+    board = (query.get("careerSiteXRefCode") or "").strip()
+    locale = (next_data.get("locale") or "en-US").strip() or "en-US"
+    if not (namespace and board):
+        return None
+    return f"https://jobs.dayforcehcm.com/{locale}/{namespace}/{board}"
+
+
+# ---------------------------------------------------------------------------
 # __NEXT_DATA__ parsing
 # ---------------------------------------------------------------------------
 
