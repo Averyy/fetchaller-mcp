@@ -106,6 +106,12 @@ from ..content.greenhouse import (
     render_greenhouse_job,
 )
 from ..content.html import html_to_markdown
+from ..content.hubspot_careers import (
+    extract_hubspot_job_id,
+    fetch_hubspot_job,
+    is_hubspot_careers_url,
+    render_hubspot_job,
+)
 from ..content.jazzhr import (
     extract_jazzhr_embed_tenants,
     extract_jazzhr_params,
@@ -603,6 +609,35 @@ async def fetch_url(
                 _log(f"FETCH {url} -> FB Marketplace listing ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "text", "url": url}
             return result
+
+    # HubSpot careers (www.hubspot.com/careers/jobs/{id}): SPA backed by a
+    # GraphQL endpoint. URLs carry a vestigial ``?gh_jid=`` that's the HubSpot
+    # job id, NOT a Greenhouse one — the ``hubspot`` Greenhouse board is empty,
+    # so this MUST run before the greenhouse guess to skip a wasted 404.
+    if is_hubspot_careers_url(url):
+        _hs_job_id = extract_hubspot_job_id(url)
+        if _hs_job_id:
+            _hs_cache_key = normalize_url(url) if cache else None
+            if cache and not raw and _hs_cache_key:
+                _hs_cached = cache.get(_hs_cache_key)
+                if _hs_cached:
+                    content = truncate(_hs_cached.content, max_tokens)
+                    _log(f"FETCH {url} -> HubSpot careers CACHED ({time.monotonic() - start:.1f}s)")
+                    return {"content": content, "content_type": _hs_cached.content_type, "url": url, "cached": True}
+            _hs_session = wafer.AsyncSession(
+                browser_solver=browser_solver,
+                timeout=timedelta(seconds=timeout),
+                cache_dir=get_wafer_cache_dir(),
+            )
+            _hs_data = await fetch_hubspot_job(_hs_job_id, _hs_session)
+            if _hs_data:
+                markdown = render_hubspot_job(_hs_data, source_url=url)
+                if cache and _hs_cache_key:
+                    cache.set(_hs_cache_key, markdown, "markdown")
+                content = truncate(markdown, max_tokens)
+                _log(f"FETCH {url} -> HubSpot careers GraphQL ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "markdown", "url": url}
+            # API failed — fall through to normal HTML fetch.
 
     # Greenhouse direct URL (boards.greenhouse.io / job-boards.greenhouse.io
     # / embed iframe URL / any URL carrying ?gh_jid=&gh_src=): fetch the
