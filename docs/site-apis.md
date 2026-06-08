@@ -79,6 +79,36 @@ Key behaviors:
 
 eBay search pages are SSR — no API intercept needed. Search results are extracted from `.s-item` DOM elements in `clean_html()` (before CSS selectors fire), formatted as a numbered list, and injected as a marker div. The postprocessor replaces all markdownified noise with the clean extracted data.
 
+## realtor.ca (home search + listings)
+
+`src/fetchaller/realtor/` — Canadian real-estate search via the Imperva-protected `api2.realtor.ca` XHR API plus SSR listing-detail pages. The public map page is a CSR shell, so all search data comes from the API. wafer 0.2.4 passes Imperva transparently: a fresh session free-passes via the native-TLS fallback at light load (no browser), and under escalation the `browser_solver` solves on the **origin page** (www.realtor.ca) and replays the request as a same-site XHR (with `.realtor.ca` cookie-replay as fallback). The old "Error 15" interstitial was self-inflicted by wafer ≤0.2.3 top-level-navigating the API host; 0.2.4 no longer does, so it never appears. fetchaller does no challenge handling. The shared session sets `rate_limit=1.5` **and** passes the shared `browser_solver`; both help avoid/clear Imperva's rate-based challenge.
+
+- **`api.py`** — transport, URL detection, geocode, search, listing fetch/parse.
+  - Geocode: `GET Location.svc/SubAreaSearch?Area={place}` → `SubArea[0].Viewport` (NE/SW bbox) + `GEOId` (city `g30_*`, neighbourhood `g20_*`; postal codes may yield an empty GEOId but a valid viewport).
+  - Search: `POST Listing.svc/PropertySearch_Post` (form-encoded). Returns `Paging` (`TotalRecords`; only 600 = `MAX_API_RECORDS` are returnable across 50 pages), `Results` (list view) and `Pins` (map clusters: count/lat/long/propertyId). Either a bbox or `GeoIds` scopes the search — GeoId-only works.
+  - Filters (all verified live): `TransactionTypeId` 2=sale / 3=rent; `PropertySearchTypeId` (PROPERTY_TYPE: any/residential/condo/recreational/vacant-land/multi-family/agriculture/parking); `BuildingTypeId` (BUILDING_TYPE: house=1/duplex=2/triplex=3/townhouse=16/apartment=17/other=19); `PriceMin/Max` for sale, **`RentMin/Max` for rent** (PriceMin is ignored on rentals); `BedRange`/`BathRange` in `min-max` form, 0=unbounded (`3-0` = 3+); `OwnershipTypeGroupId` freehold=1/condo=2; `Sort` newest=6-D/oldest=6-A/price-asc=1-A/price-desc=1-D.
+  - Listing detail (`/real-estate/{id}/{slug}`, `/immobilier/...`): SSR HTML. Parses `#listingPriceValue`, `#listingAddress`, `#galleryBeds/Baths`, `#propertyDescriptionCon`, the `.propertyDetailsSectionContentLabel/Value` pairs (deduped), the room-by-room breakdown (`.listingDetailsRoomDetailsCon` → label + metric dimensions; condos often omit it, houses include it), the listing agent (`.realtorCardName`) + brokerage (`[id^=OfficeCard]`), the location/cross-streets block (`#LocationDescription`), MLS from the `id*=MLS` element, and coordinates from the embedded directions link.
+  - Similar listings are lazy-loaded on the site (only a spinner in the SSR), so we reconstruct them: a geo-bounded `PropertySearch` around the listing's coords, price-banded 0.6–1.5×, excluding the listing itself.
+  - Search-URL handling: SEO pages (`/{prov}/{city}[/{hood}]/real-estate`) are fetched to read the embedded GeoId (most-frequent `g\d0_*` token) + H1 place name, then searched by GeoId; `/map` URLs carry all filters in the query/hash fragment (`_map_kwargs`).
+- **`render.py`** — search-results and listing-detail markdown.
+- **`search.py`** — `search_realtor()` (the `search_realtor` MCP tool: geocode → search → render) and `get_realtor()` (the `fetch_url` dispatch for listing + search URLs; `raw=True` on a listing falls through for the SSR HTML).
+
+## wellfound.com (startup jobs)
+
+`src/fetchaller/wellfound/` — startup job search, job-detail, and company pages. Every page is server-rendered; wellfound is behind DataDome (+ an XHR-only Cloudflare Turnstile that does **not** gate navigation), and wafer 0.2.4 returns the real SSR document via its browser passthrough — fetchaller does no challenge handling. The shared session passes the shared `browser_solver`, sets `rate_limit=2.5`, and relies on `cache_dir` (the earned DataDome cookie persists there so re-solves are rare — reliability depends on it; `create_server()` sets it). Job pages **require the slug**: `/jobs/{id}-{slug}` returns the `JobPosting` JSON-LD, but a bare `/jobs/{id}` resolves to wellfound's 200 "Page not found" shell (detected via `is_not_found_page`, surfaced as an actionable error). fetchaller's own search renderers always emit the id-slug form.
+
+| Page | URL | Data source |
+|------|-----|-------------|
+| Job detail | `/jobs/{id}-{slug}` | `schema.org/JobPosting` JSON-LD (no Apollo) |
+| Role search | `/role/r/{role}` (remote), `/role/l/{role}/{loc}` | `__NEXT_DATA__` Apollo: `JobListingSearchResult` + `StartupResult` |
+| Location search | `/location/{loc}` | same as role search |
+| Jobs feed | `/jobs` | `__NEXT_DATA__` Apollo: `JobListing` (+ `Startup` refs) |
+| Company | `/company/{slug}` | `__NEXT_DATA__` Apollo: a full `Startup` object |
+
+- **`api.py`** — URL detection, session, `__NEXT_DATA__`/JSON-LD extraction, and Apollo-cache navigation. The Apollo state is a normalized cache keyed `Type:id` with `{"__ref": ...}` links; `deref`, `entities`, `connection` (handles `field({"first":N})` arg-suffixed keys), and `connection_nodes` resolve it.
+- **`render.py`** — three renderers. Search is company-grouped when `StartupResult` entries carry `highlightedJobListings` (role/location pages), else a flat `JobListing` list (the `/jobs` feed, whose `StartupResult`s are empty stubs). Helpers: `_money` (totalRaised → $4.6M), `_company_size` (`SIZE_51_200` → "51-200 employees"), `_clean_url` (wellfound stores junk like `twitter.com/https://x.com/foo`).
+- **`page.py`** — `get_wellfound()` dispatch (job/company/search) for `fetch_url`; `raw=True` falls through for the SSR HTML. No MCP search tool — searches run via `fetch()` on the `/role/*`, `/location/*`, `/jobs` URLs.
+
 ## Job Boards (Ashby, Gem, Lever, Greenhouse, Dayforce, Cornerstone, Workday, BambooHR, JazzHR, HubSpot)
 
 Every supported job board platform exposes both an individual-posting API and a board-listing API. `fetch_url()` intercepts both URL shapes per platform and skips the SPA body entirely.

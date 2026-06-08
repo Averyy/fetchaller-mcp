@@ -32,6 +32,9 @@ node_modules/
 # Playwright
 .playwright-mcp/
 
+# codex-dobby review artifacts
+.codex-dobby/
+
 # Baseline snapshots (local testing)
 baselines/
 

@@ -13,6 +13,7 @@ from .cache.response_cache import ResponseCache
 from .config import Config, load_config, set_wafer_cache_dir
 from .marketplace.search import search_marketplace
 from .queue.reddit_queue import QueueConfig, RedditRequestQueue
+from .realtor.search import search_realtor
 from .tools.browse_reddit import browse_reddit
 from .tools.fetch import fetch_url
 from .tools.get_alibaba_product import get_alibaba_product
@@ -93,6 +94,16 @@ async def cleanup_server(server) -> None:
         cleanup_fns.append(close_costco_session)
     except ImportError:
         pass
+    try:
+        from .realtor.api import close_session as close_realtor_session
+        cleanup_fns.append(close_realtor_session)
+    except ImportError:
+        pass
+    try:
+        from .wellfound.api import close_session as close_wellfound_session
+        cleanup_fns.append(close_wellfound_session)
+    except ImportError:
+        pass
 
     for fn in cleanup_fns:
         try:
@@ -123,6 +134,11 @@ def _summarize_args(tool_name: str, args: dict) -> str:
         return f"query={args.get('query', '?')} page={args.get('page', 1)} sort={args.get('sort', 'default')}"
     elif tool_name == "search_marketplace":
         return f"query={args.get('query', '?')} location={args.get('location', '?')} platforms={args.get('platforms', 'all')}"
+    elif tool_name == "search_realtor":
+        return (
+            f"location={args.get('location', '?')} {args.get('transaction', 'sale')} "
+            f"price={args.get('min_price', '')}-{args.get('max_price', '')}"
+        )
     return str(args)
 
 
@@ -500,6 +516,75 @@ def create_server(
                     "required": ["query", "location"],
                 },
             ),
+            Tool(
+                name="search_realtor",
+                description=(
+                    "Search Canadian homes for sale or rent on realtor.ca with full filters "
+                    "(location, price, beds, baths, property/building type, ownership). Returns "
+                    "listings with price, address, beds/baths, size, agent and a realtor.ca URL. "
+                    "Call fetch(url) on a listing URL for the full description, every property "
+                    "detail, and similar nearby homes."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": (
+                                "City, neighbourhood, or postal code "
+                                "(e.g. \"Ottawa\", \"Orleans, Ottawa\", \"Toronto\", \"M5V\")"
+                            ),
+                        },
+                        "transaction": {
+                            "type": "string",
+                            "enum": ["sale", "rent"],
+                            "default": "sale",
+                            "description": "Buy (sale) or rent",
+                        },
+                        "property_type": {
+                            "type": "string",
+                            "enum": [
+                                "any", "residential", "condo", "recreational",
+                                "vacant-land", "multi-family", "agriculture", "parking",
+                            ],
+                            "default": "any",
+                            "description": "Property category",
+                        },
+                        "building_type": {
+                            "type": "string",
+                            "enum": ["house", "duplex", "triplex", "townhouse", "apartment", "other"],
+                            "description": "Building type filter",
+                        },
+                        "min_price": {
+                            "type": "integer",
+                            "description": "Minimum price (sale) or monthly rent",
+                        },
+                        "max_price": {
+                            "type": "integer",
+                            "description": "Maximum price (sale) or monthly rent",
+                        },
+                        "min_beds": {"type": "integer", "description": "Minimum bedrooms"},
+                        "min_baths": {"type": "integer", "description": "Minimum bathrooms"},
+                        "ownership": {
+                            "type": "string",
+                            "enum": ["freehold", "condo"],
+                            "description": "Ownership type",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["newest", "oldest", "price-asc", "price-desc"],
+                            "default": "newest",
+                            "description": "Sort order",
+                        },
+                        "page": {
+                            "type": "integer",
+                            "default": 1,
+                            "description": "Result page (~20 per page, up to 600 total)",
+                        },
+                    },
+                    "required": ["location"],
+                },
+            ),
         ]
 
     def _format_result(name: str, result: dict, start_time: float) -> CallToolResult:
@@ -629,6 +714,23 @@ def create_server(
                     min_price=arguments.get("min_price"),
                     max_price=arguments.get("max_price"),
                     config=config,
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_realtor":
+                result = await search_realtor(
+                    location=arguments["location"],
+                    transaction=arguments.get("transaction", "sale"),
+                    property_type=arguments.get("property_type", "any"),
+                    building_type=arguments.get("building_type"),
+                    min_price=arguments.get("min_price"),
+                    max_price=arguments.get("max_price"),
+                    min_beds=arguments.get("min_beds"),
+                    min_baths=arguments.get("min_baths"),
+                    ownership=arguments.get("ownership"),
+                    sort=arguments.get("sort", "newest"),
+                    page=max(1, arguments.get("page", 1)),
                     browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)

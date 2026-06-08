@@ -1,12 +1,12 @@
 # fetchaller
 
-> MCP server that fetches any URL as clean markdown. No domain restrictions. Built-in web search, Reddit, marketplace, AliExpress, and Alibaba tools. Bot protection bypass is automatic.
+> MCP server that fetches any URL as clean markdown. No domain restrictions. Built-in web search, Reddit, marketplace, real-estate (realtor.ca), AliExpress, and Alibaba tools. Bot protection bypass is automatic.
 
 ## Tools
 
 ### fetch(url, maxTokens?, timeout?, raw?)
 
-Fetch any URL and return clean markdown. Handles HTML, JSON, XML, CSV, PDF, SVG (raw), and binary images (returns metadata summary: type, filename, size, dimensions, Last-Modified, ETag). Site-specific cleanup for 20+ sites (GitHub, Reddit, Amazon, eBay, Stack Overflow, HN, Wikipedia, Medium, Hugging Face, DigiKey, Mouser, Molex, FCC (fcc.report, fcc.gov), Craigslist, Kijiji, Facebook Marketplace, Alibaba, AliExpress, RedFlagDeals, forums, TI, Soylent, Ashby + Greenhouse + Lever + Gem + Dayforce + Cornerstone (CSOD) + Workday + BambooHR + JazzHR + HubSpot + Work at a Startup (YC) job boards, plus embed/white-label detection for Ashby/BambooHR/JazzHR widgets and white-label Dayforce candidate portals on company-owned domains). All other sites get universal junk removal.
+Fetch any URL and return clean markdown. Handles HTML, JSON, XML, CSV, PDF, SVG (raw), and binary images (returns metadata summary: type, filename, size, dimensions, Last-Modified, ETag). Site-specific cleanup for 20+ sites (GitHub, Reddit, Amazon, eBay, Stack Overflow, HN, Wikipedia, Medium, Hugging Face, DigiKey, Mouser, Molex, FCC (fcc.report, fcc.gov), Craigslist, Kijiji, realtor.ca (home search + individual listings with similar-listing reconstruction), Facebook Marketplace, Alibaba, AliExpress, RedFlagDeals, forums, TI, Soylent, Ashby + Greenhouse + Lever + Gem + Dayforce + Cornerstone (CSOD) + Workday + BambooHR + JazzHR + HubSpot + Work at a Startup (YC) + wellfound.com (startup job search, job detail, company pages) job boards, plus embed/white-label detection for Ashby/BambooHR/JazzHR widgets and white-label Dayforce candidate portals on company-owned domains). All other sites get universal junk removal.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -65,6 +65,24 @@ Search Kijiji, Craigslist, and Facebook Marketplace simultaneously. Returns grou
 | condition | string | — | new, like_new, good, fair |
 | min_price | integer | — | Minimum price in dollars |
 | max_price | integer | — | Maximum price in dollars |
+
+### search_realtor(location, transaction?, property_type?, building_type?, min_price?, max_price?, min_beds?, min_baths?, ownership?, sort?, page?)
+
+Search Canadian homes for sale or rent on realtor.ca with full filters. Returns listings with price, address, beds/baths, size, agent, and a realtor.ca URL. Use `fetch` on a listing URL for the full description, every property detail, and similar nearby homes.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| location | string | required | City, neighbourhood, or postal code (e.g. "Ottawa", "Orleans, Ottawa", "M5V") |
+| transaction | string | sale | sale, rent |
+| property_type | string | any | any, residential, condo, recreational, vacant-land, multi-family, agriculture, parking |
+| building_type | string | — | house, duplex, triplex, townhouse, apartment, other |
+| min_price | integer | — | Minimum price (sale) or monthly rent |
+| max_price | integer | — | Maximum price (sale) or monthly rent |
+| min_beds | integer | — | Minimum bedrooms |
+| min_baths | integer | — | Minimum bathrooms |
+| ownership | string | — | freehold, condo |
+| sort | string | newest | newest, oldest, price-asc, price-desc |
+| page | integer | 1 | Result page (~20 per page, up to 600 total) |
 
 ### get_aliexpress_product(product_id)
 
@@ -132,6 +150,7 @@ Add to `~/.claude/settings.json` (or `.claude/settings.local.json` for per-proje
       "mcp__fetchaller__browse_reddit",
       "mcp__fetchaller__search_reddit",
       "mcp__fetchaller__search_marketplace",
+      "mcp__fetchaller__search_realtor",
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
       "mcp__fetchaller__get_alibaba_product",

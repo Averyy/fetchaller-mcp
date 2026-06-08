@@ -145,7 +145,9 @@ from ..content.workday import (
     render_workday_job,
 )
 from ..kijiji.api import is_kijiji as _is_kijiji
+from ..realtor.api import is_realtor as _is_realtor
 from ..security.ssrf import is_private_host
+from ..wellfound.api import is_wellfound as _is_wellfound
 
 MAX_RESPONSE_SIZE = 20 * 1024 * 1024  # 20MB
 
@@ -524,6 +526,40 @@ async def fetch_url(
             if "Could not extract" not in result.get("error", ""):
                 return result
             _log(f"FETCH {url} -> Kijiji GraphQL couldn't parse URL, falling through to HTML")
+
+    # realtor.ca — individual listing pages (SSR) + search/SEO/map pages (api2).
+    # api2 is Imperva-protected; wafer 0.2.4 handles it transparently. For a raw
+    # listing page we fall through so the generic path returns the SSR HTML;
+    # search pages are CSR shells, so always use the structured renderer.
+    if _is_realtor(url):
+        from ..realtor.api import is_realtor_listing, is_realtor_search
+        from ..realtor.search import get_realtor
+
+        if (is_realtor_listing(url) and not raw) or is_realtor_search(url):
+            result = await get_realtor(url, browser_solver=browser_solver)
+            if "content" in result:
+                content = truncate(result["content"], max_tokens)
+                if cache:
+                    cache.set(normalize_url(url), content, "text")
+                _log(f"FETCH {url} -> realtor.ca ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "text", "url": url}
+            return result
+
+    # wellfound.com — startup job search, job detail, company pages. All SSR;
+    # wafer 0.2.4 passes DataDome. raw=True falls through for the raw HTML.
+    if _is_wellfound(url) and not raw:
+        from ..wellfound.api import is_wellfound_company, is_wellfound_job, is_wellfound_search
+        from ..wellfound.page import get_wellfound
+
+        if is_wellfound_job(url) or is_wellfound_company(url) or is_wellfound_search(url):
+            result = await get_wellfound(url, browser_solver=browser_solver)
+            if "content" in result:
+                content = truncate(result["content"], max_tokens)
+                if cache:
+                    cache.set(normalize_url(url), content, "text")
+                _log(f"FETCH {url} -> wellfound.com ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "text", "url": url}
+            return result
 
     # Costco search/category pages — CSR, use search API when available
     _costco_redirect_fallback = False

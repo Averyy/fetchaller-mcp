@@ -11,6 +11,7 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 - **`browse_reddit`**: Browse subreddit listings (hot/new/top/rising)
 - **`search_reddit`**: Search Reddit posts globally or within a subreddit
 - **`search_marketplace`**: Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range)
+- **`search_realtor`**: Search Canadian homes on realtor.ca for sale or rent with full filters (location, price, beds, baths, property/building type, ownership)
 - **`get_aliexpress_product`**: AliExpress product details (price, specs, ratings, reviews)
 - **`search_aliexpress`**: Search AliExpress products with price filters and sorting
 - **`get_alibaba_product`**: Alibaba.com B2B product details (tiered pricing, MOQ, lead times, supplier info)
@@ -41,6 +42,7 @@ Add permissions to `~/.claude/settings.json`:
       "mcp__fetchaller__browse_reddit",
       "mcp__fetchaller__search_reddit",
       "mcp__fetchaller__search_marketplace",
+      "mcp__fetchaller__search_realtor",
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
       "mcp__fetchaller__get_alibaba_product",
@@ -66,6 +68,7 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 - `mcp__fetchaller__browse_reddit(subreddit, sort?, time?, limit?)` — Browse subreddit listings
 - `mcp__fetchaller__search_reddit(query, subreddit?, sort?, time?, limit?)` — Search Reddit posts
 - `mcp__fetchaller__search_marketplace(query, location, platforms?, category?, sort?, condition?, min_price?, max_price?)` — Search Kijiji + Craigslist + Facebook Marketplace
+- `mcp__fetchaller__search_realtor(location, transaction?, property_type?, building_type?, min_price?, max_price?, min_beds?, min_baths?, ownership?, sort?, page?)` — Search realtor.ca homes
 - `mcp__fetchaller__get_aliexpress_product(product_id)` — AliExpress product details
 - `mcp__fetchaller__search_aliexpress(query, page?, sort?, min_price?, max_price?)` — Search AliExpress
 - `mcp__fetchaller__get_alibaba_product(product_id)` — Alibaba.com product details
@@ -239,6 +242,28 @@ Searches all three platforms concurrently with human-readable parameters and ret
 
 Kijiji is Canada-only and automatically skipped for US locations. Location matching supports exact names, common aliases (e.g. "niagara" → Hamilton CL area), and fuzzy matching for typos.
 
+## Real Estate Search
+
+### `search_realtor` — Search realtor.ca homes
+
+Searches Canadian homes for sale or rent via realtor.ca's api2, with the full filter set so an assistant can narrow a home search. Returns listings with price, address, beds/baths, size, agent, and a realtor.ca URL.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| location | string | required | City, neighbourhood, or postal code (e.g. "Ottawa", "Orleans, Ottawa", "M5V") |
+| transaction | string | "sale" | sale, rent |
+| property_type | string | "any" | any, residential, condo, recreational, vacant-land, multi-family, agriculture, parking |
+| building_type | string | — | house, duplex, triplex, townhouse, apartment, other |
+| min_price | integer | — | Minimum price (sale) or monthly rent |
+| max_price | integer | — | Maximum price (sale) or monthly rent |
+| min_beds | integer | — | Minimum bedrooms |
+| min_baths | integer | — | Minimum bathrooms |
+| ownership | string | — | freehold, condo |
+| sort | string | "newest" | newest, oldest, price-asc, price-desc |
+| page | integer | 1 | Result page (~20 per page, up to 600 returnable) |
+
+Call `fetch(url)` on any listing URL for the full description, every property detail, and similar nearby homes. `fetch` also handles realtor.ca search/SEO/map pages (`/{prov}/{city}/real-estate`, `/map`) and all wellfound.com pages (startup job search, job detail, company profiles).
+
 ## How It Works
 
 1. Validates URL (http/https only)
@@ -246,7 +271,7 @@ Kijiji is Canada-only and automatically skipped for US locations. Location match
 3. Fetches with browser-like TLS fingerprints via wafer (Rust/BoringSSL) — rotates Chrome versions automatically
 4. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
 5. Detects content type
-6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Workday/BambooHR/JazzHR/Work-at-a-Startup job boards with embed + white-label detection, and more), converts to markdown
+6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, realtor.ca, wellfound.com, plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Workday/BambooHR/JazzHR/Work-at-a-Startup job boards with embed + white-label detection, and more), converts to markdown
 7. For JSON/XML/CSV/text: returns raw
 8. For PDF: extracts text
 9. Truncates to token limit
