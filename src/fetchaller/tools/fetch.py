@@ -7,7 +7,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import wafer
 
@@ -146,10 +146,12 @@ from ..content.workday import (
 )
 from ..kijiji.api import is_kijiji as _is_kijiji
 from ..realtor.api import is_realtor as _is_realtor
-from ..security.ssrf import is_private_host
+from ..security.ssrf import resolve_and_check
 from ..wellfound.api import is_wellfound as _is_wellfound
 
 MAX_RESPONSE_SIZE = 20 * 1024 * 1024  # 20MB
+MAX_REDIRECTS = 10  # Manual redirect cap (matches wafer's default max_redirects)
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 # Byte-level regex to sniff charset from HTML before full decode
 _META_CHARSET_RE = re.compile(rb'<meta[^>]+charset=["\']?([a-zA-Z0-9_-]+)', re.IGNORECASE)
@@ -335,9 +337,12 @@ async def fetch_url(
     except Exception:
         return {"error": "Invalid URL format. Expected http:// or https:// URL."}
 
-    # SSRF protection
+    # SSRF protection: early reject on the input host. The actual fetch host is
+    # re-validated and pinned below (after URL transforms), which is what closes
+    # the DNS-rebinding window; this is just a fast pre-check on the raw input.
     hostname = parsed.hostname or ""
-    if await is_private_host(hostname):
+    is_private, _ = await resolve_and_check(hostname)
+    if is_private:
         return {"error": "Access to private/internal hosts is not allowed."}
 
     # Amazon store pages are JS-rendered SPAs — return helpful message
@@ -1142,20 +1147,60 @@ async def fetch_url(
         from ..ratelimit import soylent_limiter
         await soylent_limiter.wait()
 
-    # Fetch the URL using a per-request wafer session.
-    # NOTE: Do not use `async with` — __aexit__ calls browser_solver.close()
-    # which would destroy the shared BrowserSolver singleton.
-    session = wafer.AsyncSession(
-        browser_solver=browser_solver,
-        timeout=timedelta(seconds=timeout),
-        cache_dir=get_wafer_cache_dir(),
-    )
-    # Bypass Reddit NSFW age gate on old.reddit.com
-    if is_reddit:
-        session.add_cookie("over18=1; Path=/; Domain=.reddit.com", fetch_url_str)
+    # SSRF-safe fetch. Resolve + validate the fetch host, then pin the wafer
+    # session to those exact IPs so wafer cannot re-resolve to an internal
+    # address between our check and its connect (DNS rebinding / TOCTOU). We
+    # follow redirects manually (follow_redirects=False) so every hop is
+    # validated and pinned *before* we connect to it, and rebuild the session
+    # when a redirect introduces a new host (resolve= is snapshotted at
+    # construction). Pins accumulate across hops so a rebuilt session covers
+    # every host seen so far.
+    pins: dict[str, list[str]] = {}
+
+    async def _validate_and_pin(target_url: str) -> str | None:
+        """Validate ``target_url``'s host and add it to ``pins``.
+
+        Returns an error message if the host is private/unresolvable, else None.
+        IP-literal hosts need no pin (the URL already targets a fixed address).
+        """
+        h = (urlparse(target_url).hostname or "").lower()
+        if not h:
+            return "Invalid URL (no host to resolve)."
+        if h in pins:
+            return None
+        is_private, ips = await resolve_and_check(h)
+        if is_private:
+            return "Access to private/internal hosts is not allowed."
+        if ips:  # DNS host -> pin to validated IPs; IP literal -> nothing to pin
+            pins[h] = ips
+        return None
+
+    def _make_session(cookie_url: str) -> wafer.AsyncSession:
+        # NOTE: Do not use `async with` — __aexit__ calls browser_solver.close()
+        # which would destroy the shared BrowserSolver singleton.
+        s = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+            follow_redirects=False,  # we validate + pin each hop ourselves
+            resolve=dict(pins),
+        )
+        # Bypass Reddit NSFW age gate on old.reddit.com. Re-applied on every
+        # rebuild so a same-domain reddit redirect keeps the cookie.
+        if is_reddit:
+            s.add_cookie("over18=1; Path=/; Domain=.reddit.com", cookie_url)
+        return s
+
+    err = await _validate_and_pin(fetch_url_str)
+    if err:
+        return {"error": err}
+    session = _make_session(fetch_url_str)
+    current_host = (urlparse(fetch_url_str).hostname or "").lower()
 
     # Resolve Ashby embed URLs (e.g. company.com/careers?ashby_jid=<uuid>) to
-    # the canonical jobs.ashbyhq.com/{org}/{jid} form before fetching.
+    # the canonical jobs.ashbyhq.com/{org}/{jid} form before fetching. The embed
+    # fetch reuses the already-pinned session (same host); the canonical URL is a
+    # new host, so re-validate + re-pin + rebuild before the main fetch.
     if is_ashby_embed_url(fetch_url_str):
         canonical = await resolve_ashby_embed_url(fetch_url_str, session)
         if canonical:
@@ -1173,16 +1218,45 @@ async def fetch_url(
                         "url": fetch_url_str,
                         "cached": True,
                     }
+            err = await _validate_and_pin(fetch_url_str)
+            if err:
+                return {"error": err}
+            session = _make_session(fetch_url_str)
+            current_host = (urlparse(fetch_url_str).hostname or "").lower()
 
+    current_url = fetch_url_str
     try:
-        resp = await session.get(fetch_url_str)
-        result = FetchResult(
-            content=resp.content[:MAX_RESPONSE_SIZE],
-            content_type=resp.headers.get("content-type", ""),
-            status_code=resp.status_code,
-            final_url=str(resp.url),
-            headers=dict(resp.headers),
-        )
+        for _hop in range(MAX_REDIRECTS + 1):
+            resp = await session.get(current_url)
+            location = resp.headers.get("location", "")
+            if resp.status_code in _REDIRECT_STATUSES and location:
+                next_url = urljoin(current_url, location)
+                next_parsed = urlparse(next_url)
+                if next_parsed.scheme not in ("http", "https"):
+                    return {"error": f"Redirect to unsupported protocol: {next_parsed.scheme}."}
+                # Validate + pin the redirect target BEFORE connecting to it.
+                err = await _validate_and_pin(next_url)
+                if err:
+                    return {"error": "Redirect to private/internal host is not allowed."}
+                next_host = (next_parsed.hostname or "").lower()
+                if next_host != current_host:
+                    # New host: rebuild so the pin covers it. Cookies persist
+                    # via the shared cache_dir.
+                    session = _make_session(next_url)
+                    current_host = next_host
+                current_url = next_url
+                continue
+            # Final response (not a redirect, or a 3xx without a Location).
+            result = FetchResult(
+                content=resp.content[:MAX_RESPONSE_SIZE],
+                content_type=resp.headers.get("content-type", ""),
+                status_code=resp.status_code,
+                final_url=str(resp.url),
+                headers=dict(resp.headers),
+            )
+            break
+        else:
+            return {"error": "Too many redirects (redirect loop detected)."}
     except wafer.ChallengeDetected as e:
         return {"error": f"Protected by {e.challenge_type} bot detection and could not be bypassed. Try again — this sometimes resolves on retry."}
     except wafer.RateLimited as e:
@@ -1201,14 +1275,16 @@ async def fetch_url(
     except Exception as e:
         return {"error": f"Fetch failed ({type(e).__name__}): {e}"}
 
-    # SSRF protection: check final URL after redirects (fail-closed)
-    if result.final_url and result.final_url != fetch_url_str:
-        try:
-            final_parsed = urlparse(result.final_url)
-            if await is_private_host(final_parsed.hostname or ""):
-                return {"error": "Redirect to private/internal host is not allowed."}
-        except Exception:
-            return {"error": "Could not validate redirect URL safety."}
+    # No post-hoc final_url re-check: per-hop validation above already vetted and
+    # pinned every host we connected to (redirect targets included). The old
+    # check re-resolved (a fresh TOCTOU window) and ran only after the body was
+    # already fetched from the redirect target.
+
+    # Downstream handlers (board APIs, feeds, doc viewers) reuse this session for
+    # secondary fetches to other hosts. Restore normal redirect-following now the
+    # pinned, per-hop-validated main fetch is done, so those fetches keep their
+    # pre-existing behavior (they were never pin-guarded and rely on redirects).
+    session.follow_redirects = True
 
     # Handle rate limiting (wafer passes 429 through when max_rotations=0)
     if result.status_code == 429:

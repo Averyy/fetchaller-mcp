@@ -1,8 +1,11 @@
 """Tests for SSRF protection."""
 
+import socket
+
 import pytest
 
-from fetchaller.security.ssrf import clear_dns_cache
+from fetchaller.security import ssrf
+from fetchaller.security.ssrf import clear_dns_cache, resolve_and_check
 from fetchaller.security.ssrf import is_private_host_sync as is_private_host
 
 
@@ -88,3 +91,52 @@ class TestSSRFProtection:
     ])
     def test_blocks_reserved_addresses(self, host):
         assert is_private_host(host) is True
+
+
+class TestFailClosed:
+    """A host that cannot be resolved must be blocked, not allowed (fail closed)."""
+
+    def setup_method(self):
+        clear_dns_cache()
+
+    def test_sync_unresolvable_host_blocked(self, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise socket.gaierror("Name or service not known")
+
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", _boom)
+        # Previously fell through to "allowed" (return False); must now block.
+        assert is_private_host("does-not-resolve.example") is True
+
+    async def test_async_unresolvable_host_blocked(self, monkeypatch):
+        async def _empty(_host):
+            return []
+
+        monkeypatch.setattr(ssrf, "_resolve_hostname", _empty)
+        is_private, ips = await resolve_and_check("does-not-resolve.example")
+        assert is_private is True
+        assert ips == []
+
+    async def test_async_public_host_returns_ips_to_pin(self, monkeypatch):
+        async def _public(_host):
+            return ["93.184.216.34"]
+
+        monkeypatch.setattr(ssrf, "_resolve_hostname", _public)
+        is_private, ips = await resolve_and_check("example.com")
+        assert is_private is False
+        assert ips == ["93.184.216.34"]
+
+    async def test_async_private_resolution_blocked_no_ips(self, monkeypatch):
+        async def _private(_host):
+            return ["10.0.0.5"]
+
+        monkeypatch.setattr(ssrf, "_resolve_hostname", _private)
+        is_private, ips = await resolve_and_check("sneaky.example")
+        assert is_private is True
+        assert ips == []  # never hand back a private IP to pin
+
+    async def test_async_ip_literal_public_no_pin(self):
+        # A public IP literal is allowed but has no host to pin (the URL already
+        # targets a fixed address), so no IPs are returned.
+        is_private, ips = await resolve_and_check("93.184.216.34")
+        assert is_private is False
+        assert ips == []

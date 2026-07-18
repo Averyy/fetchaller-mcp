@@ -124,10 +124,16 @@ def _vbulletin_thread_html(feed_href: str = "/forums/external.php?type=RSS2") ->
 
 
 # ---------------------------------------------------------------------------
-# Patch helper — is_private_host must be async and return False
+# Patch helper — resolve_and_check must be async and return (is_private, ips).
+# (False, []) = public host, no pin. fetch_url() uses this for both the early
+# guard and the connection pin, so patching it covers the whole SSRF path.
 # ---------------------------------------------------------------------------
 
-_PATCH_SSRF = patch("fetchaller.tools.fetch.is_private_host", new_callable=AsyncMock, return_value=False)
+_PATCH_SSRF = patch(
+    "fetchaller.tools.fetch.resolve_and_check",
+    new_callable=AsyncMock,
+    return_value=(False, []),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -499,11 +505,11 @@ class TestErrorHandling:
     async def test_ssrf_blocked(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
-        _mock_ssrf.return_value = True  # Simulate SSRF detection
+        _mock_ssrf.return_value = (True, [])  # Simulate SSRF detection
         result = await fetch_url("https://internal.corp/secret")
         assert "error" in result
         assert "private" in result["error"].lower()
-        _mock_ssrf.return_value = False  # Reset for other tests
+        _mock_ssrf.return_value = (False, [])  # Reset for other tests
 
     @_PATCH_SSRF
     async def test_timeout(self, _mock_ssrf):
@@ -586,3 +592,88 @@ class TestErrorHandling:
             result = await fetch_url("https://api.example.com/limited")
         assert "error" in result
         assert "429" in result["error"] or "rate limited" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# SSRF DNS pinning + per-hop redirect validation
+# ---------------------------------------------------------------------------
+
+
+class TestSSRFPinning:
+    """The fetch host is pinned to its pre-validated IPs, and every redirect hop
+    is validated before we connect to it (closing the DNS-rebinding window)."""
+
+    async def test_fetch_pins_validated_ips(self):
+        """The session is built with resolve={host: ips} and follow_redirects=False."""
+        from fetchaller.tools.fetch import fetch_url
+
+        captured: dict = {}
+        session = MockWaferSession(
+            default=_html_response("<html><body>ok</body></html>", "https://pin.example/")
+        )
+
+        def _factory(*args, **kwargs):
+            captured.update(kwargs)
+            return session
+
+        async def _rac(_host):
+            return (False, ["203.0.113.7"])
+
+        with patch("fetchaller.tools.fetch.wafer.AsyncSession", side_effect=_factory), \
+             patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac):
+            result = await fetch_url("https://pin.example/page")
+
+        assert "content" in result
+        assert captured.get("resolve") == {"pin.example": ["203.0.113.7"]}
+        assert captured.get("follow_redirects") is False
+
+    async def test_redirect_to_private_host_blocked(self):
+        """A redirect to an internal host is refused before we connect to it."""
+        from fetchaller.tools.fetch import fetch_url
+
+        async def _rac(host):
+            # public start host is fine; the redirect target is internal
+            return (True, []) if host == "internal.corp" else (False, [])
+
+        start = "https://public.example/start"
+        redirect = MockResponse(
+            content=b"",
+            content_type="text/html",
+            status_code=302,
+            url=start,
+            headers={"location": "https://internal.corp/secret"},
+        )
+        session = MockWaferSession(responses={start: redirect})
+        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+             _patch_wafer(session):
+            result = await fetch_url(start)
+
+        assert "error" in result
+        assert "private" in result["error"].lower()
+        # We refused before ever connecting to the internal host.
+        assert session.calls == [start]
+
+    async def test_same_host_redirect_followed(self):
+        """A same-host redirect is followed (validated) and returns final content."""
+        from fetchaller.tools.fetch import fetch_url
+
+        async def _rac(_host):
+            return (False, ["198.51.100.9"])
+
+        start = "https://blog.example/a"
+        final = "https://blog.example/b"
+        redirect = MockResponse(
+            content=b"",
+            content_type="text/html",
+            status_code=301,
+            url=start,
+            headers={"location": "/b"},
+        )
+        final_resp = _html_response("<html><body>arrived</body></html>", final)
+        session = MockWaferSession(responses={start: redirect, final: final_resp})
+        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+             _patch_wafer(session):
+            result = await fetch_url(start)
+
+        assert "arrived" in result["content"].lower()
+        assert session.calls == [start, final]

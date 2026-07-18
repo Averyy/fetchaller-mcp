@@ -132,6 +132,39 @@ def _is_private_host_sync(hostname: str) -> bool | None:
     return None
 
 
+async def resolve_and_check(hostname: str) -> tuple[bool, list[str]]:
+    """Check a host and return the validated public IPs to pin the connection to.
+
+    Returns ``(is_private, public_ips)``:
+
+    - Static-rule hosts (localhost, IP literals, rebinding domains) return the
+      static verdict with an empty IP list: an IP-literal URL already targets a
+      fixed address (nothing to pin), and a blocked host has no IPs to hand back.
+    - For DNS hosts, resolves once and inspects every resolved IP. If ANY IP is
+      private -- or resolution yields NO IPs (timeout / error / NXDOMAIN) --
+      returns ``(True, [])``: FAIL CLOSED, an unresolvable host is blocked, not
+      allowed. Otherwise returns ``(False, resolved_ips)`` so the caller can pin
+      the socket to exactly these pre-validated addresses, closing the TOCTOU
+      DNS-rebinding window between this check and the connect.
+    """
+    # Fast path: check static rules first (no async needed)
+    result = _is_private_host_sync(hostname)
+    if result is not None:
+        return result, []
+
+    # DNS rebinding protection: resolve hostname and check all IPs
+    resolved_ips = await _resolve_hostname(hostname.lower())
+    if not resolved_ips:
+        # Fail closed: a slow/failed resolver returning [] previously read as
+        # "public" (allowed). An unresolvable host must be blocked.
+        return True, []
+    for ip in resolved_ips:
+        if _is_private_ip(ip):
+            return True, []
+
+    return False, resolved_ips
+
+
 async def is_private_host(hostname: str) -> bool:
     """
     Check if hostname resolves to private/internal addresses.
@@ -146,19 +179,10 @@ async def is_private_host(hostname: str) -> bool:
     - Unique local IPv6 (fc00::/7)
     - DNS rebinding services (nip.io, xip.io, localtest.me)
     - Resolves hostnames to check final IP addresses (DNS rebinding protection)
+    - Hosts that cannot be resolved (fails closed)
     """
-    # Fast path: check static rules first (no async needed)
-    result = _is_private_host_sync(hostname)
-    if result is not None:
-        return result
-
-    # DNS rebinding protection: resolve hostname and check all IPs
-    resolved_ips = await _resolve_hostname(hostname.lower())
-    for ip in resolved_ips:
-        if _is_private_ip(ip):
-            return True
-
-    return False
+    is_private, _ = await resolve_and_check(hostname)
+    return is_private
 
 
 def is_private_host_sync(hostname: str) -> bool:
@@ -178,6 +202,9 @@ def is_private_host_sync(hostname: str) -> bool:
         ips = list(set(addr[4][0] for addr in results))
     except (socket.gaierror, socket.herror, OSError):
         ips = []
+
+    if not ips:
+        return True  # Fail closed: an unresolvable host is blocked, not allowed.
 
     for ip in ips:
         if _is_private_ip(ip):
