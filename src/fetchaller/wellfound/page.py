@@ -28,15 +28,6 @@ def _search_title(url: str) -> str:
     return "Startup jobs"
 
 
-def _wafer_error(e: Exception) -> dict:
-    msg = str(e).lower()
-    if "datadome" in msg or "challenge" in msg:
-        return {"error": "wellfound.com blocked the request (bot challenge). Try again shortly."}
-    if "timeout" in msg:
-        return {"error": "wellfound.com request timed out."}
-    return {"error": f"wellfound.com error: {e}"}
-
-
 async def get_wellfound(url: str, browser_solver=None) -> dict:
     """Dispatch a wellfound.com URL to the right renderer."""
     try:
@@ -84,7 +75,11 @@ async def get_wellfound(url: str, browser_solver=None) -> dict:
             return {"content": render_search(cache, url, title=_search_title(url))}
 
         return {"error": f"Unrecognized wellfound.com URL: {url}"}
+    except wafer.ChallengeDetected as e:
+        return {"error": f"wellfound.com blocked the request ({e.challenge_type} challenge). Try again shortly."}
+    except wafer.WaferTimeout:
+        return {"error": "wellfound.com request timed out."}
     except wafer.WaferError as e:
-        return _wafer_error(e)
+        return {"error": f"wellfound.com error: {e}"}
     except Exception as e:  # noqa: BLE001 — surface a clean message to the LLM
         return {"error": f"wellfound.com fetch failed: {type(e).__name__}: {e}"}

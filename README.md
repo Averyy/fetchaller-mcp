@@ -288,11 +288,13 @@ fetchaller transparently bypasses bot challenges. First requests to protected si
 | Alibaba Cloud WAF (TMD) | Inline warming + browser | ~5-10s |
 | Cloudflare Managed Challenge | Patchright browser solver | ~3-30s |
 | Akamai Bot Manager | Patchright browser solver | ~3-15s |
-| Amazon rate-limit/CAPTCHA | Patchright browser solver | ~3-10s |
+| Amazon rate-limit/CAPTCHA | Inline form parse + follow (no browser) | ~100ms |
 | DataDome, PerimeterX, Imperva | Patchright browser solver | ~3-10s |
 | Kasada | Browser CT token + Python SHA-256 PoW | ~3-10s |
 | GeeTest v4 slide CAPTCHA | CV notch detection + drag replay | ~5-15s |
+| hCaptcha | Checkbox → ONNX image grid | ~5-30s |
 | reCAPTCHA v2 | Checkbox → audio (Whisper) → ONNX grid | ~5-30s |
+| F5 Shape, AWS WAF | Patchright browser solver | ~3-15s |
 
 All challenge solving is handled by wafer's `BrowserSolver` (Patchright-based). Cookies are cached per-domain so subsequent requests skip the challenge.
 

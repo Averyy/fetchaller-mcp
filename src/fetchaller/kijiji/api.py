@@ -540,10 +540,9 @@ async def get_listing(url: str) -> dict:
 
         return {"error": f"Could not extract search or listing path from URL: {url}"}
 
+    except wafer.WaferTimeout:
+        return {"error": "Kijiji API request timed out."}
     except wafer.WaferError as e:
-        err_str = str(e)
-        if "timeout" in err_str.lower():
-            return {"error": "Kijiji API request timed out."}
         return {"error": f"Kijiji API error: {e}"}
     except Exception as e:
         _log(f"Unexpected error: {e}")

@@ -1,5 +1,7 @@
 """URL detection, Apollo helpers, and rendering unit tests for wellfound.com."""
 
+from unittest.mock import AsyncMock, patch
+
 from fetchaller.wellfound import api, render
 from fetchaller.wellfound.page import _search_title
 
@@ -260,3 +262,25 @@ class TestRenderCompany:
         assert "Bob (Employee)" in out
         assert "## Open Jobs (12)" in out  # from totalCount, not the single rendered edge
         assert "SWE" in out
+
+
+class TestWaferErrorTyped:
+    """get_wellfound maps typed wafer exceptions to clean messages (no str(e) scan)."""
+
+    async def test_challenge_detected_message(self):
+        import wafer
+
+        from fetchaller.wellfound.page import get_wellfound
+        with patch("fetchaller.wellfound.page.api.fetch_html", new_callable=AsyncMock,
+                   side_effect=wafer.ChallengeDetected("datadome", "https://wellfound.com/", 403)):
+            out = await get_wellfound("https://wellfound.com/company/foo")
+        assert "datadome" in out["error"].lower()
+
+    async def test_timeout_message(self):
+        import wafer
+
+        from fetchaller.wellfound.page import get_wellfound
+        with patch("fetchaller.wellfound.page.api.fetch_html", new_callable=AsyncMock,
+                   side_effect=wafer.WaferTimeout("https://wellfound.com/", 90)):
+            out = await get_wellfound("https://wellfound.com/company/foo")
+        assert "timed out" in out["error"].lower()

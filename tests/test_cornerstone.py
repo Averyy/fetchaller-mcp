@@ -1,9 +1,12 @@
 """Unit tests for Cornerstone OnDemand (CSOD) content module."""
 
+from unittest.mock import AsyncMock, patch
+
 from fetchaller.content.cornerstone import (
     extract_cornerstone_board_params,
     extract_cornerstone_params,
     extract_csod_context,
+    fetch_cornerstone_board,
     is_cornerstone_board_url,
     is_cornerstone_url,
     render_cornerstone_board,
@@ -174,3 +177,37 @@ class TestRenderCornerstoneBoard:
             {"requisitions": [], "totalCount": 0, "context": {"corp": "acme"}}
         )
         assert "Job Board (0 open positions)" in md
+
+
+class TestBoardSsrf:
+    async def test_board_refuses_internal_cloud(self):
+        """SSRF: `cloud` is a base URL from the page's csod.context JS blob with
+        no domain anchor; an internal cloud host must be refused before the POST."""
+        page_html = (
+            '<html><body><script>csod.context={"token":"t","cultureID":1,'
+            '"cultureName":"en-US",'
+            '"endpoints":{"cloud":"http://169.254.169.254","api":"/"}};'
+            "</script></body></html>"
+        )
+        posts: list[str] = []
+
+        class _Resp:
+            status_code = 200
+            text = page_html
+            url = "https://acme.csod.com/ux/ats/careersite/5/home"
+
+        class _Session:
+            async def get(self, u, **kwargs):
+                return _Resp()
+
+            async def post(self, u, **kwargs):
+                posts.append(u)
+                return _Resp()
+
+        with patch("fetchaller.content.cornerstone.is_private_host",
+                   new_callable=AsyncMock, return_value=True):
+            result = await fetch_cornerstone_board(
+                "https://acme.csod.com/ux/ats/careersite/5/home", _Session()
+            )
+        assert result is None
+        assert posts == []  # never POSTed to the internal cloud host

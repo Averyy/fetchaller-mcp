@@ -7,6 +7,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import cached_property
 from urllib.parse import urljoin, urlparse
 
 import wafer
@@ -152,10 +153,31 @@ from ..wellfound.api import is_wellfound as _is_wellfound
 MAX_RESPONSE_SIZE = 20 * 1024 * 1024  # 20MB
 MAX_REDIRECTS = 10  # Manual redirect cap (matches wafer's default max_redirects)
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+# Floor for the wafer session's TOTAL time budget (see _make_session). wafer's
+# timeout= caps the whole call — retries, rotations, AND the browser solve — so
+# the caller's `timeout` (default 10s) is far too little to land a bot-challenge
+# solve; give the total real headroom while attempt_timeout keeps each try short.
+_TOTAL_TIMEOUT_FLOOR = 60
 
-# Byte-level regex to sniff charset from HTML before full decode
-_META_CHARSET_RE = re.compile(rb'<meta[^>]+charset=["\']?([a-zA-Z0-9_-]+)', re.IGNORECASE)
-_CONTENT_TYPE_CHARSET_RE = re.compile(r'charset=([a-zA-Z0-9_-]+)', re.IGNORECASE)
+
+def _canon_host(host: str) -> str:
+    """Canonicalize a hostname the way wafer's resolve/URL layer does — lowercase,
+    strip a trailing dot, IDNA-encode — so our validated-host set matches the host
+    wafer actually puts on the wire (``resp.url``), not just a lowercased variant.
+    Without this, ``Example.COM.`` validates as ``example.com.`` while wafer reports
+    ``example.com``, and the final-host check would falsely reject a valid response.
+
+    MUST mirror wafer's private ``_base._canonical_host`` (same stdlib IDNA codec).
+    If wafer changes its host canonicalization, update this to match or the pin
+    and final-host checks will diverge. Do NOT swap in the stricter ``idna`` PyPI
+    lib here — that would diverge from what wafer actually dials.
+    """
+    h = (host or "").strip().rstrip(".").lower()
+    try:
+        h = h.encode("idna").decode("ascii")
+    except (UnicodeError, ValueError):
+        pass  # already-ASCII or un-encodable: keep the lowercased form
+    return h
 
 
 @dataclass
@@ -168,26 +190,25 @@ class FetchResult:
     final_url: str
     headers: dict[str, str]
 
+    @cached_property
+    def text(self) -> str:
+        """Charset-aware decode of the body (Content-Type charset -> <meta> -> utf-8).
 
-def _decode_content(content: bytes, content_type: str) -> str:
-    """Decode bytes using charset from Content-Type or HTML meta, falling back to UTF-8."""
-    charset = None
-    # 1. Check Content-Type header
-    match = _CONTENT_TYPE_CHARSET_RE.search(content_type)
-    if match:
-        charset = match.group(1).strip()
-    # 2. Sniff HTML <meta charset="..."> from raw bytes
-    if not charset and b"<meta" in content[:4096]:
-        meta_match = _META_CHARSET_RE.search(content[:4096])
-        if meta_match:
-            charset = meta_match.group(1).decode("ascii", errors="ignore")
-    # 3. Try detected charset, fall back to UTF-8
-    if charset:
-        try:
-            return content.decode(charset)
-        except (UnicodeDecodeError, LookupError):
-            pass
-    return content.decode("utf-8", errors="replace")
+        Delegates to wafer's decoder — a strict refinement of the old hand-rolled
+        sniffing (validates the codec name, restricts <meta> sniffing to HTML,
+        never raises). Lazy + cached, so binary bodies (PDF/images) that only
+        read ``.content`` never pay to decode.
+        """
+        # Guarantee a single canonical content-type so charset resolution never
+        # depends on header casing/duplication; content_type is the source of truth.
+        headers = {k: v for k, v in self.headers.items() if k.lower() != "content-type"}
+        headers["content-type"] = self.content_type
+        return wafer.WaferResponse(
+            status_code=self.status_code,
+            headers=headers,
+            url=self.final_url,
+            content=self.content,
+        ).text
 
 
 def _log(msg: str) -> None:
@@ -1156,34 +1177,44 @@ async def fetch_url(
     # construction). Pins accumulate across hops so a rebuilt session covers
     # every host seen so far.
     pins: dict[str, list[str]] = {}
+    validated_hosts: set[str] = set()  # every host we vetted (DNS + IP-literal)
 
     async def _validate_and_pin(target_url: str) -> str | None:
-        """Validate ``target_url``'s host and add it to ``pins``.
+        """Validate ``target_url``'s host, pin it, and record it as vetted.
 
         Returns an error message if the host is private/unresolvable, else None.
         IP-literal hosts need no pin (the URL already targets a fixed address).
         """
-        h = (urlparse(target_url).hostname or "").lower()
+        h = _canon_host(urlparse(target_url).hostname or "")
         if not h:
             return "Invalid URL (no host to resolve)."
-        if h in pins:
+        if h in validated_hosts:
             return None
         is_private, ips = await resolve_and_check(h)
         if is_private:
             return "Access to private/internal hosts is not allowed."
         if ips:  # DNS host -> pin to validated IPs; IP literal -> nothing to pin
             pins[h] = ips
+        validated_hosts.add(h)
         return None
 
-    def _make_session(cookie_url: str) -> wafer.AsyncSession:
-        # NOTE: Do not use `async with` — __aexit__ calls browser_solver.close()
-        # which would destroy the shared BrowserSolver singleton.
+    def _make_session(cookie_url: str, *, solver=browser_solver) -> wafer.AsyncSession:
+        # Plain construction (no `async with`): the session is rebuilt across
+        # redirect hops and reused by downstream handlers, so its lifetime spans
+        # beyond this helper — and wafer sessions need no cleanup (they never
+        # close an injected browser_solver).
+        # timeout= is the TOTAL call budget (retries + rotations + browser solve),
+        # not per-attempt: bound each try with attempt_timeout=(caller's timeout)
+        # and floor the total so a challenge solve isn't starved (default 10s is
+        # far too little). max_response_size streams + aborts early (bomb guard).
         s = wafer.AsyncSession(
-            browser_solver=browser_solver,
-            timeout=timedelta(seconds=timeout),
+            browser_solver=solver,
+            timeout=timedelta(seconds=max(timeout, _TOTAL_TIMEOUT_FLOOR)),
+            attempt_timeout=timedelta(seconds=timeout),
             cache_dir=get_wafer_cache_dir(),
             follow_redirects=False,  # we validate + pin each hop ourselves
             resolve=dict(pins),
+            max_response_size=MAX_RESPONSE_SIZE,
         )
         # Bypass Reddit NSFW age gate on old.reddit.com. Re-applied on every
         # rebuild so a same-domain reddit redirect keeps the cookie.
@@ -1191,11 +1222,34 @@ async def fetch_url(
             s.add_cookie("over18=1; Path=/; Domain=.reddit.com", cookie_url)
         return s
 
+    async def _safe_feed_get(feed_url: str):
+        """SSRF-guarded GET for an autodiscovered feed URL. Its host comes from the
+        fetched page's ``<link rel="alternate">``, so it was never vetted by the
+        main loop — validate + pin it (fail closed) and fetch with a fresh pinned,
+        no-redirect session. Returns the response, or None if the host is
+        private/unresolvable or the fetch fails.
+        """
+        if await _validate_and_pin(feed_url) is not None:
+            return None  # private / unresolvable feed host -> refuse to fetch
+        feed_host = _canon_host(urlparse(feed_url).hostname or "")
+        try:
+            # No browser_solver: a feed is XML; a challenge-solve navigation could
+            # itself escape to an internal host. Skip the feed if it's challenged.
+            resp = await _make_session(feed_url, solver=None).get(
+                feed_url, timeout=timedelta(seconds=timeout)
+            )
+        except Exception:
+            return None
+        # Defense in depth: the feed response must come from the validated host.
+        if _canon_host(urlparse(str(resp.url)).hostname or "") != feed_host:
+            return None
+        return resp
+
     err = await _validate_and_pin(fetch_url_str)
     if err:
         return {"error": err}
     session = _make_session(fetch_url_str)
-    current_host = (urlparse(fetch_url_str).hostname or "").lower()
+    current_host = _canon_host(urlparse(fetch_url_str).hostname or "")
 
     # Resolve Ashby embed URLs (e.g. company.com/careers?ashby_jid=<uuid>) to
     # the canonical jobs.ashbyhq.com/{org}/{jid} form before fetching. The embed
@@ -1222,12 +1276,19 @@ async def fetch_url(
             if err:
                 return {"error": err}
             session = _make_session(fetch_url_str)
-            current_host = (urlparse(fetch_url_str).hostname or "").lower()
+            current_host = _canon_host(urlparse(fetch_url_str).hostname or "")
 
     current_url = fetch_url_str
+    # One deadline for the whole fetch (all hops share it) so a redirect chain
+    # can't multiply the budget: each hop is a separate session.get(), each of
+    # which would otherwise reset wafer's total-call timer.
+    fetch_deadline = time.monotonic() + max(timeout, _TOTAL_TIMEOUT_FLOOR)
     try:
         for _hop in range(MAX_REDIRECTS + 1):
-            resp = await session.get(current_url)
+            remaining = fetch_deadline - time.monotonic()
+            if remaining <= 0:
+                return {"error": f"Request timed out after {timeout}s. Try increasing the timeout parameter for slow servers."}
+            resp = await session.get(current_url, timeout=timedelta(seconds=remaining))
             location = resp.headers.get("location", "")
             if resp.status_code in _REDIRECT_STATUSES and location:
                 next_url = urljoin(current_url, location)
@@ -1238,7 +1299,7 @@ async def fetch_url(
                 err = await _validate_and_pin(next_url)
                 if err:
                     return {"error": "Redirect to private/internal host is not allowed."}
-                next_host = (next_parsed.hostname or "").lower()
+                next_host = _canon_host(next_parsed.hostname or "")
                 if next_host != current_host:
                     # New host: rebuild so the pin covers it. Cookies persist
                     # via the shared cache_dir.
@@ -1248,7 +1309,7 @@ async def fetch_url(
                 continue
             # Final response (not a redirect, or a 3xx without a Location).
             result = FetchResult(
-                content=resp.content[:MAX_RESPONSE_SIZE],
+                content=resp.content,  # capped by max_response_size on the session
                 content_type=resp.headers.get("content-type", ""),
                 status_code=resp.status_code,
                 final_url=str(resp.url),
@@ -1270,20 +1331,30 @@ async def fetch_url(
         return {"error": f"Connection error: {e.reason}"}
     except wafer.WaferTimeout:
         return {"error": f"Request timed out after {timeout}s. Try increasing the timeout parameter for slow servers."}
+    except wafer.ResponseTooLarge:
+        return {"error": f"Response too large (exceeds {MAX_RESPONSE_SIZE // (1024 * 1024)}MB limit)."}
     except wafer.WaferError as e:
         return {"error": f"Request failed: {e}"}
     except Exception as e:
         return {"error": f"Fetch failed ({type(e).__name__}): {e}"}
 
-    # No post-hoc final_url re-check: per-hop validation above already vetted and
-    # pinned every host we connected to (redirect targets included). The old
-    # check re-resolved (a fresh TOCTOU window) and ran only after the body was
-    # already fetched from the redirect target.
+    # Defense in depth: the response's final host MUST be one we vetted above.
+    # Per-hop validation pins every host we deliberately connect to, but a browser
+    # solve or native-TLS passthrough could surface a response whose URL host we
+    # never validated — reject it. This is host-set membership, NOT a re-resolve,
+    # so it does not reopen the TOCTOU window the pinning closes. (Supersedes the
+    # old post-redirect check, which re-resolved and ran after the body was read.)
+    final_host = _canon_host(urlparse(result.final_url).hostname or "")
+    if not final_host or final_host not in validated_hosts:
+        _log(f"FETCH {url} -> ERROR: final host {final_host!r} was not validated")
+        return {"error": "Response from an unvalidated host is not allowed."}
 
     # Downstream handlers (board APIs, feeds, doc viewers) reuse this session for
-    # secondary fetches to other hosts. Restore normal redirect-following now the
-    # pinned, per-hop-validated main fetch is done, so those fetches keep their
-    # pre-existing behavior (they were never pin-guarded and rely on redirects).
+    # secondary fetches to other hosts. Restore redirect-following for them now the
+    # pinned main fetch is done. The wreq path reads this flag per-request; a
+    # native-TLS transport already built for a WAF-pinned host during the main
+    # fetch keeps follow_redirects=False, so a downstream redirect through that
+    # narrow path won't be followed (acceptable given how rarely it applies).
     session.follow_redirects = True
 
     # Handle rate limiting (wafer passes 429 through when max_rotations=0)
@@ -1306,13 +1377,13 @@ async def fetch_url(
                 "content_type": "text",
                 "url": url,
             }
-        body = _decode_content(result.content, content_type)[:1000]
+        body = result.text[:1000]
         _log(f"FETCH {url} -> ERROR: HTTP {result.status_code} ({time.monotonic() - start:.1f}s)")
         return {"error": f"HTTP {result.status_code}", "body": body}
 
     # JSON
     if "application/json" in content_type:
-        text = _decode_content(result.content, content_type)
+        text = result.text
         return {
             "content": truncate(text, max_tokens),
             "content_type": "json",
@@ -1321,7 +1392,7 @@ async def fetch_url(
 
     # Plain text
     if "text/plain" in content_type:
-        text = _decode_content(result.content, content_type)
+        text = result.text
         return {
             "content": truncate(text, max_tokens),
             "content_type": "text",
@@ -1330,7 +1401,7 @@ async def fetch_url(
 
     # XML/RSS/Atom — try structured feed parsing first (unless raw mode)
     if any(t in content_type for t in ("text/xml", "application/xml", "application/rss+xml", "application/atom+xml")):
-        text = _decode_content(result.content, content_type)
+        text = result.text
         if raw:
             return {
                 "content": truncate(text, max_tokens),
@@ -1359,7 +1430,7 @@ async def fetch_url(
 
     # CSV
     if "text/csv" in content_type:
-        text = _decode_content(result.content, content_type)
+        text = result.text
         return {
             "content": truncate(text, max_tokens),
             "content_type": "csv",
@@ -1415,7 +1486,7 @@ async def fetch_url(
 
     # HTML - convert to markdown (unless raw mode)
     if "text/html" in content_type or "application/xhtml" in content_type:
-        html = _decode_content(result.content, content_type)
+        html = result.text
 
         if raw:
             return {
@@ -1516,8 +1587,8 @@ async def fetch_url(
             feed_url = discover_feed_url(html, result.final_url or url)
             if feed_url:
                 try:
-                    feed_resp = await session.get(feed_url, timeout=float(timeout))
-                    if feed_resp.status_code < 400:
+                    feed_resp = await _safe_feed_get(feed_url)
+                    if feed_resp is not None and feed_resp.status_code < 400:
                         feed_text = feed_resp.text
                         feed = parse_feed(feed_text)
                         if feed and feed.items:
@@ -1540,8 +1611,8 @@ async def fetch_url(
                 feed_url = discover_feed_url(html, result.final_url or url)
                 if feed_url:
                     try:
-                        feed_resp = await session.get(feed_url, timeout=float(timeout))
-                        if feed_resp.status_code < 400:
+                        feed_resp = await _safe_feed_get(feed_url)
+                        if feed_resp is not None and feed_resp.status_code < 400:
                             feed_text = feed_resp.text
                             feed = parse_feed(feed_text)
                             if feed and feed.items:
@@ -1635,7 +1706,7 @@ async def fetch_url(
 
     # SVG - textual XML, return as raw
     if "image/svg+xml" in content_type or "image/svg" in content_type:
-        text = _decode_content(result.content, content_type)
+        text = result.text
         return {
             "content": truncate(text, max_tokens),
             "content_type": "svg",
@@ -1653,7 +1724,7 @@ async def fetch_url(
 
     # Any other text-based content type
     if content_type.startswith("text/") or content_type.startswith("application/javascript"):
-        text = _decode_content(result.content, content_type)
+        text = result.text
         return {
             "content": truncate(text, max_tokens),
             "content_type": "text",

@@ -10,7 +10,7 @@ from fetchaller.aliexpress.mtop import MTopClient, compute_sign
 
 
 def _mock_resp(data: dict, cookies: list[str] | None = None):
-    """Create a mock response with .text and .get_all() for Set-Cookie headers.
+    """Create a mock response with .text, .get_all(), and .cookies.
 
     Args:
         data: JSON response data.
@@ -20,12 +20,19 @@ def _mock_resp(data: dict, cookies: list[str] | None = None):
     resp.json.return_value = data
     resp.text = json.dumps(data)
 
+    cookie_list = cookies or []
+
     def get_all(name):
         if name.lower() == "set-cookie":
-            return cookies or []
+            return cookie_list
         return []
     resp.get_all = get_all
 
+    # Mirror wafer's WaferResponse.cookies: exact name -> value, from Set-Cookie.
+    resp.cookies = {
+        c.split("=", 1)[0].strip(): c.split("=", 1)[1].split(";", 1)[0]
+        for c in cookie_list if "=" in c
+    }
     resp.headers = {}
     return resp
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from wafer import WaferError
+from wafer import WaferError, WaferTimeout
 
 from fetchaller.kijiji.api import (
     _format_listing_detail,
@@ -518,7 +518,7 @@ class TestGetListing:
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
-        with _mock_session_error(WaferError("Connection timeout")):
+        with _mock_session_error(WaferTimeout("https://www.kijiji.ca/", 15)):
             _reset_limiter()
             result = await get_listing("https://www.kijiji.ca/v-cars-trucks/city/slug/1234567890")
             assert "error" in result

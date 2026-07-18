@@ -1,7 +1,7 @@
 """realtor.ca client — api2 search + SSR listing detail.
 
 All search data comes from the Imperva-protected ``api2.realtor.ca`` XHR
-endpoints (the public map page is a CSR shell). wafer 0.2.4 handles Imperva
+endpoints (the public map page is a CSR shell). wafer handles Imperva
 transparently — a fresh session free-passes via native-TLS at light load (no
 browser), and under escalation the ``browser_solver`` solves on the origin page
 (www.realtor.ca) with same-site XHR passthrough — so this module just constructs

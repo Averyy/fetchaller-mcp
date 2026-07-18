@@ -175,18 +175,14 @@ class MTopClient:
             headers = {"Referer": "https://www.aliexpress.com/"}
             resp = await session.get(url, params=params, headers=headers, timeout=10)
 
-            # Extract _m_h5_tk from response Set-Cookie headers
-            token_found = False
-            for cookie_val in resp.get_all("set-cookie"):
-                if "_m_h5_tk=" in cookie_val and "_m_h5_tk_enc" not in cookie_val:
-                    val = cookie_val.split("_m_h5_tk=")[1].split(";")[0]
-                    self._token = val.split("_")[0]
-                    self._token_time = time.time()
-                    _log(f"token bootstrapped: {self._token[:8]}...")
-                    token_found = True
-                    break
-
-            if not token_found:
+            # Extract _m_h5_tk from the response's cookies. Keyed by exact name,
+            # so no _m_h5_tk_enc collision; value is "<token>_<timestamp>".
+            tk = resp.cookies.get("_m_h5_tk")
+            if tk:
+                self._token = tk.split("_")[0]
+                self._token_time = time.time()
+                _log(f"token bootstrapped: {self._token[:8]}...")
+            else:
                 _log("token bootstrap failed: no _m_h5_tk cookie received")
                 # Fall back to browser solve — page JS sets _m_h5_tk
                 await self._browser_solve_for_token()
@@ -266,14 +262,13 @@ class MTopClient:
         headers = {"Referer": "https://www.aliexpress.com/"}
         resp = await session.get(url, params=params, headers=headers, timeout=15)
 
-        # Update token from response cookies if refreshed
-        for cookie_val in resp.get_all("set-cookie"):
-            if "_m_h5_tk=" in cookie_val and "_m_h5_tk_enc" not in cookie_val:
-                val = cookie_val.split("_m_h5_tk=")[1].split(";")[0]
-                new_token = val.split("_")[0]
-                if new_token != self._token:
-                    self._token = new_token
-                    self._token_time = time.time()
+        # Update token if this response refreshed it
+        tk = resp.cookies.get("_m_h5_tk")
+        if tk:
+            new_token = tk.split("_")[0]
+            if new_token != self._token:
+                self._token = new_token
+                self._token_time = time.time()
 
         try:
             body = resp.text

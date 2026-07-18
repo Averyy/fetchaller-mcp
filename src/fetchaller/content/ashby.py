@@ -25,6 +25,8 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
+from ..security.ssrf import is_private_host
+
 # ---------------------------------------------------------------------------
 # URL detection
 # ---------------------------------------------------------------------------
@@ -440,6 +442,11 @@ async def resolve_ashby_embed_url(url: str, session) -> str | None:
             page = await session.get(url)
             chunk_url = _find_careers_chunk_url(page.text, str(page.url))
             if not chunk_url:
+                return None
+            # SSRF: chunk_url is a <script src> from attacker-controlled page HTML
+            # and may be an absolute URL to any host. Refuse private/internal (or
+            # unresolvable) hosts before fetching it (fail closed).
+            if await is_private_host(urlparse(chunk_url).hostname or ""):
                 return None
             chunk = await session.get(chunk_url)
             slug = _extract_org_slug_from_js(chunk.text)

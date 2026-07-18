@@ -1,6 +1,6 @@
 [project]
 name = "fetchaller-mcp"
-version = "3.2.0"
+version = "3.2.1"
 description = "MCP server that fetches any URL and returns clean markdown - no domain restrictions. Uses wafer for TLS fingerprint impersonation to bypass bot protection."
 license = "MIT"
 requires-python = ">=3.12"

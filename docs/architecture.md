@@ -85,6 +85,10 @@ All HTTP fetching is handled by `wafer` (`~/code/wafer`). Fetchaller does NOT co
 - **`wafer.AsyncSession`** — per-request sessions with automatic challenge detection/solving, cookie caching, fingerprint rotation, retry/backoff
 - **`wafer.browser.BrowserSolver`** — Patchright-based browser solver for Cloudflare, Akamai, etc. One shared instance created at server startup, passed to sessions via `browser_solver=`
 - **`wafer.Profile.OPERA_MINI`** — first-class Opera Mini impersonation for search
-- **Challenge types handled by wafer**: ACW, TMD, Cloudflare, Akamai, DataDome, PerimeterX, Imperva, Kasada, F5 Shape, AWS WAF, Amazon, Vercel, Arkose, GeeTest, hCaptcha, reCAPTCHA, and generic JS fallback (17 WAF types total)
+- **Challenge types wafer detects (17)**: ACW, TMD, Amazon, Cloudflare, Akamai, DataDome, PerimeterX, Imperva, Kasada, F5 Shape, AWS WAF, Vercel, Arkose, GeeTest, hCaptcha, reCAPTCHA (v2), generic JS. Detection is not the same as solving:
+  - **Inline (pure Python, no browser)**: ACW (shuffle+XOR), TMD (homepage session-warming), Amazon ("Continue shopping" form parse + follow).
+  - **Browser solver (`BrowserSolver`)**: Cloudflare, Akamai, DataDome (WASM PoW; bails on interactive captcha), PerimeterX (press-and-hold), Imperva (native-TLS free-pass first, browser-solve on the origin page under escalation), Kasada, F5 Shape, AWS WAF, GeeTest v4 (slide), hCaptcha, reCAPTCHA **v2** (checkbox + ONNX grid).
+  - **Detect-only — NOT solved**: Arkose / FunCaptcha (no solver → raises `ChallengeDetected`). Vercel and `generic_js` have no dedicated solver either, but a generic browser JS-wait passes their *passive* JS checks.
+  - **reCAPTCHA v3**: not a detected challenge — minted browser-free via `session.mint_recaptcha_v3(sitekey, action)` (score token). fetchaller does not currently use this.
 
 If a site blocks requests, **fix it in wafer, not fetchaller**.

@@ -267,3 +267,21 @@ class TestParseListing:
         assert p["brokerage"] == "ACME REALTY Brokerage"
         assert p["mls"] == "X999999"
         assert p["coords"] == (45.42, -75.70)
+
+
+class TestWaferErrorTyped:
+    """_wafer_error dispatches on exception type, not a str(e) substring scan."""
+
+    def test_challenge_uses_challenge_type(self):
+        import wafer
+
+        from fetchaller.realtor.search import _wafer_error
+        out = _wafer_error(wafer.ChallengeDetected("imperva", "https://www.realtor.ca/", 403))
+        assert "imperva" in out["error"].lower()
+
+    def test_timeout_message(self):
+        import wafer
+
+        from fetchaller.realtor.search import _wafer_error
+        out = _wafer_error(wafer.WaferTimeout("https://www.realtor.ca/", 60))
+        assert "timed out" in out["error"].lower()

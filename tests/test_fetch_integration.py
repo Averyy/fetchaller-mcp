@@ -677,3 +677,181 @@ class TestSSRFPinning:
 
         assert "arrived" in result["content"].lower()
         assert session.calls == [start, final]
+
+    async def test_final_host_must_be_validated(self):
+        """Defense in depth: a 200 whose final URL host we never validated is
+        rejected (guards against a browser/native passthrough surfacing an
+        unvetted host without going through the per-hop validation)."""
+        from fetchaller.tools.fetch import fetch_url
+
+        # Requested a public host, but the response claims to come from loopback.
+        sneaky = MockResponse(
+            content=b"<html>internal secret</html>",
+            content_type="text/html",
+            status_code=200,
+            url="http://127.0.0.1/private",
+        )
+        session = MockWaferSession(responses={"https://public.example/": sneaky})
+
+        async def _rac(_host):
+            return (False, [])
+
+        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+             _patch_wafer(session):
+            result = await fetch_url("https://public.example/")
+
+        assert "error" in result
+        assert "unvalidated host" in result["error"].lower()
+
+    async def test_final_host_empty_is_rejected(self):
+        """Fail closed: a response with no determinable final host is rejected,
+        not accepted (the check must not skip when the host is empty)."""
+        from fetchaller.tools.fetch import fetch_url
+
+        nohost = MockResponse(content=b"secret", content_type="text/html",
+                              status_code=200, url="")
+        session = MockWaferSession(responses={"https://public.example/": nohost})
+
+        async def _rac(_host):
+            return (False, [])
+
+        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+             _patch_wafer(session):
+            result = await fetch_url("https://public.example/")
+
+        assert "error" in result
+        assert "unvalidated host" in result["error"].lower()
+
+    async def test_trailing_dot_host_not_false_rejected(self):
+        """Host canonicalization matches wafer: a trailing-dot request host is
+        validated as example.com, so wafer's canonicalized example.com response
+        is accepted, not falsely rejected."""
+        from fetchaller.tools.fetch import fetch_url
+
+        # Request Example.COM. — wafer canonicalizes the dispatched URL, so the
+        # response comes back with url https://example.com/ .
+        resp = MockResponse(content=b"<html>ok</html>", content_type="text/html",
+                            status_code=200, url="https://example.com/")
+        session = MockWaferSession(default=resp)
+
+        async def _rac(_host):
+            return (False, [])
+
+        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+             _patch_wafer(session):
+            result = await fetch_url("https://Example.COM./")
+
+        assert "content" in result  # not falsely rejected
+        assert "ok" in result["content"].lower()
+
+    async def test_autodiscovered_feed_to_internal_host_refused(self):
+        """SSRF: a forum page whose autodiscovered feed <link> points to an
+        internal host must NOT be fetched — the feed host (from page content) is
+        validated fail-closed before we connect, like the main fetch."""
+        from fetchaller.tools.fetch import fetch_url
+
+        listing_url = "https://new-forum.example.com/forums/general.1/"
+        feed_url = "http://169.254.169.254/latest/meta-data/"  # cloud metadata
+        listing_html = f"""<html id="XF">
+<head><link rel="alternate" type="application/rss+xml" href="{feed_url}"></head>
+<body><div class="p-body">Forum listing content</div></body>
+</html>"""
+
+        async def _rac(host):
+            # public listing host is fine; the feed's internal host is blocked
+            return (True, []) if host == "169.254.169.254" else (False, [])
+
+        session = MockWaferSession(
+            responses={listing_url: _html_response(listing_html, listing_url)},
+        )
+        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+             _patch_wafer(session):
+            result = await fetch_url(listing_url)
+
+        # Returned the page as markdown, never fetched the internal "feed".
+        assert result.get("content_type") == "markdown"
+        assert "forum listing content" in result["content"].lower()
+        assert feed_url not in session.calls
+        assert session.calls == [listing_url]
+
+
+# ---------------------------------------------------------------------------
+# wafer 0.3.2 cleanups: charset via resp.text, total-budget timeout, size cap
+# ---------------------------------------------------------------------------
+
+
+class TestWaferCleanups:
+    def test_fetchresult_text_decodes_charset(self):
+        """FetchResult.text uses wafer's charset-aware decode (header → meta → utf-8)."""
+        from fetchaller.tools.fetch import FetchResult
+
+        sjis = FetchResult(
+            content="日本語".encode("shift_jis"),
+            content_type="text/html; charset=shift_jis",
+            status_code=200,
+            final_url="https://x/",
+            headers={"content-type": "text/html; charset=shift_jis"},
+        )
+        assert sjis.text == "日本語"
+        # utf-8 fallback when no charset declared
+        plain = FetchResult(content=b"hello", content_type="text/plain",
+                            status_code=200, final_url="https://x/", headers={})
+        assert plain.text == "hello"
+
+    def test_fetchresult_text_uses_content_type_field_not_headers(self):
+        """content_type is the source of truth even with empty / mismatched-case headers."""
+        from fetchaller.tools.fetch import FetchResult
+
+        # No headers at all — must still honor the declared charset.
+        r = FetchResult(content="日本語".encode("shift_jis"),
+                        content_type="text/html; charset=shift_jis",
+                        status_code=200, final_url="https://x/", headers={})
+        assert r.text == "日本語"
+        # A title-cased header with a WRONG charset must not win over content_type.
+        r2 = FetchResult(content="café".encode("latin-1"),
+                         content_type="text/html; charset=latin-1",
+                         status_code=200, final_url="https://x/",
+                         headers={"Content-Type": "text/html; charset=utf-8"})
+        assert r2.text == "café"
+
+    async def test_timeout_uses_attempt_cap_and_total_floor(self):
+        """timeout= is now the TOTAL budget: bound each attempt, floor the total
+        so a bot-challenge solve isn't starved."""
+        from datetime import timedelta
+
+        from fetchaller.tools.fetch import (
+            _TOTAL_TIMEOUT_FLOOR,
+            MAX_RESPONSE_SIZE,
+            fetch_url,
+        )
+
+        captured: dict = {}
+        session = MockWaferSession(default=_html_response("<html>ok</html>", "https://t.example/"))
+
+        def _factory(*args, **kwargs):
+            captured.update(kwargs)
+            return session
+
+        async def _rac(_host):
+            return (False, ["1.2.3.4"])
+
+        with patch("fetchaller.tools.fetch.wafer.AsyncSession", side_effect=_factory), \
+             patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac):
+            await fetch_url("https://t.example/", timeout=10)
+
+        assert captured["attempt_timeout"] == timedelta(seconds=10)  # per-attempt cap = caller's timeout
+        assert captured["timeout"] == timedelta(seconds=_TOTAL_TIMEOUT_FLOOR)  # total floored for solve headroom
+        assert captured["max_response_size"] == MAX_RESPONSE_SIZE
+
+    async def test_response_too_large_returns_error(self):
+        import wafer
+
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.ResponseTooLarge("https://big.example/", 999, 100))
+        with _patch_wafer(session), \
+             patch("fetchaller.tools.fetch.resolve_and_check", new_callable=AsyncMock, return_value=(False, [])):
+            result = await fetch_url("https://big.example/")
+        assert "error" in result
+        assert "too large" in result["error"].lower()

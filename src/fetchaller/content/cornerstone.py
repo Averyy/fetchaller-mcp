@@ -22,6 +22,8 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
+from ..security.ssrf import is_private_host
+
 # ---------------------------------------------------------------------------
 # URL detection
 # ---------------------------------------------------------------------------
@@ -288,6 +290,11 @@ async def fetch_cornerstone_board(url: str, session) -> dict | None:
     culture_name = (ctx.get("cultureName") or "en-US").strip() or "en-US"
     cloud = (ctx.get("endpoints") or {}).get("cloud", "").rstrip("/")
     if not (token and culture_id is not None and cloud):
+        return None
+    # SSRF: `cloud` is a full base URL read from the page's csod.context JS blob
+    # and is not anchored to a domain. Refuse private/internal (or unresolvable)
+    # hosts before POSTing to it (fail closed).
+    if await is_private_host(urlparse(cloud).hostname or ""):
         return None
 
     body = {

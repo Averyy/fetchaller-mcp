@@ -34,11 +34,10 @@ def _filters_desc(
     return ", ".join(parts)
 
 
-def _wafer_error(e: Exception) -> dict:
-    msg = str(e)
-    if "imperva" in msg.lower() or "challenge" in msg.lower():
-        return {"error": "realtor.ca blocked the request (bot challenge). Try again shortly."}
-    if "timeout" in msg.lower():
+def _wafer_error(e: wafer.WaferError) -> dict:
+    if isinstance(e, wafer.ChallengeDetected):
+        return {"error": f"realtor.ca blocked the request ({e.challenge_type} challenge). Try again shortly."}
+    if isinstance(e, wafer.WaferTimeout):
         return {"error": "realtor.ca request timed out."}
     return {"error": f"realtor.ca error: {e}"}
 
