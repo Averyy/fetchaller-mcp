@@ -192,14 +192,17 @@ def extract_ebay_jsonld(soup: BeautifulSoup) -> None:
                     if price:
                         lines.append(f"**Price:** {currency} {price}")
 
+                    # itemCondition/availability are usually schema.org URL
+                    # strings but can arrive as nested objects — guard the type
+                    # before .rsplit so a dict/list doesn't crash extraction.
                     condition = offer.get("itemCondition", "")
-                    if condition:
+                    if isinstance(condition, str) and condition:
                         # Extract human-readable from URL like "NewCondition"
                         cond_label = condition.rsplit("/", 1)[-1].replace("Condition", "")
                         lines.append(f"**Condition:** {cond_label}")
 
                     avail = offer.get("availability", "")
-                    if avail:
+                    if isinstance(avail, str) and avail:
                         avail_label = avail.rsplit("/", 1)[-1]
                         lines.append(f"**Availability:** {avail_label}")
 
@@ -279,12 +282,17 @@ def extract_ebay_search_results(soup: BeautifulSoup, url: str) -> None:
         body.insert(0, marker)
 
 
-# Price pattern: currency symbol/code followed by digits
-# Covers $, £, €, C $, AU $, and EUR/GBP/USD prefix formats
+# Price pattern: a currency symbol/code followed by digits.
+# Covers $, £, €, C $, AU $, and EUR/GBP/USD prefix formats.
+# A currency indicator is REQUIRED — previously both the symbol and code were
+# optional, so bare numbers ("2024", "12", "1,234") matched as prices in the
+# class-agnostic search fallback (item numbers, quantities, years leaked in).
 _PRICE_RE = re.compile(
-    r"^(?:[A-Z]{2,3}\s+)?"  # Optional currency code (EUR, USD, GBP, etc.)
-    r"[£€$¥]?"  # Optional currency symbol
-    r"[\d.,]+(?:\s*(?:to|bis|-)\s*(?:[A-Z]{2,3}\s+)?[£€$¥]?[\d.,]+)?$"
+    r"^(?:"
+    r"[A-Z]{0,3}\s*[£€$¥]"  # currency symbol, optional leading region/code (C $, AU $, $)
+    r"|[A-Z]{2,3}\s+"       # or a bare currency-code prefix (EUR 15,00, USD 12.00)
+    r")"
+    r"\s*[\d.,]+(?:\s*(?:to|bis|-)\s*(?:[A-Z]{2,3}\s+)?[£€$¥]?[\d.,]+)?$"
 )
 
 # Known eBay condition labels (English + common locales)

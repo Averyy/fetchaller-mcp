@@ -81,6 +81,35 @@ class TestParseLeverApplyForm:
         assert gender["label"] == "Gender"
         assert "Male" in gender["options"] and "Female" in gender["options"]
 
+    def test_required_detected_via_field_class(self):
+        # Regression: required marked ONLY by the .application-field.required-field
+        # class (no <span class="required">). A double " ".join used to char-explode
+        # the class string, so this path always read as optional.
+        html = """
+        <html><body>
+          <section class="section application-form">
+            <ul>
+              <li class="application-question">
+                <label>
+                  <div class="application-label">Full name</div>
+                  <div class="application-field required-field"><input type="text" name="name"/></div>
+                </label>
+              </li>
+              <li class="application-question">
+                <label>
+                  <div class="application-label">LinkedIn</div>
+                  <div class="application-field"><input type="text" name="urls[LinkedIn]"/></div>
+                </label>
+              </li>
+            </ul>
+          </section>
+        </body></html>
+        """
+        sections = parse_lever_apply_form(html)
+        questions = {q["label"]: q for q in sections[0]["questions"]}
+        assert questions["Full name"]["required"] is True
+        assert questions["LinkedIn"]["required"] is False
+
 
 class TestRenderLeverJob:
     def test_preserves_raw_fields_and_lists(self):

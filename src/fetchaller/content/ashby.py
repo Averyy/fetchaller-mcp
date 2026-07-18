@@ -312,7 +312,10 @@ def _build_markdown_from_jsonld(jp: dict, url: str | None) -> str | None:
             meta.append(f"- **{key}**: {s}")
 
     description_html = jp.get("description") or ""
-    if isinstance(description_html, str) and ("&lt;" in description_html or "<" in description_html):
+    # Only unescape when the value is actually entity-escaped (&lt;p&gt;…). The
+    # old check also fired on raw "<" and would over-decode already-plain HTML
+    # (e.g. turning a literal &amp; into &); markdownify handles raw HTML fine.
+    if isinstance(description_html, str) and "&lt;" in description_html:
         from html import unescape as _un
         description_html = _un(description_html)
     description_md = _html_to_markdown(description_html)

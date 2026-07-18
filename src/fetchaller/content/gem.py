@@ -194,8 +194,7 @@ def _render_question(q: dict) -> str | None:
         return None
     answer_type = q.get("answerType") or ""
     display_type = q.get("displayType") or ""
-    types = ", ".join(t for t in (answer_type, display_type) if t and t != answer_type or t == answer_type)
-    # Simpler: show both if they differ
+    # Show both when they differ, else whichever is present.
     if answer_type and display_type and answer_type != display_type:
         types = f"{answer_type}/{display_type}"
     else:

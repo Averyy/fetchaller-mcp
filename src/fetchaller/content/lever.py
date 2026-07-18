@@ -153,11 +153,16 @@ def parse_lever_apply_form(html: str) -> list[dict]:
             # Dedupe, preserve order
             _seen = set()
             type_hints = [t for t in type_hints if not (t in _seen or _seen.add(t))]
+            # `.get("class")` on a bs4 Tag returns the class list (multi-valued
+            # attr). The previous code wrapped it in a second `" ".join(...)`,
+            # which exploded the joined string into space-separated *characters*,
+            # so "required-field" never matched and required fields rendered as
+            # optional. Test list membership directly.
+            field_el = q.select_one(".application-field")
+            field_classes = (field_el.get("class") if field_el is not None else None) or []
             required = (
                 label_el.find(class_="required") is not None
-                or "required-field" in " ".join(
-                    " ".join((q.select_one(".application-field") or {}).get("class", []) or [])
-                )
+                or "required-field" in field_classes
             )
 
             options: list[str] = []

@@ -1,5 +1,6 @@
 """Tests for Reddit request queue."""
 
+import asyncio
 import time
 
 import pytest
@@ -81,6 +82,67 @@ class TestRedditQueue:
         assert result == "ok"
         # Should have waited ~0.05s (the backoff_rate_limit value)
         assert 0.03 <= elapsed < 1.0
+
+        await queue.stop()
+
+    @pytest.mark.asyncio
+    async def test_backoff_beyond_max_queue_wait_rejects_fast(self):
+        """A backoff longer than max_queue_wait must fail the item fast, not sleep it.
+
+        Regression: the stale-drop check ran BEFORE the delay sleep, so an item
+        dequeued during a 300s (403) backoff slept the whole backoff and hung its
+        caller far past any per-request timeout.
+        """
+        queue = RedditRequestQueue(QueueConfig(max_queue_wait=2.0))
+
+        async def dummy():
+            return "ok"
+
+        queue.set_backoff(403)  # 300s backoff (default backoff_blocked)
+        start = time.time()
+        with pytest.raises(TimeoutError):
+            await queue.enqueue(dummy)
+        assert time.time() - start < 2.0  # rejected fast, did not sleep 300s
+
+        await queue.stop()
+
+    @pytest.mark.asyncio
+    async def test_timeout_during_backoff_sleep_skips_callback(self):
+        """If the caller times out DURING the rate-limit/backoff sleep, the
+        processor must re-check and skip the callback — no wasted request/quota.
+        """
+        queue = RedditRequestQueue(QueueConfig(backoff_rate_limit=0.4, max_queue_wait=30.0))
+        await queue.enqueue(lambda: asyncio.sleep(0))  # prime (records 1 request)
+        queue.set_backoff(429)  # processor will sleep ~0.4s before running
+
+        ran = {"n": 0}
+
+        async def cb():
+            ran["n"] += 1
+            return "ok"
+
+        with pytest.raises(TimeoutError):
+            await queue.enqueue(cb, _queue_timeout=0.1)  # times out mid-sleep
+        await asyncio.sleep(0.6)  # let the processor finish the backoff sleep
+
+        assert ran["n"] == 0, "callback ran for an abandoned (timed-out) item"
+        assert len(queue._request_times) == 1, "quota consumed for abandoned item"
+
+        await queue.stop()
+
+    @pytest.mark.asyncio
+    async def test_queue_timeout_honored(self):
+        """_queue_timeout bounds the caller's wait even when the callback is slow."""
+        queue = RedditRequestQueue()
+
+        async def slow():
+            await asyncio.sleep(10)
+            return "late"
+
+        start = time.time()
+        with pytest.raises(TimeoutError):
+            await queue.enqueue(slow, _queue_timeout=0.2)
+        assert time.time() - start < 2.0
 
         await queue.stop()
 

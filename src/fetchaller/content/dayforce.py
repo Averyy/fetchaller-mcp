@@ -388,8 +388,14 @@ def render_dayforce_board(payload: dict, source_url: str | None = None) -> str:
     board_code = (site.get("jobBoardCode") or "").strip()
     culture = (site.get("cultureCode") or "").strip()
 
+    total = payload.get("totalCount") or len(jobs)
     header = f"# {board_code or namespace} — Job Board ({len(jobs)} open positions)"
     parts: list[str] = [header, ""]
+    # Board is fetched as a single page (pageSize 200); flag truncation so the
+    # count above isn't read as the full set when the tenant has more openings.
+    if total > len(jobs):
+        parts.append(f"_Showing {len(jobs)} of {total} positions (listing capped at {len(jobs)})._")
+        parts.append("")
     if namespace:
         parts.append(f"- **clientNamespace**: {namespace}")
     if board_code:

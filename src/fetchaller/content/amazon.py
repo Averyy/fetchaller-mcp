@@ -383,8 +383,10 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?:^|\n)#### Select to learn more\n"), "\n"),
     # "View Image Gallery" link
     (re.compile(r"(?:^|\n)View Image Gallery\n"), "\n"),
-    # "Verified Purchase" labels (redundant noise)
-    (re.compile(r"(?:^|\n)\s*Verified Purchase\n"), "\n"),
+    # "Verified Purchase" labels (redundant noise). Lookahead on the trailing \n
+    # so back-to-back occurrences don't leak (a match that eats the \n strips the
+    # next line's own (?:^|\n) anchor — the pitfall the sibling modules avoid).
+    (re.compile(r"(?:^|\n)[ \t]*Verified Purchase(?=\n|$)"), ""),
     # Bare "Back to top" link
     (re.compile(r"(?:^|\n)Back to top\n"), "\n"),
     # Footer section headers (use lookahead to avoid consuming the \n needed by next match)
@@ -440,8 +442,10 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?:^|\n)See more\n"), "\n"),
     # Empty "Make a Size/Colour/Style Name selection" prompt
     (re.compile(r"(?:^|\n)Make a (?:Size|Colour|Style)(?: Name)? selection\s*\n"), "\n"),
-    # "Colour Name: Green（70cm）" variant label (info is in specs table)
-    (re.compile(r"(?:^|\n)(?:Colour|Color|Size|Style)(?: Name)?:\s+[^\n]+\n"), "\n"),
+    # "Colour Name: Green（70cm）" variant label (info is in specs table). These
+    # cluster (Colour + Size + Style on consecutive lines); lookahead on the
+    # trailing \n so the middle one isn't skipped when its neighbour eats the \n.
+    (re.compile(r"(?:^|\n)(?:Colour|Color|Size|Style)(?: Name)?:\s+[^\n]+(?=\n|$)"), ""),
     # "Add gift options" link
     (re.compile(r"(?:^|\n)Add gift options\n"), "\n"),
     # "Other sellers on Amazon" section
@@ -452,9 +456,9 @@ _POSTPROCESS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'\{"desktop_buybox_group_1":\[.*?\]\}'), ""),
     # "Purchase options and add-ons" header (empty after JSON removal)
     (re.compile(r"(?:^|\n)### Purchase options and add-ons\n"), "\n"),
-    # Buy box action buttons and cart UI noise
-    (re.compile(r"(?:^|\n)Add to cart\n"), "\n"),
-    (re.compile(r"(?:^|\n)Buy Now\n"), "\n"),
+    # Buy box action buttons and cart UI noise (often back-to-back → lookahead)
+    (re.compile(r"(?:^|\n)Add to cart(?=\n|$)"), ""),
+    (re.compile(r"(?:^|\n)Buy Now(?=\n|$)"), ""),
     (re.compile(r"(?:^|\n)×\s*\n"), "\n"),
     (re.compile(r"(?:^|\n)# Added to cart\n"), "\n"),
     (re.compile(r"(?:^|\n)Cart\s+Proceed to checkout\n"), "\n"),

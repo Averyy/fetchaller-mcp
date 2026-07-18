@@ -14,7 +14,7 @@ import re
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
-from markdownify import markdownify
+from markdownify import MarkdownConverter
 
 from . import alibaba as _alibaba
 from . import aliexpress as _aliexpress
@@ -156,6 +156,21 @@ def _extract_code_language(el):
                 if cls.startswith(prefix):
                     return cls[len(prefix):]
     return None
+
+
+# Reusable markdown converter (options are constant). Calling convert_soup() on
+# the already-parsed soup avoids markdownify()'s internal str(body) serialize +
+# full re-parse of every HTML document — ~10% of the HTML path's CPU on large
+# pages. Output is identical after the newline collapse in _html_to_markdown_sync
+# (the re-parse only ever differed by collapsible blank-line runs).
+_MD_CONVERTER = MarkdownConverter(
+    heading_style="ATX",
+    bullets="-",
+    escape_asterisks=False,
+    escape_underscores=False,
+    table_infer_header=True,
+    code_language_callback=_extract_code_language,
+)
 
 
 _YOUTUBE_EMBED_RE = re.compile(
@@ -597,19 +612,11 @@ def _html_to_markdown_sync(html: str, is_reddit: bool = False, url: str | None =
     title = title_tag.get_text(strip=True) if title_tag else None
 
     # Get body content (or full document if no body)
-    body = soup.find("body")
-    content = str(body) if body else str(soup)
+    body = soup.find("body") or soup
 
-    # Convert to markdown
-    markdown = markdownify(
-        content,
-        heading_style="ATX",
-        bullets="-",
-        escape_asterisks=False,
-        escape_underscores=False,
-        table_infer_header=True,
-        code_language_callback=_extract_code_language,
-    )
+    # Convert to markdown directly from the already-parsed soup (skips a full
+    # serialize + re-parse — see _MD_CONVERTER).
+    markdown = _MD_CONVERTER.convert_soup(body)
 
     # Clean up excessive whitespace
     markdown = _EXCESSIVE_NEWLINES.sub("\n\n", markdown).strip()

@@ -9,6 +9,24 @@ import time
 # Pre-compiled regexes for hot path
 _IPV4_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)$")
 
+# RFC 6598 Carrier-Grade NAT / shared address space. Python's ipaddress does
+# NOT classify this as private, yet it routes to carrier/cloud internal infra
+# and to Alibaba Cloud's metadata endpoint (100.100.100.200) — so block it.
+_CGNAT_V4 = ipaddress.IPv4Network("100.64.0.0/10")
+
+
+def _v4_blocked(ip: ipaddress.IPv4Address) -> bool:
+    """True if an IPv4 address is private/internal/non-routable and must be blocked."""
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast  # 224.0.0.0/4 — internal service discovery / amplification
+        or ip in _CGNAT_V4
+    )
+
 # DNS cache TTL (seconds)
 _DNS_CACHE_TTL = 60
 _DNS_CACHE_MAX = 1024
@@ -19,14 +37,7 @@ _dns_cache: dict[str, tuple[list[str], float]] = {}
 def _is_private_ip(ip_str: str) -> bool:
     """Check if an IP address string is private/internal."""
     try:
-        ip = ipaddress.IPv4Address(ip_str)
-        return (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_unspecified
-        )
+        return _v4_blocked(ipaddress.IPv4Address(ip_str))
     except ipaddress.AddressValueError:
         pass
 
@@ -34,19 +45,14 @@ def _is_private_ip(ip_str: str) -> bool:
         ip = ipaddress.IPv6Address(ip_str)
         mapped = ip.ipv4_mapped
         if mapped:
-            return (
-                mapped.is_private
-                or mapped.is_loopback
-                or mapped.is_link_local
-                or mapped.is_reserved
-                or mapped.is_unspecified
-            )
+            return _v4_blocked(mapped)
         return (
             ip.is_private
             or ip.is_loopback
             or ip.is_link_local
             or ip.is_reserved
             or ip.is_unspecified
+            or ip.is_multicast  # ff00::/8
         )
     except ipaddress.AddressValueError:
         pass
@@ -116,8 +122,20 @@ def _is_private_host_sync(hostname: str) -> bool | None:
     if any(hostname.endswith(d) for d in rebinding_domains) or hostname in ("localtest.me", "lvh.me"):
         return True
 
-    # Check for direct IPv4 addresses
+    # Check for direct IPv4 addresses.
+    #
+    # A host that looks like a dotted quad but isn't a *canonical* IPv4 literal
+    # ("010.0.0.1", "0177.0.0.1", "256.1.2.3") is an obfuscation attempt: modern
+    # ipaddress rejects the leading zero / out-of-range octet, but the OS
+    # resolver may still parse it as octal and dial a private address (e.g.
+    # "0177.0.0.1" -> 127.0.0.1). Returning False here would mark it "public,
+    # nothing to pin" and hand the raw string to wafer — a full SSRF bypass.
+    # Fail closed: a non-canonical all-numeric dotted quad has no legitimate use.
     if _IPV4_PATTERN.match(hostname):
+        try:
+            ipaddress.IPv4Address(hostname)
+        except ipaddress.AddressValueError:
+            return True
         return _is_private_ip(hostname)
 
     # Check for bracketed IPv6 addresses [::1]

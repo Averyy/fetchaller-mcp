@@ -855,3 +855,41 @@ class TestWaferCleanups:
             result = await fetch_url("https://big.example/")
         assert "error" in result
         assert "too large" in result["error"].lower()
+
+
+class TestInterceptorCacheNamespace:
+    """The structured-intercept cache must not read back a generic-HTML fallback
+    entry (they share normalize_url but the interceptor namespaces its key), and
+    a failed structured fetch must retry rather than serve the stale fallback.
+    """
+
+    async def test_generic_fallback_not_served_as_structured(self):
+        from fetchaller.cache.response_cache import ResponseCache
+        from fetchaller.config import load_config
+        from fetchaller.content.url import normalize_url
+        from fetchaller.tools.fetch import fetch_url
+
+        cfg = load_config()
+        cache = ResponseCache.from_config(cfg)
+        url = "https://www.aliexpress.com/item/1005009999999999.html"
+
+        # A prior generic-HTML fallthrough cached under the PLAIN key.
+        cache.set(normalize_url(url), "GENERIC-HTML-FALLBACK", "markdown")
+
+        with _PATCH_SSRF, patch(
+            "fetchaller.aliexpress.product.get_product",
+            new=AsyncMock(return_value={"content": "STRUCTURED-API-RESULT"}),
+        ) as gp:
+            r1 = await fetch_url(url, max_tokens=25000, cache=cache, config=cfg)
+            # Interceptor must NOT serve the generic fallback; it calls the API.
+            assert r1["content"].startswith("STRUCTURED")
+            assert gp.await_count == 1
+
+            # Second call is served from the interceptor's OWN namespaced entry.
+            r2 = await fetch_url(url, max_tokens=25000, cache=cache, config=cfg)
+            assert r2["content"].startswith("STRUCTURED")
+            assert r2.get("cached") is True
+            assert gp.await_count == 1  # not re-fetched
+
+        # The plain generic key is left untouched.
+        assert cache.get(normalize_url(url)).content == "GENERIC-HTML-FALLBACK"

@@ -375,9 +375,46 @@ async def fetch_url(
             "Or fetch individual product pages directly (e.g. amazon.ca/dp/ASIN)."
         }
 
+    # Structured-intercept caching helpers. The site interceptors below return
+    # pre-rendered text (product/search/listing pages fetched via API). They
+    # historically wrote the cache but never read it back — and stored the
+    # *truncated* string, so a later fetch with a larger maxTokens would be
+    # capped by an earlier truncation. These helpers make the cache functional:
+    # read-before-fetch, and store the FULL content.
+    #
+    # The key is NAMESPACED (not plain normalize_url(url)): the generic HTML path
+    # caches under normalize_url(fetch_url_str), and a marketplace URL whose
+    # structured fetch failed once falls through and caches generic-HTML markdown
+    # under that same key. Without the namespace, the interceptor would then read
+    # that generic fallback back as if it were a structured result and keep
+    # serving it (suppressing a retry of the real API) until the TTL expires.
+    def _intercept_cache_key(u: str) -> str:
+        return "\x00intercept\x00" + normalize_url(u)
+
+    def _intercept_cache_get(u: str) -> dict | None:
+        if not (cache and not raw):
+            return None
+        hit = cache.get(_intercept_cache_key(u))
+        if not hit:
+            return None
+        _log(f"FETCH {u} -> CACHED intercept ({time.monotonic() - start:.1f}s)")
+        return {
+            "content": truncate(hit.content, max_tokens),
+            "content_type": hit.content_type,
+            "url": u,
+            "cached": True,
+        }
+
+    def _intercept_cache_set(u: str, full_content: str, content_type: str = "text") -> None:
+        if cache:
+            cache.set(_intercept_cache_key(u), full_content, content_type)
+
     # AliExpress product pages — use product tool which tries MTop API first
     ae_product_id = extract_product_id_from_url(url) if not _skip_aliexpress_intercept else None
     if ae_product_id:
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
         from ..aliexpress.product import get_product
 
         result = await get_product(
@@ -387,10 +424,8 @@ async def fetch_url(
             browser_solver=browser_solver,
         )
         if "content" in result:
+            _intercept_cache_set(url, result["content"])
             content = truncate(result["content"], max_tokens)
-            if cache:
-                cache_key = normalize_url(url)
-                cache.set(cache_key, content, "text")
             _log(f"FETCH {url} -> AliExpress product ({len(content)} chars, {time.monotonic() - start:.1f}s)")
             return {"content": content, "content_type": "text", "url": url}
         return result  # Error dict
@@ -398,6 +433,9 @@ async def fetch_url(
     # Alibaba.com product pages — SSR with embedded JSON
     alibaba_product_id = extract_alibaba_product_id(url) if not _skip_alibaba_intercept else None
     if alibaba_product_id:
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
         from ..alibaba.product import get_product as get_alibaba_product
 
         result = await get_alibaba_product(
@@ -407,16 +445,17 @@ async def fetch_url(
             browser_solver=browser_solver,
         )
         if "content" in result:
+            _intercept_cache_set(url, result["content"])
             content = truncate(result["content"], max_tokens)
-            if cache:
-                cache_key = normalize_url(url)
-                cache.set(cache_key, content, "text")
             _log(f"FETCH {url} -> Alibaba product ({len(content)} chars, {time.monotonic() - start:.1f}s)")
             return {"content": content, "content_type": "text", "url": url}
         return result  # Error dict
 
     # Alibaba.com search pages
     if not _skip_alibaba_intercept and is_alibaba_search_url(url):
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
         from urllib.parse import parse_qs
 
         from ..alibaba.search import search_alibaba
@@ -435,16 +474,17 @@ async def fetch_url(
             browser_solver=browser_solver,
         )
         if "content" in result:
+            _intercept_cache_set(url, result["content"])
             content = truncate(result["content"], max_tokens)
-            if cache:
-                cache_key = normalize_url(url)
-                cache.set(cache_key, content, "text")
             _log(f"FETCH {url} -> Alibaba search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
             return {"content": content, "content_type": "text", "url": url}
         return result  # Error dict
 
     # AliExpress search pages
     if not _skip_aliexpress_intercept and is_aliexpress_search_url(url):
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
         from urllib.parse import parse_qs
 
         from ..aliexpress.search import search_aliexpress
@@ -483,10 +523,8 @@ async def fetch_url(
             browser_solver=browser_solver,
         )
         if "content" in result:
+            _intercept_cache_set(url, result["content"])
             content = truncate(result["content"], max_tokens)
-            if cache:
-                cache_key = normalize_url(url)
-                cache.set(cache_key, content, "text")
             _log(f"FETCH {url} -> AliExpress search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
             return {"content": content, "content_type": "text", "url": url}
         return result  # Error dict
@@ -495,13 +533,15 @@ async def fetch_url(
     if _is_mouser(url):
         mouser_key = os.environ.get("MOUSER_API_KEY")
         if mouser_key:
+            _hit = _intercept_cache_get(url)
+            if _hit:
+                return _hit
             from ..mouser.api import get_product as get_mouser_product
 
             result = await get_mouser_product(url, api_key=mouser_key)
             if "content" in result:
+                _intercept_cache_set(url, result["content"])
                 content = truncate(result["content"], max_tokens)
-                if cache:
-                    cache.set(normalize_url(url), content, "text")
                 _log(f"FETCH {url} -> Mouser API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "text", "url": url}
             if "Could not extract" not in result.get("error", ""):
@@ -518,13 +558,15 @@ async def fetch_url(
         dk_client_id = os.environ.get("DIGIKEY_CLIENT_ID")
         dk_client_secret = os.environ.get("DIGIKEY_CLIENT_SECRET")
         if dk_client_id and dk_client_secret:
+            _hit = _intercept_cache_get(url)
+            if _hit:
+                return _hit
             from ..digikey.api import get_product as get_digikey_product
 
             result = await get_digikey_product(url, client_id=dk_client_id, client_secret=dk_client_secret)
             if "content" in result:
+                _intercept_cache_set(url, result["content"])
                 content = truncate(result["content"], max_tokens)
-                if cache:
-                    cache.set(normalize_url(url), content, "text")
                 _log(f"FETCH {url} -> DigiKey API ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "text", "url": url}
             if "Could not extract" not in result.get("error", ""):
@@ -542,11 +584,13 @@ async def fetch_url(
         from ..kijiji.api import is_kijiji_listing, is_kijiji_search
 
         if is_kijiji_search(url) or is_kijiji_listing(url):
+            _hit = _intercept_cache_get(url)
+            if _hit:
+                return _hit
             result = await get_kijiji_listing(url)
             if "content" in result:
+                _intercept_cache_set(url, result["content"])
                 content = truncate(result["content"], max_tokens)
-                if cache:
-                    cache.set(normalize_url(url), content, "text")
                 _log(f"FETCH {url} -> Kijiji GraphQL ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "text", "url": url}
             if "Could not extract" not in result.get("error", ""):
@@ -562,11 +606,13 @@ async def fetch_url(
         from ..realtor.search import get_realtor
 
         if (is_realtor_listing(url) and not raw) or is_realtor_search(url):
+            _hit = _intercept_cache_get(url)
+            if _hit:
+                return _hit
             result = await get_realtor(url, browser_solver=browser_solver)
             if "content" in result:
+                _intercept_cache_set(url, result["content"])
                 content = truncate(result["content"], max_tokens)
-                if cache:
-                    cache.set(normalize_url(url), content, "text")
                 _log(f"FETCH {url} -> realtor.ca ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "text", "url": url}
             return result
@@ -578,11 +624,13 @@ async def fetch_url(
         from ..wellfound.page import get_wellfound
 
         if is_wellfound_job(url) or is_wellfound_company(url) or is_wellfound_search(url):
+            _hit = _intercept_cache_get(url)
+            if _hit:
+                return _hit
             result = await get_wellfound(url, browser_solver=browser_solver)
             if "content" in result:
+                _intercept_cache_set(url, result["content"])
                 content = truncate(result["content"], max_tokens)
-                if cache:
-                    cache.set(normalize_url(url), content, "text")
                 _log(f"FETCH {url} -> wellfound.com ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "text", "url": url}
             return result
@@ -592,6 +640,9 @@ async def fetch_url(
     _costco_fallback_url: str | None = None
     if _is_costco_search(url) or _is_costco_category(url):
         try:
+            _hit = _intercept_cache_get(url)
+            if _hit:
+                return _hit
             from ..costco.search import search_costco
 
             result = await search_costco(url, cache=cache, config=config, browser_solver=browser_solver)
@@ -613,9 +664,8 @@ async def fetch_url(
                     else:
                         _log(f"FETCH {url} -> Costco search returned 0 results, no fallback available")
                 else:
+                    _intercept_cache_set(url, content)
                     content = truncate(content, max_tokens)
-                    if cache:
-                        cache.set(normalize_url(url), content, "text")
                     _log(f"FETCH {url} -> Costco search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                     return {"content": content, "content_type": "text", "url": url}
             if not _costco_redirect_fallback:
@@ -627,6 +677,9 @@ async def fetch_url(
 
     # Craigslist search pages — CSR, use SAPI
     if not _skip_craigslist_intercept and _is_craigslist_search(url):
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
         from ..craigslist.search import search_craigslist
 
         result = await search_craigslist(
@@ -636,9 +689,8 @@ async def fetch_url(
             browser_solver=browser_solver,
         )
         if "content" in result:
+            _intercept_cache_set(url, result["content"])
             content = truncate(result["content"], max_tokens)
-            if cache:
-                cache.set(normalize_url(url), content, "text")
             _log(f"FETCH {url} -> Craigslist search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
             return {"content": content, "content_type": "text", "url": url}
         if "Could not extract" not in result.get("error", ""):
@@ -647,13 +699,15 @@ async def fetch_url(
 
     # Facebook Marketplace — 100% CSR, use GraphQL API
     if _is_fb_search(url):
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
         from ..facebook_marketplace.search import search_marketplace
 
         result = await search_marketplace(url)
         if "content" in result:
+            _intercept_cache_set(url, result["content"])
             content = truncate(result["content"], max_tokens)
-            if cache:
-                cache.set(normalize_url(url), content, "text")
             _log(f"FETCH {url} -> FB Marketplace search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
             return {"content": content, "content_type": "text", "url": url}
         return result
@@ -661,13 +715,15 @@ async def fetch_url(
     if _is_fb_listing(url):
         listing_id = _extract_fb_listing_id(url)
         if listing_id:
+            _hit = _intercept_cache_get(url)
+            if _hit:
+                return _hit
             from ..facebook_marketplace.listing import get_listing as get_fb_listing
 
             result = await get_fb_listing(listing_id)
             if "content" in result:
+                _intercept_cache_set(url, result["content"])
                 content = truncate(result["content"], max_tokens)
-                if cache:
-                    cache.set(normalize_url(url), content, "text")
                 _log(f"FETCH {url} -> FB Marketplace listing ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "text", "url": url}
             return result
@@ -1349,13 +1405,17 @@ async def fetch_url(
         _log(f"FETCH {url} -> ERROR: final host {final_host!r} was not validated")
         return {"error": "Response from an unvalidated host is not allowed."}
 
-    # Downstream handlers (board APIs, feeds, doc viewers) reuse this session for
-    # secondary fetches to other hosts. Restore redirect-following for them now the
-    # pinned main fetch is done. The wreq path reads this flag per-request; a
-    # native-TLS transport already built for a WAF-pinned host during the main
-    # fetch keeps follow_redirects=False, so a downstream redirect through that
-    # narrow path won't be followed (acceptable given how rarely it applies).
-    session.follow_redirects = True
+    # Downstream board/embed handlers (Greenhouse/Dayforce/Ashby/BambooHR/JazzHR
+    # embeds, the TI doc viewer) reuse this session for SECONDARY fetches to OTHER
+    # hosts. Deliberately do NOT re-enable redirect-following: those hosts are not
+    # in our pin set and this session still carries the browser solver, so a 3xx
+    # from an attacker-registered SaaS tenant to an internal IP (169.254.169.254,
+    # etc.) would otherwise be followed with no SSRF re-validation. Keeping
+    # follow_redirects=False (as set in _make_session) closes that vector; a
+    # secondary fetch that legitimately redirects just yields a non-200 and the
+    # caller falls through to the generic HTML path. Valid embed APIs return 200
+    # from their canonical HTTPS URLs, so this does not regress them. (Feeds use
+    # _safe_feed_get, which validates+pins its own no-redirect, solver-free session.)
 
     # Handle rate limiting (wafer passes 429 through when max_rotations=0)
     if result.status_code == 429:
@@ -1498,9 +1558,19 @@ async def fetch_url(
         # Greenhouse embed on a company career site (iframe / div#grnhse_app):
         # extract board token + job ID, fetch the public API, and return
         # rendered markdown instead of the JS-loader HTML body.
-        from bs4 import BeautifulSoup as _Soup  # noqa: N812
-        _gh_soup = _Soup(html, "lxml")
-        if is_greenhouse_html(_gh_soup):
+        #
+        # Cheap substring gate before the parse: is_greenhouse_html only ever
+        # matches when one of these markers is present, so this avoids a full
+        # ~23ms lxml parse of nearly every generic HTML page (the same html is
+        # parsed again by clean_html downstream). Gate on "grnhse" (not the full
+        # "grnhse_app") and "greenhouse.io/embed" so it stays a strict superset
+        # even if the id's underscore is HTML-entity-encoded (grnhse&#95;app) —
+        # the letters are never encoded, so the parsed detection can't outrun it.
+        _gh_soup = None
+        if "grnhse" in html or "greenhouse.io/embed" in html:
+            from bs4 import BeautifulSoup as _Soup  # noqa: N812
+            _gh_soup = _Soup(html, "lxml")
+        if _gh_soup is not None and is_greenhouse_html(_gh_soup):
             _gh_params = extract_greenhouse_params_from_html(_gh_soup, page_url=result.final_url or url)
             if _gh_params:
                 _gh_token, _gh_jid = _gh_params

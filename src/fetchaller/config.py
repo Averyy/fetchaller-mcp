@@ -185,8 +185,10 @@ TRACKING_PARAMS = {
     "gclsrc",
     "dclid",
     "msclkid",
-    "ref",
-    "source",
+    # NB: bare "ref" and "source" are intentionally NOT stripped — many sites use
+    # them as *semantic* params (?source=homepage vs ?source=email-blast select
+    # different content), so collapsing them into one cache key served the wrong
+    # cached body within the TTL. Only unambiguous ad/analytics tokens belong here.
     "ref_src",
     "ref_url",
     "_ga",

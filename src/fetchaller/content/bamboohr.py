@@ -213,7 +213,9 @@ def render_bamboohr_job(payload: dict, source_url: str | None = None) -> str:
         if key in _POSTING_SKIP:
             continue
         if key in ("location", "atsLocation"):
-            formatted = _format_location(value)
+            # Usually a dict; fall back to _stringify so a plain scalar like
+            # "Remote" isn't silently dropped (dump-every-field).
+            formatted = _format_location(value) or _stringify(value)
             if formatted:
                 meta.append(f"- **{key}**: {formatted}")
             continue

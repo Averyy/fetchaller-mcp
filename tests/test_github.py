@@ -176,6 +176,31 @@ class TestIssueExtraction:
         # Non-comment events excluded
         assert "LabeledEvent" not in result
 
+    def test_deleted_author_renders_as_unknown(self):
+        """Regression: null author/labels (deleted accounts) must not crash the
+        extractor into the noisy HTML fallback — render 'unknown' instead."""
+        issue = {
+            "title": "Ghost report",
+            "number": 7,
+            "state": "OPEN",
+            "author": None,  # deleted GitHub account
+            "createdAt": "2024-01-01T00:00:00Z",
+            "body": "reported by a since-deleted user",
+            "labels": None,  # null connection
+            "frontTimelineItems": {
+                "edges": [
+                    {"node": _make_comment("bob", "2024-01-02T00:00:00Z", "still here")},
+                    {"node": {"__typename": "IssueComment", "author": None,
+                              "createdAt": "2024-01-03T00:00:00Z", "body": "also deleted"}},
+                ]
+            },
+            "backTimelineItems": {"edges": []},
+        }
+        result = extract_github_issue(_make_issue_page(issue), "https://github.com/o/r/issues/7")
+        assert result is not None
+        assert result.count("**unknown**") == 2  # issue author + deleted commenter
+        assert "also deleted" in result
+
     def test_issue_no_comments(self):
         """Issue with no comments still outputs title and body."""
         issue = {

@@ -302,6 +302,11 @@ def render_workday_board(payload: dict, source_url: str | None = None) -> str:
 
     header = f"# {tenant or 'workday'} — Job Board ({total} open positions)"
     parts: list[str] = [header, ""]
+    # Pagination caps at _BOARD_MAX_PAGES * _BOARD_PAGE_SIZE (200); flag when the
+    # tenant's true total exceeds what we actually listed.
+    if total > len(jobs):
+        parts.append(f"_Showing {len(jobs)} of {total} positions (listing capped at {len(jobs)})._")
+        parts.append("")
     if tenant:
         parts.append(f"- **tenant**: {tenant}")
     if site:

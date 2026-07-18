@@ -116,10 +116,12 @@ def _format_search_product(idx: int, product: dict) -> str:
 
     lines.append(f"{idx}. {title}")
 
-    # Price
-    prices = product.get("prices", {})
-    sale = prices.get("salePrice", {})
-    original = prices.get("originalPrice", {})
+    # Price. Use `or {}` (not just a default): the API sends explicit JSON null
+    # for these fields on some listings, and `.get("prices", {})` only defaults
+    # when the key is *absent* — a null would slip through and crash `.get()`.
+    prices = product.get("prices") or {}
+    sale = prices.get("salePrice") or {}
+    original = prices.get("originalPrice") or {}
     price_str = sale.get("formattedPrice") or sale.get("minPrice", "")
     orig_str = original.get("formattedPrice", "")
     discount = sale.get("discount", "")
@@ -135,8 +137,8 @@ def _format_search_product(idx: int, product: dict) -> str:
         lines.append(f"   Price: {' '.join(price_parts)}")
 
     # Rating & orders
-    eval_mod = product.get("evaluation", {})
-    trade_mod = product.get("trade", {})
+    eval_mod = product.get("evaluation") or {}
+    trade_mod = product.get("trade") or {}
     meta_parts = []
     if eval_mod.get("starRating"):
         meta_parts.append(f"★{eval_mod['starRating']}")

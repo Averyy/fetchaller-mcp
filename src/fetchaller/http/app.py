@@ -41,21 +41,30 @@ def create_app(config: Config | None = None) -> FastAPI:
                 api_key_hashes.add(hash_api_key(key))
                 api_key_count += 1
 
-    # Create JWT secret
+    # Create JWT secret.
+    #
+    # When JWT_SECRET is unset we generate a random per-process secret rather
+    # than deriving one from the API key hash. The old derivation was recoverable
+    # from any issued token: every token payload carries `api_key_hash` in
+    # cleartext, and in single-key deployments that value equals the derivation
+    # seed — so a captured token let an attacker recompute the secret and forge
+    # non-expiring tokens. A random secret closes that; the only cost is that
+    # tokens don't survive a restart, which is the correct trade-off. Set
+    # JWT_SECRET to persist tokens across restarts.
     if config.jwt_secret:
         jwt_secret = hashlib.sha256(config.jwt_secret.encode()).digest()
-    elif api_key_hashes:
-        print(
-            f"[{datetime.now(UTC).isoformat()}] WARNING: JWT_SECRET not set. Deriving from MCP_API_KEY. Set JWT_SECRET for better security.",
-            file=sys.stderr,
-        )
-        # Derive from API key hash (deterministic: min() ensures same result regardless of set order)
-        first_hash = min(api_key_hashes)
-        jwt_secret = hashlib.sha256((first_hash + "fetchaller-oauth-secret").encode()).digest()
     else:
         import secrets
 
         jwt_secret = secrets.token_bytes(32)
+        if api_key_hashes:
+            print(
+                f"[{datetime.now(UTC).isoformat()}] WARNING: JWT_SECRET not set — using a random "
+                "per-process secret. OAuth tokens will not validate across a restart or across "
+                "multiple workers/replicas. Set JWT_SECRET (a fixed random value) for any "
+                "multi-worker or persistent deployment.",
+                file=sys.stderr,
+            )
 
     # Create OAuth store
     oauth_store = OAuthStore.from_config(config)

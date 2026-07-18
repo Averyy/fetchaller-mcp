@@ -93,6 +93,58 @@ class TestSSRFProtection:
         assert is_private_host(host) is True
 
 
+class TestObfuscatedAndSharedRanges:
+    """Regression tests for the octal-IP bypass and CGNAT/multicast gaps."""
+
+    def setup_method(self):
+        clear_dns_cache()
+
+    # Octal / leading-zero / out-of-range dotted quads: the OS resolver may
+    # parse these as octal and dial a private host. Must fail closed.
+    @pytest.mark.parametrize("host", [
+        "010.0.0.1",       # octal -> 8.0.0.1 (glibc) or private forms
+        "0177.0.0.1",      # octal -> 127.0.0.1 on glibc
+        "0100.0.0.1",      # octal -> 64.0.0.1
+        "00.0.0.0",
+        "256.1.2.3",       # out-of-range octet
+        "999.999.999.999",
+    ])
+    def test_blocks_obfuscated_ipv4(self, host):
+        assert is_private_host(host) is True
+
+    async def test_blocks_obfuscated_ipv4_async(self):
+        for host in ("010.0.0.1", "0177.0.0.1", "256.1.2.3"):
+            is_private, ips = await resolve_and_check(host)
+            assert is_private is True, host
+            assert ips == []
+
+    # RFC 6598 CGNAT / shared address space (incl. Alibaba Cloud metadata).
+    @pytest.mark.parametrize("host", [
+        "100.64.0.1",
+        "100.100.100.200",  # Alibaba Cloud ECS metadata endpoint
+        "100.127.255.255",
+    ])
+    def test_blocks_cgnat(self, host):
+        assert is_private_host(host) is True
+
+    # Multicast (v4 224.0.0.0/4, v6 ff00::/8).
+    @pytest.mark.parametrize("host", [
+        "224.0.0.1",
+        "239.255.255.250",  # SSDP
+        "[ff02::1]",
+    ])
+    def test_blocks_multicast(self, host):
+        assert is_private_host(host) is True
+
+    # 100.63/100.128 are just outside CGNAT and are ordinary public space.
+    @pytest.mark.parametrize("host", [
+        "100.63.255.255",
+        "100.128.0.1",
+    ])
+    def test_allows_public_ip_near_cgnat(self, host):
+        assert is_private_host(host) is False
+
+
 class TestFailClosed:
     """A host that cannot be resolved must be blocked, not allowed (fail closed)."""
 

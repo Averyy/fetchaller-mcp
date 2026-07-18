@@ -190,11 +190,13 @@ def format_reddit_post(
     num_comments = post_data.get("num_comments", 0)
     author = post_data.get("author", "[deleted]")
     created_utc = post_data.get("created_utc", 0)
-    permalink = post_data.get("permalink", "")
-    selftext = post_data.get("selftext", "")
+    # Coerce with `or ""`: these fields can arrive as explicit JSON null, and
+    # they feed regex/`in`/slicing below (None would raise TypeError).
+    permalink = post_data.get("permalink") or ""
+    selftext = post_data.get("selftext") or ""
     subreddit = post_data.get("subreddit", "")
     is_self = post_data.get("is_self", True)
-    external_url = post_data.get("url", "")
+    external_url = post_data.get("url") or ""
 
     # Strip slug from permalink (it just repeats the title)
     short_permalink = _PERMALINK_SLUG_RE.sub(r"\1/", permalink)

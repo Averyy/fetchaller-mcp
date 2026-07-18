@@ -142,20 +142,40 @@ class RedditRequestQueue:
                     item = None
                     continue
 
-                # Drop items that have been waiting too long
-                wait_time = time.time() - item.enqueued_at
-                if wait_time > self.config.max_queue_wait:
+                # Skip items whose caller already timed out and abandoned them —
+                # don't spend a rate-limited request on a result nobody awaits.
+                if item.future.done():
+                    item = None
+                    continue
+
+                # Compute the pending rate-limit/backoff delay, then enforce a
+                # single total-wait bound: time already spent in queue PLUS this
+                # delay must not exceed max_queue_wait. The old check looked only at
+                # time-already-waited and ran BEFORE the sleep, so an item dequeued
+                # during a 300s (403) backoff slept the whole backoff and hung its
+                # caller far past any per-request timeout.
+                delay = self._calculate_delay()
+                total_wait = (time.time() - item.enqueued_at) + delay
+                if total_wait > self.config.max_queue_wait:
                     if not item.future.done():
                         item.future.set_exception(
-                            TimeoutError(f"Request expired after {wait_time:.1f}s in queue")
+                            TimeoutError(
+                                f"Reddit request expired: total wait {total_wait:.1f}s exceeds "
+                                f"max {self.config.max_queue_wait:.0f}s (backoff/delay {delay:.0f}s)"
+                            )
                         )
                     item = None
                     continue
 
-                # Calculate and apply delay
-                delay = self._calculate_delay()
                 if delay > 0:
                     await asyncio.sleep(delay)
+                    # The caller's _queue_timeout may have fired DURING the sleep,
+                    # cancelling item.future. Re-check before spending a request so
+                    # a timed-out caller doesn't still consume rate-limit quota /
+                    # hit the network for a result nobody will read.
+                    if item.future.done():
+                        item = None
+                        continue
 
                 # Record request time
                 self._request_times.append(time.time())
@@ -186,6 +206,7 @@ class RedditRequestQueue:
         self,
         callback: Callable[..., Awaitable[T]],
         *args: Any,
+        _queue_timeout: float | None = None,
         **kwargs: Any,
     ) -> T:
         """
@@ -194,6 +215,10 @@ class RedditRequestQueue:
         Args:
             callback: Async function to call
             *args: Positional arguments for callback
+            _queue_timeout: Max seconds to wait for the result before giving up.
+                Bounds the caller's wait so a long rate-limit backoff can't hang it
+                past its own request timeout. None waits indefinitely (the queue's
+                own max_queue_wait still applies on the processor side).
             **kwargs: Keyword arguments for callback
 
         Returns:
@@ -212,4 +237,12 @@ class RedditRequestQueue:
         )
 
         await self._queue.put(item)
-        return await item.future
+        if _queue_timeout is None:
+            return await item.future
+        try:
+            return await asyncio.wait_for(item.future, timeout=_queue_timeout)
+        except TimeoutError:
+            # wait_for cancels item.future; the processor skips cancelled items.
+            raise TimeoutError(
+                f"Reddit request timed out after {_queue_timeout:.0f}s waiting in queue"
+            ) from None

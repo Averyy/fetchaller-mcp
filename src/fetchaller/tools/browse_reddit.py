@@ -81,9 +81,10 @@ async def fetch_reddit_json(
         except Exception as e:
             return {"error": f"Fetch failed: {e}"}
 
-    # Use queue if available
+    # Use queue if available. Pass the caller's timeout as the queue-wait bound so
+    # a long rate-limit backoff can't hang the request past its own timeout.
     if queue:
-        return await queue.enqueue(_do_fetch)
+        return await queue.enqueue(_do_fetch, _queue_timeout=timeout)
     return await _do_fetch()
 
 

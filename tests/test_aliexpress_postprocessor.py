@@ -268,3 +268,36 @@ class TestPostprocessAliexpress:
         assert "\n\n\n" not in result
         assert "A" in result
         assert "B" in result
+
+
+class TestFormatSearchProductNullFields:
+    """Regression: search products with explicit JSON null fields must not crash.
+
+    The API sends `null` (not just an absent key) for prices/evaluation/trade on
+    some listings; `.get("prices", {})` only defaults on absent keys, so a null
+    slipped through and crashed `.get()`, escaping the module's return-None path.
+    """
+
+    def test_null_fields_do_not_crash(self):
+        from fetchaller.content.aliexpress import _format_search_product
+
+        product = {
+            "title": None,
+            "prices": None,
+            "evaluation": None,
+            "trade": None,
+            "productId": "1005001234567890",
+        }
+        out = _format_search_product(1, product)
+        assert "1005001234567890" in out
+
+    def test_null_nested_price_fields(self):
+        from fetchaller.content.aliexpress import _format_search_product
+
+        product = {
+            "title": {"displayTitle": "Widget"},
+            "prices": {"salePrice": None, "originalPrice": None},
+            "productId": "9",
+        }
+        out = _format_search_product(2, product)
+        assert "Widget" in out

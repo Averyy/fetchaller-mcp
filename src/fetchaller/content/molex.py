@@ -146,7 +146,7 @@ def extract_molex_jsonld(soup: BeautifulSoup) -> None:
                     if price:
                         lines.append(f"**Price:** {currency} {price}".strip())
                     avail = offer.get("availability", "")
-                    if avail:
+                    if isinstance(avail, str) and avail:
                         avail_label = avail.rsplit("/", 1)[-1]
                         lines.append(f"**Availability:** {avail_label}")
 

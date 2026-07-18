@@ -287,13 +287,15 @@ def extract_github_issue(html: str, url: str) -> str | None:
             title = item.get("title", "")
             number = item.get("number", "")
             state = _format_state(item)
-            author = item.get("author", {}).get("login", "unknown")
+            # `author` is null for deleted GitHub accounts — coerce with `or {}`
+            # so the whole issue doesn't degrade to the noisy HTML fallback.
+            author = (item.get("author") or {}).get("login", "unknown")
             created = _format_date(item.get("createdAt", ""))
             body = (item.get("body") or "").replace("\r\n", "\n").strip()
 
             # Labels
             labels = []
-            for edge in item.get("labels", {}).get("edges", []):
+            for edge in (item.get("labels") or {}).get("edges", []):
                 name = edge.get("node", {}).get("name")
                 if name:
                     labels.append(name)
@@ -314,7 +316,7 @@ def extract_github_issue(html: str, url: str) -> str | None:
             # Comments
             comments = _extract_comments(item)
             for comment in comments:
-                c_author = comment.get("author", {}).get("login", "unknown")
+                c_author = (comment.get("author") or {}).get("login", "unknown")
                 c_date = _format_date(comment.get("createdAt", ""))
                 c_body = (comment.get("body") or "").replace("\r\n", "\n").strip()
 

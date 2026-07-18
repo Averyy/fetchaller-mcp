@@ -86,10 +86,17 @@ def pre_clean_petsmart(soup: BeautifulSoup) -> None:
         # Must contain HTML with bold headings (product content pattern)
         if "\\u003cp\\u003e\\u003cb\\u003e" not in raw and "<p><b>" not in raw:
             continue
+        # raw is a JSON string body (<…). Decode via JSON so literal UTF-8
+        # is preserved — unicode_escape mojibakes non-ASCII (bytes >127 read as
+        # Latin-1, e.g. "Première" -> "PremiÃ¨re"). Fall back to the old decode
+        # if the captured chunk isn't clean JSON.
         try:
-            decoded = raw.encode().decode("unicode_escape")
-        except (UnicodeDecodeError, ValueError):
-            continue
+            decoded = json.loads(f'"{raw}"')
+        except (json.JSONDecodeError, ValueError):
+            try:
+                decoded = raw.encode().decode("unicode_escape")
+            except (UnicodeDecodeError, ValueError):
+                continue
         # Find where HTML actually starts (skip JS module prefix)
         html_m = _HTML_START_RE.search(decoded)
         if not html_m:

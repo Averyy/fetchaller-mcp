@@ -359,6 +359,12 @@ def render_cornerstone_board(payload: dict, source_url: str | None = None) -> st
 
     header = f"# {corp} — Job Board ({total} open positions)" if corp else f"# Job Board ({total} open positions)"
     parts: list[str] = [header, ""]
+    # The board is fetched as a single page (pageSize 200); if the tenant has more
+    # openings than that, say so rather than letting the header's true totalCount
+    # imply every posting is listed below.
+    if total > len(reqs):
+        parts.append(f"_Showing {len(reqs)} of {total} positions (listing capped at {len(reqs)})._")
+        parts.append("")
     if corp:
         parts.append(f"- **corp**: {corp}")
     if culture_name:
