@@ -147,7 +147,7 @@ from ..content.workday import (
 )
 from ..kijiji.api import is_kijiji as _is_kijiji
 from ..realtor.api import is_realtor as _is_realtor
-from ..security.ssrf import resolve_and_check
+from ..security.ssrf import check_host
 from ..wellfound.api import is_wellfound as _is_wellfound
 
 MAX_RESPONSE_SIZE = 20 * 1024 * 1024  # 20MB
@@ -362,9 +362,9 @@ async def fetch_url(
     # re-validated and pinned below (after URL transforms), which is what closes
     # the DNS-rebinding window; this is just a fast pre-check on the raw input.
     hostname = parsed.hostname or ""
-    is_private, _ = await resolve_and_check(hostname)
-    if is_private:
-        return {"error": "Access to private/internal hosts is not allowed."}
+    verdict = await check_host(hostname)
+    if verdict.blocked:
+        return {"error": verdict.message}
 
     # Amazon store pages are JS-rendered SPAs — return helpful message
     if is_amazon_store(url):
@@ -1246,11 +1246,11 @@ async def fetch_url(
             return "Invalid URL (no host to resolve)."
         if h in validated_hosts:
             return None
-        is_private, ips = await resolve_and_check(h)
-        if is_private:
-            return "Access to private/internal hosts is not allowed."
-        if ips:  # DNS host -> pin to validated IPs; IP literal -> nothing to pin
-            pins[h] = ips
+        verdict = await check_host(h)
+        if verdict.blocked:
+            return verdict.message
+        if verdict.ips:  # DNS host -> pin to validated IPs; IP literal -> nothing to pin
+            pins[h] = verdict.ips
         validated_hosts.add(h)
         return None
 

@@ -13,12 +13,14 @@ from src.fetchaller.search import (
     search,
 )
 from src.fetchaller.search.ddg import extract_results as ddg_extract
+from src.fetchaller.search.ddg import search_ddg as ddg_search
 from src.fetchaller.search.google import (
     extract_results as google_extract,
 )
 from src.fetchaller.search.google import (
     is_captcha,
 )
+from src.fetchaller.search.google import search_google as google_search
 from src.fetchaller.search.models import SearchResult
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -373,6 +375,101 @@ class TestOutputFormat:
         assert "No results found." in output
 
 
+class TestTransportErrorsAreVisible:
+    """A network failure must never render as a bare '0'.
+
+    The regression: both engines threw, both returned empty, and the output said
+    'google: 0 | ddg: 0 new | 0 total / No results found.' — indistinguishable
+    from a query that genuinely has no hits. The caller concluded search was
+    useless and worked around it.
+    """
+
+    def test_both_engines_failed_says_so(self):
+        output = _format_output(
+            "reddit api rate limits", [], 0, 0, False, 1,
+            google_error="ConnectTimeout: timed out",
+            ddg_error="ConnectTimeout: timed out",
+        )
+        assert "google: ERROR" in output
+        assert "ddg: ERROR" in output
+        assert "Search FAILED" in output
+        assert "ConnectTimeout" in output
+        # The critical distinction the old output failed to make.
+        assert "not an empty result set" in output
+        assert "No results found." not in output
+
+    def test_partial_failure_keeps_results_and_flags_engine(self):
+        results = [SearchResult("DDG hit", "https://ddg.com/r", "snippet")]
+        output = _format_output(
+            "query", results, 0, 1, False, 1,
+            google_error="HTTP 503",
+        )
+        assert "google: ERROR" in output
+        assert "ddg: 1 new" in output
+        assert "Partial results" in output
+        assert "HTTP 503" in output
+        assert "1. DDG hit" in output
+
+    def test_clean_empty_result_is_unchanged(self):
+        """A real zero-hit query must still read as a normal empty result."""
+        output = _format_output("xyzzy nonsense", [], 0, 0, False, 1)
+        assert "No results found." in output
+        assert "Search FAILED" not in output
+        assert "ERROR" not in output
+
+    def test_captcha_is_not_reported_as_an_error(self):
+        results = [SearchResult("DDG hit", "https://ddg.com/r", "s")]
+        output = _format_output("q", results, 0, 1, True, 1)
+        assert "google: captcha" in output
+        assert "ERROR" not in output
+
+    def test_page2_ddg_error_suppressed(self):
+        """DDG is not queried on page 2+, so it must not be blamed there."""
+        output = _format_output("q", [], 0, 0, False, 2, ddg_error="stale")
+        assert "ddg: n/a" in output
+        assert "stale" not in output
+
+
+class TestEngineErrorReturns:
+    """The engine functions must report transport failures to the aggregator."""
+
+    async def test_google_request_exception_returns_error(self):
+        session = MagicMock()
+        session.get = AsyncMock(side_effect=RuntimeError("connection reset"))
+        results, captcha, error = await google_search(session, "q", 1)
+        assert results == []
+        assert captcha is False
+        assert "RuntimeError" in error and "connection reset" in error
+
+    async def test_google_non_200_returns_error(self):
+        resp = MagicMock()
+        resp.text = ""
+        resp.url = "https://www.google.com/search?q=q"
+        resp.status_code = 503
+        session = MagicMock()
+        session.get = AsyncMock(return_value=resp)
+        results, captcha, error = await google_search(session, "q", 1)
+        assert results == []
+        assert error == "HTTP 503"
+
+    async def test_ddg_request_exception_returns_error(self):
+        session = MagicMock()
+        session.get = AsyncMock(side_effect=RuntimeError("dns failure"))
+        results, error = await ddg_search(session, "q")
+        assert results == []
+        assert "RuntimeError" in error and "dns failure" in error
+
+    async def test_ddg_success_returns_no_error(self):
+        resp = MagicMock()
+        resp.text = "<html><body></body></html>"
+        resp.url = "https://html.duckduckgo.com/html/"
+        resp.status_code = 200
+        session = MagicMock()
+        session.get = AsyncMock(return_value=resp)
+        results, error = await ddg_search(session, "q")
+        assert error is None
+
+
 # ---------------------------------------------------------------------------
 # Integration: search() function with mocked HTTP
 # ---------------------------------------------------------------------------
@@ -448,7 +545,8 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session):
+        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
+             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
             result = await search("python asyncio tutorial", page=1)
 
         assert "content" in result
@@ -478,7 +576,8 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session):
+        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
+             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
             result1 = await search("cache test query", page=1)
             first_call_count = call_count
             result2 = await search("cache test query", page=1)
@@ -503,7 +602,8 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session):
+        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
+             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
             result = await search("captcha test", page=1)
 
         assert "content" in result
@@ -524,7 +624,8 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session):
+        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
+             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
             result = await search("empty results test", page=1)
 
         assert "content" in result
@@ -544,7 +645,8 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session):
+        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
+             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
             result = await search("page 2 test", page=2)
 
         assert "content" in result
@@ -575,3 +677,72 @@ class TestDedupKey:
         key1 = _dedup_key("https://www.example.com/page")
         key2 = _dedup_key("https://example.com/page")
         assert key1 == key2
+
+
+class TestEngineSessionsAreSeparate:
+    """Google and DDG must not share a TLS identity.
+
+    Regression: both engines used one Opera Mini session. That profile is
+    required by Google (its SSR request declares client=ms-opera-mini-android),
+    but DDG answers it with HTTP 202 and the generic homepage instead of
+    results — so DDG returned nothing on every query, and the old
+    "non-200 -> empty list" handling rendered that as a believable 'ddg: 0 new'.
+    """
+
+    def teardown_method(self):
+        import src.fetchaller.search as search_mod
+
+        search_mod._session = None
+        search_mod._ddg_session = None
+
+    async def test_ddg_session_is_not_the_google_session(self):
+        import src.fetchaller.search as search_mod
+
+        google_session = await search_mod._get_session()
+        ddg_session = await search_mod._get_ddg_session()
+        assert google_session is not ddg_session
+
+    # Assert on the kwargs fetchaller passes, not on wafer's internals — the
+    # profile choice is the part this codebase owns.
+    async def test_google_session_keeps_opera_mini(self):
+        from wafer import Profile
+
+        import src.fetchaller.search as search_mod
+
+        captured = {}
+
+        def _factory(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("wafer.AsyncSession", side_effect=_factory):
+            await search_mod._get_session()
+        assert captured.get("profile") == Profile.OPERA_MINI
+
+    async def test_ddg_session_does_not_use_opera_mini(self):
+        import src.fetchaller.search as search_mod
+
+        captured = {}
+
+        def _factory(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("wafer.AsyncSession", side_effect=_factory):
+            await search_mod._get_ddg_session()
+        # Must not inherit Google's Opera Mini identity — that is what DDG 202s on.
+        assert "profile" not in captured or captured["profile"] is None
+
+    async def test_sessions_are_memoized(self):
+        import src.fetchaller.search as search_mod
+
+        assert await search_mod._get_ddg_session() is await search_mod._get_ddg_session()
+
+    async def test_close_session_releases_both(self):
+        import src.fetchaller.search as search_mod
+
+        await search_mod._get_session()
+        await search_mod._get_ddg_session()
+        await search_mod.close_session()
+        assert search_mod._session is None
+        assert search_mod._ddg_session is None

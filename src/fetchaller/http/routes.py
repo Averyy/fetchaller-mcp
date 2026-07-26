@@ -50,6 +50,7 @@ def create_router(
     api_key_hashes: set[str],
     oauth_store: OAuthStore,
     jwt_secret: bytes,
+    jwt_secret_ephemeral: bool = False,
 ) -> APIRouter:
     """Create the API router with all endpoints."""
     router = APIRouter()
@@ -65,6 +66,7 @@ def create_router(
             "status": "healthy",
             "service": "fetchaller-mcp",
             "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "jwt_secret_ephemeral": jwt_secret_ephemeral,
         }
 
     # =========================================================================
@@ -99,7 +101,7 @@ def create_router(
             "token_endpoint": f"{server_url}/token",
             "registration_endpoint": f"{server_url}/register",
             "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
             "scopes_supported": ["fetchaller:read"],
@@ -472,6 +474,7 @@ def create_router(
 
         grant_type = body.get("grant_type")
         code = body.get("code")
+        refresh_token = body.get("refresh_token")
         redirect_uri = body.get("redirect_uri")
         client_id = body.get("client_id")
         code_verifier = body.get("code_verifier")
@@ -481,21 +484,82 @@ def create_router(
             f"grant_type={sanitize_for_log(grant_type)}, "
             f"client_id={sanitize_for_log(client_id)}, "
             f"code={'present' if code else 'MISSING'}, "
+            f"refresh_token={'present' if refresh_token else 'MISSING'}, "
             f"redirect_uri={sanitize_for_log(redirect_uri)}, "
             f"code_verifier={'present' if code_verifier else 'MISSING'}",
             file=sys.stderr,
         )
 
         # Validate grant type
-        if grant_type != "authorization_code":
+        if grant_type not in ("authorization_code", "refresh_token"):
             print(f"[{datetime.now(UTC).isoformat()}] OAuth: /token FAILED - invalid grant_type", file=sys.stderr)
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": "unsupported_grant_type",
-                    "error_description": "Only authorization_code grant is supported",
+                    "error_description": "Only authorization_code and refresh_token grants are supported",
                 },
             )
+
+        if grant_type == "refresh_token":
+            if (
+                not isinstance(refresh_token, str)
+                or not refresh_token
+                or not isinstance(client_id, str)
+                or not client_id
+            ):
+                print(
+                    f"[{datetime.now(UTC).isoformat()}] OAuth: /token FAILED - "
+                    "missing refresh_token or client_id",
+                    file=sys.stderr,
+                )
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_request",
+                        "error_description": (
+                            "Missing required parameter: refresh_token and client_id are required"
+                        ),
+                    },
+                )
+
+            rotated = oauth_store.rotate_refresh_token(
+                refresh_token,
+                client_id,
+                api_key_hashes,
+            )
+            if rotated is None:
+                print(
+                    f"[{datetime.now(UTC).isoformat()}] OAuth: /token FAILED - "
+                    "invalid refresh token",
+                    file=sys.stderr,
+                )
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_grant",
+                        "error_description": "Invalid or expired refresh token",
+                    },
+                )
+
+            new_refresh_token, api_key_hash = rotated
+            access_token = oauth_store.create_access_token_entry(
+                client_id,
+                api_key_hash,
+                jwt_secret,
+            )
+            print(
+                f"[{datetime.now(UTC).isoformat()}] OAuth: Rotated refresh token "
+                f"for client {sanitize_for_log(client_id)}",
+                file=sys.stderr,
+            )
+            return {
+                "access_token": access_token,
+                "refresh_token": new_refresh_token,
+                "token_type": "Bearer",
+                "expires_in": config.access_token_ttl,
+                "scope": "fetchaller:read",
+            }
 
         # Validate required parameters
         if not code or not client_id:
@@ -533,14 +597,17 @@ def create_router(
 
         # Create access token
         access_token = oauth_store.create_access_token_entry(client_id, auth_code.api_key_hash, jwt_secret)
+        refresh_token = oauth_store.create_refresh_token(client_id, auth_code.api_key_hash)
 
         print(
-            f"[{datetime.now(UTC).isoformat()}] OAuth: Issued access token for client {sanitize_for_log(client_id)}",
+            f"[{datetime.now(UTC).isoformat()}] OAuth: Issued access and refresh tokens "
+            f"for client {sanitize_for_log(client_id)}",
             file=sys.stderr,
         )
 
         return {
             "access_token": access_token,
+            "refresh_token": refresh_token,
             "token_type": "Bearer",
             "expires_in": config.access_token_ttl,
             "scope": "fetchaller:read",

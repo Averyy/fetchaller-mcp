@@ -51,9 +51,17 @@ def create_app(config: Config | None = None) -> FastAPI:
     # non-expiring tokens. A random secret closes that; the only cost is that
     # tokens don't survive a restart, which is the correct trade-off. Set
     # JWT_SECRET to persist tokens across restarts.
+    jwt_secret_ephemeral = not bool(config.jwt_secret)
     if config.jwt_secret:
         jwt_secret = hashlib.sha256(config.jwt_secret.encode()).digest()
     else:
+        if api_key_hashes and not config.allow_ephemeral_jwt:
+            raise RuntimeError(
+                "JWT_SECRET must be set when MCP_API_KEY is configured in HTTP mode. "
+                "Set a stable random JWT_SECRET, or set ALLOW_EPHEMERAL_JWT=1 for "
+                "local development only."
+            )
+
         import secrets
 
         jwt_secret = secrets.token_bytes(32)
@@ -130,6 +138,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.api_key_hashes = api_key_hashes
     app.state.oauth_store = oauth_store
     app.state.jwt_secret = jwt_secret
+    app.state.jwt_secret_ephemeral = jwt_secret_ephemeral
 
     # Add request logging middleware (runs BEFORE rate limiting)
     @app.middleware("http")
@@ -146,7 +155,13 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)
 
     # Add routes
-    router = create_router(config, api_key_hashes, oauth_store, jwt_secret)
+    router = create_router(
+        config,
+        api_key_hashes,
+        oauth_store,
+        jwt_secret,
+        jwt_secret_ephemeral,
+    )
     app.include_router(router)
 
     # Catch-all 404 handler

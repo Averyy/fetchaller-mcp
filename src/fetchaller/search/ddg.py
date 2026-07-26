@@ -47,14 +47,16 @@ def extract_results(html: str) -> list[SearchResult]:
     return results
 
 
-async def search_ddg(session, query: str) -> list[SearchResult]:
+async def search_ddg(session, query: str) -> tuple[list[SearchResult], str | None]:
     """
     Search DuckDuckGo via HTML endpoint.
 
     Only called on page 1 — DDG pagination is fragile.
 
     Returns:
-        List of results (empty on error).
+        Tuple of (results, error). ``error`` is a short description when the
+        request failed at the transport/HTTP layer, so the caller can tell a
+        genuine empty result set apart from a network failure.
     """
     params = {"q": query, "kp": "-2"}
 
@@ -67,15 +69,15 @@ async def search_ddg(session, query: str) -> list[SearchResult]:
         )
     except Exception as e:
         _log(f"ddg request error: {type(e).__name__}: {e}")
-        return []
+        return [], f"{type(e).__name__}: {e}"
 
     if response.status_code != 200:
         _log(f"ddg non-200 status: {response.status_code}")
-        return []
+        return [], f"HTTP {response.status_code}"
 
     results = extract_results(response.text)
 
     if not results:
         _log(f"ddg 200 but zero results extracted. HTML prefix: {response.text[:500]}")
 
-    return results
+    return results, None

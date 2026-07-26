@@ -1,9 +1,11 @@
 """MCP server setup for fetchaller."""
 
+import os
 import sys
 import time
 import traceback
 from datetime import UTC, datetime
+from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -112,6 +114,63 @@ async def cleanup_server(server) -> None:
             _log(f"warning: {fn.__module__} cleanup failed")
 
 
+# Where a local X server publishes its socket. Module-level so tests can point
+# it at a temp dir instead of the real /tmp.
+_X11_SOCKET_DIR = Path("/tmp/.X11-unix")
+
+
+def _system_chrome_path() -> str:
+    """Where wafer's BrowserSolver expects to find *system* Chrome."""
+    if sys.platform == "darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if sys.platform == "win32":
+        return r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    return "/opt/google/chrome/chrome"
+
+
+def _browser_solver_ready() -> tuple[bool, str]:
+    """Check that the browser wafer actually launches exists and is usable here.
+
+    wafer's BrowserSolver launches ``channel="chrome"`` — *system* Google Chrome
+    — not the patchright-bundled Chromium (see wafer ``browser/_solver.py``:
+    "Uses system Chrome via channel='chrome' for best stealth"). Checking the
+    bundled-Chromium registry path therefore proved nothing: the image shipped
+    Chromium, this check went green, and every solve still died at launch with
+    "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome".
+    A startup check that can pass while the thing it guards is broken is worse
+    than no check, so verify the exact binary that gets launched.
+
+    Returns (ready, detail).
+    """
+    chrome = _system_chrome_path()
+    if not os.access(chrome, os.R_OK | os.X_OK):
+        return False, f"system Chrome not executable at {chrome}"
+
+    # The solver runs headful by default (wafer: "Must run headful — headless =
+    # 16.7% bypass rate"). On Linux that needs an X display; without one Chrome
+    # exits immediately and the challenge fails with a confusing timeout.
+    if sys.platform not in ("darwin", "win32"):
+        display = os.environ.get("DISPLAY")
+        if not display:
+            return False, f"{chrome} found but DISPLAY is unset (headful Chrome needs an X server; start Xvfb)"
+        # Checking the env var alone is not enough: the Docker image sets
+        # DISPLAY unconditionally, so if Xvfb failed to start this check would
+        # go green over a solver that cannot launch — the same false-positive
+        # the bundled-Chromium check used to give. Verify the socket is really
+        # being served. A remote/TCP DISPLAY (host:0) has no local socket, so
+        # it is accepted unverified rather than wrongly failed.
+        if display.startswith(":"):
+            screen = display[1:].split(".")[0]
+            sock = _X11_SOCKET_DIR / f"X{screen}"
+            if not sock.exists():
+                return False, (
+                    f"{chrome} found and DISPLAY={display}, but no X server is listening "
+                    f"on {sock} (Xvfb not running)"
+                )
+
+    return True, chrome
+
+
 def _summarize_args(tool_name: str, args: dict) -> str:
     """Summarize tool arguments for logging."""
     if tool_name == "fetch":
@@ -180,7 +239,16 @@ def create_server(
         try:
             from wafer.browser import BrowserSolver
             browser_solver = BrowserSolver()
-            _log("BrowserSolver available (browser launched on first challenge)")
+            ready, detail = _browser_solver_ready()
+            if ready:
+                _log(f"BrowserSolver available via {detail} (launched on first challenge)")
+            else:
+                _log(
+                    f"WARNING: BrowserSolver imported but NOT usable - {detail}. "
+                    f"Bot challenge solving WILL fail. wafer launches system Chrome "
+                    f"(channel='chrome'), not bundled Chromium: install it with "
+                    f"'patchright install chrome --with-deps' (unavailable on Linux arm64)."
+                )
         except ImportError:
             _log("BrowserSolver not available (install wafer-py[browser] for bot challenge solving)")
 

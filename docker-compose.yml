@@ -14,6 +14,12 @@ services:
       - HTTP_PORT=6000
       - RATE_LIMIT_REQUESTS=100
       - MCP_API_KEY=${MCP_API_KEY}
+      # Must be set and STABLE across redeploys. If unset, the server generates a
+      # random secret per process and every OAuth connector un-pairs on restart.
+      # Generate once with: openssl rand -hex 32   (see README: JWT_SECRET)
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set - generate with 'openssl rand -hex 32', see README}
+      - DATA_DIR=${DATA_DIR:-/app/data}
+      - ACCESS_TOKEN_TTL=${ACCESS_TOKEN_TTL:-2592000}
       - MCP_SERVER_URL=${MCP_SERVER_URL:-http://localhost:6000}
       - MOUSER_API_KEY=${MOUSER_API_KEY:-}
       - DIGIKEY_CLIENT_ID=${DIGIKEY_CLIENT_ID:-}

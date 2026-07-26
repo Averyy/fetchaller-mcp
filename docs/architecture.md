@@ -58,12 +58,23 @@ Each site module exports the same interface: `is_<site>(url)`, `SELECTORS_LIST`,
 `src/fetchaller/search/` handles web search:
 
 - **`__init__.py`** — Main `search()` function, result merging/dedup, 5-minute query cache, per-engine rate limiters (2s Google, 1s DDG), CAPTCHA escalating backoff (2m→5m→15m), lazy session lifecycle.
-- **`google.py`** — Google search result extraction, CAPTCHA detection.
-- **`ddg.py`** — DuckDuckGo HTML endpoint. Only queried on page 1.
+- **`google.py`** — Google search result extraction, CAPTCHA detection. Returns `(results, is_captcha, error)`.
+- **`ddg.py`** — DuckDuckGo HTML endpoint. Only queried on page 1. Returns `(results, error)`.
 - **`models.py`** — `SearchResult` dataclass.
 - **`tools/search.py`** — MCP tool wrapper.
 
-Search uses `wafer.AsyncSession(profile=Profile.OPERA_MINI)` — wafer owns the entire Opera Mini impersonation (52 confirmed versions, 21 real devices, correlated fingerprints). Fetchaller just parses the HTML results.
+### Per-engine sessions
+
+The two engines need **different TLS identities**, so `search/__init__.py` keeps two lazily-created sessions:
+
+- **Google** — `wafer.AsyncSession(profile=Profile.OPERA_MINI)`. Required, not incidental: the SSR request declares `client=ms-opera-mini-android`, so the TLS identity has to match the client the query claims to be. wafer owns the entire Opera Mini impersonation (52 confirmed versions, 21 real devices, correlated fingerprints); fetchaller just parses the HTML.
+- **DDG** — `wafer.AsyncSession()` with the default profile. DDG answers an Opera Mini identity with **HTTP 202 and the DuckDuckGo homepage** instead of results. Sharing one Opera Mini session across both engines broke DDG on every query.
+
+### Transport errors are never silent
+
+Both engines report transport/HTTP failures to `search()` instead of returning an empty list. A network error or non-200 renders as `google: ERROR` / `ddg: ERROR` plus the cause, and a total failure says `Search FAILED — no engine returned results`.
+
+This exists because the previous "return `[]` on error" behaviour made a dead engine indistinguishable from a query with no hits — output read `ddg: 0 new`, which is precisely how the DDG breakage above stayed invisible. Engine errors are cached alongside results so a replayed partial result still names the engine that failed.
 
 ## Marketplace Search Architecture
 
@@ -92,3 +103,36 @@ All HTTP fetching is handled by `wafer` (`~/code/wafer`). Fetchaller does NOT co
   - **reCAPTCHA v3**: not a detected challenge — minted browser-free via `session.mint_recaptcha_v3(sitekey, action)` (score token). fetchaller does not currently use this.
 
 If a site blocks requests, **fix it in wafer, not fetchaller**.
+
+## Persistent State
+
+The container is restarted routinely — image updates, host maintenance, scheduled jobs — so
+anything that must outlive a restart has to be on disk. `/app/data` is the only durable
+location; it is a mounted volume and `entrypoint.sh` chowns it to `appuser`.
+
+| State | Location | Survives restart? |
+|---|---|---|
+| OAuth clients + refresh token hashes | `${DATA_DIR:-/app/data}/oauth_clients.json` | Yes |
+| wafer cookie cache | `${WAFER_CACHE_DIR:-/app/data/wafer}` | Yes |
+| Chromium binaries | `${PLAYWRIGHT_BROWSERS_PATH:-/app/browsers}` (baked into image) | Yes |
+| OAuth access tokens | none — stateless JWTs signed with `JWT_SECRET` | Yes, **if `JWT_SECRET` is set** |
+| Authorization codes | memory | No — 10 min TTL, cheap to retry |
+| CSRF tokens | memory | No — 10 min TTL |
+| Response cache | memory | No — 5 min TTL by design |
+| Reddit queue counters | memory | No — rate-limit windows, by design |
+
+Three rules follow from this, each learned from a production bug:
+
+1. **`JWT_SECRET` must be set and stable.** Unset, the server generates a random signing secret
+   per process, silently invalidating every OAuth token on restart and forcing every user to
+   re-pair by hand. HTTP mode now refuses to start without it (`ALLOW_EPHEMERAL_JWT=1` opts out
+   for local dev), and `/health` exposes `jwt_secret_ephemeral`.
+2. **Never default a path to `$HOME`.** `appuser` has no home directory in the image, so
+   `Path.home()` resolves to an uncreatable path. This silently disabled the wafer cookie cache,
+   and — because the build installs browsers as root — made Chromium unreachable at runtime,
+   breaking every browser challenge solve for five months. Both now default into `/app`.
+3. **Import success is not availability.** `BrowserSolver` importing proves only that the Python
+   package exists. Startup verifies the Chromium install is present *and readable by this user*
+   before logging it as available.
+
+See `todo-survivereboots.md` for the full incident write-up.

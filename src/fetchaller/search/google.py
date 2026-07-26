@@ -178,12 +178,15 @@ def extract_results(html: str) -> list[SearchResult]:
 
 async def search_google(
     session, query: str, page: int = 1
-) -> tuple[list[SearchResult], bool]:
+) -> tuple[list[SearchResult], bool, str | None]:
     """
     Search Google via Opera Mini SSR.
 
     Returns:
-        Tuple of (results, is_captcha). If is_captcha is True, results is empty.
+        Tuple of (results, is_captcha, error). If is_captcha is True, results is
+        empty. ``error`` is a short description when the request failed at the
+        transport/HTTP layer — distinct from an honest empty result set, and the
+        caller surfaces it so a network failure never reads as "nothing exists".
     """
     params = {
         "q": query,
@@ -203,15 +206,15 @@ async def search_google(
         )
     except Exception as e:
         _log(f"google request error: {type(e).__name__}: {e}")
-        return [], False
+        return [], False, f"{type(e).__name__}: {e}"
 
     if is_captcha(response):
         _log("google captcha detected")
-        return [], True
+        return [], True, None
 
     if response.status_code != 200:
         _log(f"google non-200 status: {response.status_code}")
-        return [], False
+        return [], False, f"HTTP {response.status_code}"
 
     results = extract_results(response.text)
 
@@ -219,4 +222,4 @@ async def search_google(
     if not results:
         _log(f"google 200 but zero results extracted. HTML prefix: {response.text[:500]}")
 
-    return results, False
+    return results, False, None

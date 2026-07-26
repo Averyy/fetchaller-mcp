@@ -5,6 +5,8 @@ import os
 import pytest
 
 from fetchaller.config import (
+    ACCESS_TOKEN_TTL,
+    REFRESH_TOKEN_TTL,
     Config,
     load_config,
 )
@@ -93,4 +95,33 @@ class TestConfig:
         with pytest.raises(ValueError, match="RATE_LIMIT_REQUESTS must be an integer"):
             load_config()
 
+    def test_access_token_ttl_defaults_to_30_days(self):
+        """Access and refresh tokens use the conservative requested defaults."""
+        assert ACCESS_TOKEN_TTL == 30 * 24 * 60 * 60
+        assert REFRESH_TOKEN_TTL == 180 * 24 * 60 * 60
+        assert Config().access_token_ttl == ACCESS_TOKEN_TTL
+        assert Config().refresh_token_ttl == REFRESH_TOKEN_TTL
 
+    def test_access_token_ttl_from_environment(self, monkeypatch):
+        """ACCESS_TOKEN_TTL overrides the access-token lifetime in seconds."""
+        monkeypatch.setenv("ACCESS_TOKEN_TTL", "12345")
+        assert load_config().access_token_ttl == 12345
+
+    def test_access_token_ttl_must_be_positive(self, monkeypatch):
+        """Non-positive access-token lifetimes are rejected."""
+        monkeypatch.setenv("ACCESS_TOKEN_TTL", "0")
+        with pytest.raises(ValueError, match="ACCESS_TOKEN_TTL must be positive"):
+            load_config()
+
+    def test_data_dir_from_environment(self, monkeypatch, tmp_path):
+        """DATA_DIR configures the persistent OAuth state location."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        assert load_config().data_dir == str(tmp_path)
+
+    def test_allow_ephemeral_jwt_requires_explicit_one(self, monkeypatch):
+        """Only ALLOW_EPHEMERAL_JWT=1 enables the unsafe local-dev escape hatch."""
+        monkeypatch.setenv("ALLOW_EPHEMERAL_JWT", "true")
+        assert load_config().allow_ephemeral_jwt is False
+
+        monkeypatch.setenv("ALLOW_EPHEMERAL_JWT", "1")
+        assert load_config().allow_ephemeral_jwt is True

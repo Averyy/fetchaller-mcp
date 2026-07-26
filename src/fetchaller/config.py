@@ -6,7 +6,8 @@ from pathlib import Path
 
 # OAuth TTL defaults (shared with OAuthStore)
 AUTH_CODE_TTL = 10 * 60  # 10 minutes
-ACCESS_TOKEN_TTL = 365 * 24 * 60 * 60  # 1 year
+ACCESS_TOKEN_TTL = 30 * 24 * 60 * 60  # 30 days
+REFRESH_TOKEN_TTL = 180 * 24 * 60 * 60  # 180 days
 CLIENT_TTL = 365 * 24 * 60 * 60  # 1 year
 
 
@@ -19,7 +20,9 @@ class Config:
     server_url: str | None = None  # Defaults to http://localhost:{port}
     api_key: str | None = None
     jwt_secret: str | None = None
+    allow_ephemeral_jwt: bool = False
     rate_limit_requests: int = 100  # Per minute per IP
+    data_dir: str | None = "/app/data"
 
     # Fetch defaults
     default_max_tokens: int = 25000
@@ -31,6 +34,7 @@ class Config:
     # OAuth TTLs
     auth_code_ttl: int = AUTH_CODE_TTL
     access_token_ttl: int = ACCESS_TOKEN_TTL
+    refresh_token_ttl: int = REFRESH_TOKEN_TTL
     client_ttl: int = CLIENT_TTL
 
     # Memory limits
@@ -124,7 +128,10 @@ def load_config() -> Config:
         wafer_cache_dir=wafer_cache_dir,
         api_key=os.environ.get("MCP_API_KEY"),
         jwt_secret=os.environ.get("JWT_SECRET"),
+        allow_ephemeral_jwt=os.environ.get("ALLOW_EPHEMERAL_JWT") == "1",
+        data_dir=os.environ.get("DATA_DIR") or "/app/data",
         rate_limit_requests=rate_limit,
+        access_token_ttl=_int("ACCESS_TOKEN_TTL", ACCESS_TOKEN_TTL),
         # Cache settings
         cache_default_ttl=_int("CACHE_DEFAULT_TTL", 300),
         cache_max_entries=_int("CACHE_MAX_ENTRIES", 1000),
@@ -147,6 +154,8 @@ def load_config() -> Config:
         )
     if config.retry_max_attempts < 0:
         raise ValueError(f"retry_max_attempts must be >= 0, got {config.retry_max_attempts}")
+    if config.access_token_ttl <= 0:
+        raise ValueError(f"ACCESS_TOKEN_TTL must be positive, got {config.access_token_ttl}")
     if config.reddit_proactive_threshold > config.reddit_max_requests_per_minute:
         raise ValueError(
             f"reddit_proactive_threshold ({config.reddit_proactive_threshold}) must be <= reddit_max_requests_per_minute ({config.reddit_max_requests_per_minute})"

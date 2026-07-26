@@ -25,8 +25,11 @@ services:
       - DIGIKEY_CLIENT_SECRET=${DIGIKEY_CLIENT_SECRET:-}
       - PUID=99
       - PGID=100
-      # Uncomment to test with separate JWT secret:
-      # - JWT_SECRET=test-jwt-secret-local
+      # Fixed dev-only secret so OAuth pairings survive local restarts.
+      # NEVER reuse this value in production - generate one with: openssl rand -hex 32
+      - JWT_SECRET=test-jwt-secret-local
+      - DATA_DIR=${DATA_DIR:-/app/data}
+      - ACCESS_TOKEN_TTL=${ACCESS_TOKEN_TTL:-2592000}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6000/health"]
       interval: 10s

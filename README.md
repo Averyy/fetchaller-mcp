@@ -422,16 +422,49 @@ For Claude.ai web/mobile with cross-platform sync:
 | `HTTP_PORT` | 6000 | Server port (1-65535) |
 | `MCP_API_KEY` | (required) | Bearer token for auth |
 | `MCP_SERVER_URL` | `http://localhost:$PORT` | Public URL for OAuth |
-| `JWT_SECRET` | (derived from API key) | Secret for OAuth tokens |
+| `JWT_SECRET` | (required with API keys) | Stable signing secret for OAuth tokens — see below |
+| `ALLOW_EPHEMERAL_JWT` | `0` | Set to `1` only for local HTTP development without a stable `JWT_SECRET` |
+| `DATA_DIR` | `/app/data` | Persistent OAuth client and refresh-token state |
+| `ACCESS_TOKEN_TTL` | `2592000` | OAuth access-token lifetime in seconds (30 days) |
 | `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
 | `MOUSER_API_KEY` | — | Mouser Search API key ([free registration](https://www.mouser.com/MyMouser/MouserSearchApplication.aspx)) |
 | `DIGIKEY_CLIENT_ID` | — | DigiKey API client ID ([free registration](https://developer.digikey.com)) |
 | `DIGIKEY_CLIENT_SECRET` | — | DigiKey API client secret |
 
+### JWT_SECRET (required for persistent deployments)
+
+OAuth access tokens are stateless JWTs. When `MCP_API_KEY` is configured, HTTP startup fails
+if `JWT_SECRET` is unset. For local HTTP development only, `ALLOW_EPHEMERAL_JWT=1` opts into a
+random per-process secret; every previously issued access token then becomes invalid when the
+process restarts. Registered clients and hashed refresh tokens persist under `DATA_DIR`, while
+short-lived authorization codes remain in memory.
+
+Generate one value and keep it stable for the life of the deployment:
+
+```bash
+openssl rand -hex 32
+```
+
+Pass it to the container the same way as `MCP_API_KEY` (compose `environment:`, Unraid
+template variable, etc.). Verify it landed with `printenv | grep JWT_SECRET` inside the
+container — an empty value counts as unset and prevents authenticated HTTP startup.
+
+Two caveats:
+
+- **Changing it invalidates every access token.** Clients can normally recover with their
+  persisted rotating refresh tokens, but rotating both the secret and OAuth state un-pairs
+  every connector.
+- **Do not derive it from `MCP_API_KEY`.** Token payloads carry `api_key_hash` in cleartext,
+  so a derived secret is recoverable from any captured token, allowing forged tokens. Use an
+  independent random value.
+
+Bearer auth with a raw `MCP_API_KEY` is unaffected by any of this — it is validated against
+the environment variable directly and survives restarts.
+
 ## Security
 
-- **SSRF Protection**: Blocks localhost, private IPs, link-local addresses, and DNS rebinding services (nip.io, xip.io, etc.). Resolves hostnames to verify final IP addresses.
-- **OAuth 2.1**: PKCE required for all token exchanges. Timing-safe comparisons for auth codes.
+- **SSRF Protection**: Blocks localhost, private IPs, CGNAT/shared space, link-local addresses, and DNS rebinding services (nip.io, xip.io, etc.). Resolves hostnames, verifies every resolved address, and pins the connection to those addresses to close the DNS-rebinding window. Transition addresses (NAT64, 6to4, Teredo, IPv4-mapped) are judged by the IPv4 they actually translate to, so `64:ff9b::` + a public host works on IPv6-only networks while `64:ff9b::7f00:1` (loopback) and `64:ff9b::a9fe:a9fe` (cloud metadata) stay blocked. Unresolvable hosts fail closed but are reported as a DNS failure, not as a private-host block.
+- **OAuth 2.1**: PKCE required for authorization-code exchanges. Refresh tokens are hashed at rest and rotate on use.
 - **Rate Limiting**: Per-IP rate limiting with configurable limits.
 
 ## Files

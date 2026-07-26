@@ -85,3 +85,118 @@ async def test_exception_returns_sanitized_error(server):
         assert "unexpected error" in text
         # Exception type is still included for debugging
         assert "RuntimeError" in text
+
+
+class TestBrowserSolverReadiness:
+    """The startup guard must check the browser wafer actually launches.
+
+    Regression: the old check looked for patchright's bundled *chromium* and
+    logged "BrowserSolver available". wafer launches *system Chrome*
+    (channel="chrome"), so the check passed on an image where every solve died
+    at launch. A green check over a broken dependency is worse than no check.
+    """
+
+    def test_reports_missing_system_chrome(self, monkeypatch):
+        from fetchaller import server as srv
+
+        monkeypatch.setattr(srv, "_system_chrome_path", lambda: "/nonexistent/chrome")
+        ready, detail = srv._browser_solver_ready()
+        assert ready is False
+        assert "/nonexistent/chrome" in detail
+
+    def test_bundled_chromium_alone_does_not_satisfy_the_check(self, monkeypatch, tmp_path):
+        """A populated PLAYWRIGHT_BROWSERS_PATH must not make the check pass."""
+        from fetchaller import server as srv
+
+        browsers = tmp_path / "browsers"
+        (browsers / "chromium-1217").mkdir(parents=True)
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(browsers))
+        monkeypatch.setattr(srv, "_system_chrome_path", lambda: "/nonexistent/chrome")
+
+        ready, _ = srv._browser_solver_ready()
+        assert ready is False, "bundled chromium is not what wafer launches"
+
+    def test_requires_display_on_linux(self, monkeypatch, tmp_path):
+        from fetchaller import server as srv
+
+        chrome = tmp_path / "chrome"
+        chrome.write_text("#!/bin/sh\n")
+        chrome.chmod(0o755)
+        monkeypatch.setattr(srv, "_system_chrome_path", lambda: str(chrome))
+        monkeypatch.setattr(srv.sys, "platform", "linux")
+        monkeypatch.delenv("DISPLAY", raising=False)
+
+        ready, detail = srv._browser_solver_ready()
+        assert ready is False
+        assert "DISPLAY" in detail
+
+    def test_ready_when_chrome_and_live_display_present(self, monkeypatch, tmp_path):
+        from fetchaller import server as srv
+
+        chrome = tmp_path / "chrome"
+        chrome.write_text("#!/bin/sh\n")
+        chrome.chmod(0o755)
+        sockets = tmp_path / "x11"
+        sockets.mkdir()
+        (sockets / "X99").touch()  # Xvfb is actually serving :99
+
+        monkeypatch.setattr(srv, "_system_chrome_path", lambda: str(chrome))
+        monkeypatch.setattr(srv, "_X11_SOCKET_DIR", sockets)
+        monkeypatch.setattr(srv.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":99")
+
+        ready, detail = srv._browser_solver_ready()
+        assert ready is True
+        assert detail == str(chrome)
+
+    def test_display_set_but_no_x_server_is_not_ready(self, monkeypatch, tmp_path):
+        """The image sets DISPLAY unconditionally — the env var proves nothing.
+
+        If Xvfb dies or never starts, an env-var-only check reports the solver
+        as available over a browser that cannot launch. That is the same
+        false-green the old bundled-Chromium check produced.
+        """
+        from fetchaller import server as srv
+
+        chrome = tmp_path / "chrome"
+        chrome.write_text("#!/bin/sh\n")
+        chrome.chmod(0o755)
+        sockets = tmp_path / "x11"
+        sockets.mkdir()  # exists but empty: no X server listening
+
+        monkeypatch.setattr(srv, "_system_chrome_path", lambda: str(chrome))
+        monkeypatch.setattr(srv, "_X11_SOCKET_DIR", sockets)
+        monkeypatch.setattr(srv.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":99")
+
+        ready, detail = srv._browser_solver_ready()
+        assert ready is False
+        assert "no X server is listening" in detail
+
+    def test_remote_display_accepted_unverified(self, monkeypatch, tmp_path):
+        """A TCP DISPLAY (host:0) has no local socket — don't fail it wrongly."""
+        from fetchaller import server as srv
+
+        chrome = tmp_path / "chrome"
+        chrome.write_text("#!/bin/sh\n")
+        chrome.chmod(0o755)
+        monkeypatch.setattr(srv, "_system_chrome_path", lambda: str(chrome))
+        monkeypatch.setattr(srv, "_X11_SOCKET_DIR", tmp_path / "nope")
+        monkeypatch.setattr(srv.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", "somehost:0")
+
+        ready, _ = srv._browser_solver_ready()
+        assert ready is True
+
+    def test_macos_does_not_require_display(self, monkeypatch, tmp_path):
+        from fetchaller import server as srv
+
+        chrome = tmp_path / "chrome"
+        chrome.write_text("#!/bin/sh\n")
+        chrome.chmod(0o755)
+        monkeypatch.setattr(srv, "_system_chrome_path", lambda: str(chrome))
+        monkeypatch.setattr(srv.sys, "platform", "darwin")
+        monkeypatch.delenv("DISPLAY", raising=False)
+
+        ready, _ = srv._browser_solver_ready()
+        assert ready is True

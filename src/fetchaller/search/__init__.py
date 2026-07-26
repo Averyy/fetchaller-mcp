@@ -12,12 +12,24 @@ from .ddg import search_ddg
 from .google import search_google
 from .models import SearchResult
 
-# Lazy session — created on first search, closed on shutdown
+# Lazy sessions — created on first search, closed on shutdown.
+# Google and DDG need different TLS identities (see _get_ddg_session).
 _session = None
 _session_lock = asyncio.Lock()
+_ddg_session = None
+_ddg_session_lock = asyncio.Lock()
 
-# Query cache: (query_lower, page) -> (results, google_count, ddg_new_count, captcha, timestamp)
-_cache: dict[tuple[str, int], tuple[list[SearchResult], int, int, bool, float]] = {}
+# Query cache:
+#   (query_lower, page) -> (results, google_count, ddg_new_count, captcha,
+#                           timestamp, google_error, ddg_error)
+# The engine errors are cached alongside the results so a replayed partial
+# result still says which engine failed. Without them the first caller sees
+# "ddg: ERROR" and everyone within the TTL sees a clean "ddg: 0 new" for the
+# very same incomplete result set.
+_cache: dict[
+    tuple[str, int],
+    tuple[list[SearchResult], int, int, bool, float, str | None, str | None],
+] = {}
 _CACHE_TTL = 300  # 5 minutes
 _CACHE_MAX_SIZE = 1000
 
@@ -43,7 +55,11 @@ def _log(msg: str) -> None:
 
 
 async def _get_session():
-    """Get or create the shared AsyncSession with Opera Mini profile."""
+    """Get or create the shared AsyncSession with Opera Mini profile.
+
+    Google only: the SSR endpoint is requested with client=ms-opera-mini-android,
+    so the TLS identity has to match the client the query claims to be.
+    """
     global _session
     if _session is None:
         async with _session_lock:
@@ -59,10 +75,35 @@ async def _get_session():
     return _session
 
 
+async def _get_ddg_session():
+    """Get or create the DDG session — deliberately NOT the Opera Mini profile.
+
+    DDG's html endpoint answers an Opera Mini identity with HTTP 202 and the
+    generic DuckDuckGo homepage instead of results; the default profile gets a
+    normal 200 with the result list. Sharing one Opera Mini session across both
+    engines therefore broke DDG on every single query, and because the old code
+    reported a non-200 as an empty list it showed up as a plausible-looking
+    "ddg: 0 new" rather than a failure.
+    """
+    global _ddg_session
+    if _ddg_session is None:
+        async with _ddg_session_lock:
+            if _ddg_session is None:
+                from wafer import AsyncSession
+
+                _ddg_session = AsyncSession(
+                    max_rotations=0,
+                    rate_limit=0.0,
+                    cache_dir=get_wafer_cache_dir(),
+                )
+    return _ddg_session
+
+
 async def close_session() -> None:
-    """Release the shared search session. Called on server shutdown."""
-    global _session
+    """Release the shared search sessions. Called on server shutdown."""
+    global _session, _ddg_session
     _session = None
+    _ddg_session = None
 
 
 def _dedup_key(url: str) -> str:
@@ -126,20 +167,66 @@ def _format_output(
     ddg_new_count: int,
     captcha: bool,
     page: int,
+    google_error: str | None = None,
+    ddg_error: str | None = None,
 ) -> str:
-    """Format search results as text output."""
+    """Format search results as text output.
+
+    A transport failure must never render as a bare "0" — that reads as "the web
+    has nothing on this" and sends the caller off to work around a problem that
+    is really a one-off network error on our side.
+    """
     total = len(results)
 
     # Build summary line
-    google_str = "captcha" if captcha else str(google_count)
-    ddg_str = "n/a" if page > 1 else f"{ddg_new_count} new"
+    if captcha:
+        google_str = "captcha"
+    elif google_error:
+        google_str = "ERROR"
+    else:
+        google_str = str(google_count)
+
+    if page > 1:
+        ddg_str = "n/a"
+    elif ddg_error:
+        ddg_str = "ERROR"
+    else:
+        ddg_str = f"{ddg_new_count} new"
+
     page_str = f" (page {page})" if page > 1 else ""
     summary = f'Search: "{query}"{page_str} | google: {google_str} | ddg: {ddg_str} | {total} total'
 
+    errors = []
+    if google_error:
+        errors.append(f"  google: {google_error}")
+    if ddg_error and page == 1:
+        errors.append(f"  ddg: {ddg_error}")
+
     if not results:
+        if errors:
+            detail = "\n".join(errors)
+            return (
+                f"{summary}\n\nSearch FAILED — no engine returned results.\n"
+                f"{detail}\n\n"
+                "This is a transport failure on our side, not an empty result set. "
+                "The query was never answered. Retry before concluding anything about "
+                "these search terms."
+            )
         return f"{summary}\n\nNo results found."
 
-    lines = [summary, ""]
+    if errors:
+        detail = "\n".join(errors)
+        return (
+            f"{summary}\n\nPartial results — one engine failed:\n{detail}\n\n"
+            + _format_results(results)
+        )
+
+    return f"{summary}\n\n{_format_results(results)}"
+
+
+def _format_results(results: list[SearchResult]) -> str:
+    """Render the numbered result list (no summary line)."""
+    lines = []
     for i, r in enumerate(results, 1):
         # Align multi-digit numbers
         prefix = f"{i}."
@@ -226,8 +313,12 @@ async def search(
     cache_key = (query.lower(), page)
     _evict_cache()
     if cache_key in _cache:
-        results, google_count, ddg_new_count, captcha, _ = _cache[cache_key]
-        return {"content": _format_output(query, results, google_count, ddg_new_count, captcha, page)}
+        results, google_count, ddg_new_count, captcha, _, g_err, d_err = _cache[cache_key]
+        return {
+            "content": _format_output(
+                query, results, google_count, ddg_new_count, captcha, page, g_err, d_err
+            )
+        }
 
     session = await _get_session()
     start_time = time_module.time()
@@ -235,6 +326,8 @@ async def search(
     google_results: list[SearchResult] = []
     ddg_results: list[SearchResult] = []
     captcha = False
+    google_error: str | None = None
+    ddg_error: str | None = None
 
     if page == 1:
         # Page 1: query both engines in parallel
@@ -243,7 +336,10 @@ async def search(
         tasks = []
         if not google_backed_off:
             tasks.append(("google", asyncio.wait_for(_rate_limited_google(session, query, page), timeout=15)))
-        tasks.append(("ddg", asyncio.wait_for(_rate_limited_ddg(session, query), timeout=15)))
+        # DDG gets its own session — the Opera Mini identity is Google-specific
+        # and DDG answers it with a 202 homepage instead of results.
+        ddg_session = await _get_ddg_session()
+        tasks.append(("ddg", asyncio.wait_for(_rate_limited_ddg(ddg_session, query), timeout=15)))
 
         # Run in parallel
         async_tasks = {name: asyncio.create_task(coro) for name, coro in tasks}
@@ -251,44 +347,67 @@ async def search(
             try:
                 result = await task
                 if name == "google":
-                    google_results, captcha = result
+                    google_results, captcha, google_error = result
                     if captcha:
                         _handle_captcha()
                 else:
-                    ddg_results = result
+                    ddg_results, ddg_error = result
             except TimeoutError:
                 _log(f"{name} timed out")
+                if name == "google":
+                    google_error = "timed out after 15s"
+                else:
+                    ddg_error = "timed out after 15s"
             except Exception as e:
                 _log(f"{name} error: {type(e).__name__}: {e}")
+                if name == "google":
+                    google_error = f"{type(e).__name__}: {e}"
+                else:
+                    ddg_error = f"{type(e).__name__}: {e}"
 
         if google_backed_off:
             captcha = True  # Show as captcha in summary
+            google_error = None  # backoff is a deliberate skip, not a failure
     else:
         # Page 2+: Google only
         if _google_backed_off():
             captcha = True
         else:
             try:
-                google_results, captcha = await asyncio.wait_for(
+                google_results, captcha, google_error = await asyncio.wait_for(
                     _rate_limited_google(session, query, page), timeout=15
                 )
                 if captcha:
                     _handle_captcha()
             except TimeoutError:
                 _log("google timed out")
+                google_error = "timed out after 15s"
             except Exception as e:
                 _log(f"google error: {type(e).__name__}: {e}")
+                google_error = f"{type(e).__name__}: {e}"
 
     # Merge and dedup
     merged, ddg_new_count = _dedup_and_merge(google_results, ddg_results)
     google_count = len(google_results)
 
     elapsed = time_module.time() - start_time
-    _log(f'search query="{query}" google={google_count} ddg={ddg_new_count} elapsed={elapsed:.1f}s')
+    _log(
+        f'search query="{query}" google={google_count} ddg={ddg_new_count} '
+        f"elapsed={elapsed:.1f}s"
+        + (f" google_error={google_error}" if google_error else "")
+        + (f" ddg_error={ddg_error}" if ddg_error else "")
+    )
 
     # Cache when we have results (even DDG-only during Google captcha backoff).
     # Don't cache empty results — those may be transient engine failures.
     if merged:
-        _cache[cache_key] = (merged, google_count, ddg_new_count, captcha, time_module.time())
+        _cache[cache_key] = (
+            merged, google_count, ddg_new_count, captcha, time_module.time(),
+            google_error, ddg_error,
+        )
 
-    return {"content": _format_output(query, merged, google_count, ddg_new_count, captcha, page)}
+    return {
+        "content": _format_output(
+            query, merged, google_count, ddg_new_count, captcha, page, google_error, ddg_error
+        )
+    }

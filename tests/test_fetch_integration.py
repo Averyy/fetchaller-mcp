@@ -10,6 +10,8 @@ URLs on known domains are NOT hijacked by Tier 2 feed autodiscovery.
 
 from unittest.mock import AsyncMock, patch
 
+from fetchaller.security.ssrf import BLOCK_PRIVATE, HostVerdict
+
 # ---------------------------------------------------------------------------
 # Mock wafer session — returns pre-configured responses by URL
 # ---------------------------------------------------------------------------
@@ -124,15 +126,26 @@ def _vbulletin_thread_html(feed_href: str = "/forums/external.php?type=RSS2") ->
 
 
 # ---------------------------------------------------------------------------
-# Patch helper — resolve_and_check must be async and return (is_private, ips).
-# (False, []) = public host, no pin. fetch_url() uses this for both the early
-# guard and the connection pin, so patching it covers the whole SSRF path.
+# Patch helper — check_host must be async and return a HostVerdict.
+# blocked=False with no IPs = public host, no pin. fetch_url() uses this for both
+# the early guard and the connection pin, so patching it covers the whole SSRF path.
 # ---------------------------------------------------------------------------
 
+
+def _verdict_from(fn):
+    """Adapt a ``(is_private, ips)``-style mock into a ``check_host`` verdict."""
+
+    async def _inner(host):
+        blocked, ips = await fn(host)
+        return HostVerdict(host, blocked, list(ips), BLOCK_PRIVATE if blocked else None)
+
+    return _inner
+
+
 _PATCH_SSRF = patch(
-    "fetchaller.tools.fetch.resolve_and_check",
+    "fetchaller.tools.fetch.check_host",
     new_callable=AsyncMock,
-    return_value=(False, []),
+    return_value=HostVerdict("public.example", False, []),
 )
 
 
@@ -505,11 +518,13 @@ class TestErrorHandling:
     async def test_ssrf_blocked(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
-        _mock_ssrf.return_value = (True, [])  # Simulate SSRF detection
+        # Simulate SSRF detection
+        _mock_ssrf.return_value = HostVerdict("internal.corp", True, [], BLOCK_PRIVATE)
         result = await fetch_url("https://internal.corp/secret")
         assert "error" in result
         assert "private" in result["error"].lower()
-        _mock_ssrf.return_value = (False, [])  # Reset for other tests
+        # Reset for other tests
+        _mock_ssrf.return_value = HostVerdict("public.example", False, [])
 
     @_PATCH_SSRF
     async def test_timeout(self, _mock_ssrf):
@@ -620,7 +635,7 @@ class TestSSRFPinning:
             return (False, ["203.0.113.7"])
 
         with patch("fetchaller.tools.fetch.wafer.AsyncSession", side_effect=_factory), \
-             patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac):
+             patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)):
             result = await fetch_url("https://pin.example/page")
 
         assert "content" in result
@@ -644,7 +659,7 @@ class TestSSRFPinning:
             headers={"location": "https://internal.corp/secret"},
         )
         session = MockWaferSession(responses={start: redirect})
-        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+        with patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)), \
              _patch_wafer(session):
             result = await fetch_url(start)
 
@@ -671,7 +686,7 @@ class TestSSRFPinning:
         )
         final_resp = _html_response("<html><body>arrived</body></html>", final)
         session = MockWaferSession(responses={start: redirect, final: final_resp})
-        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+        with patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)), \
              _patch_wafer(session):
             result = await fetch_url(start)
 
@@ -696,7 +711,7 @@ class TestSSRFPinning:
         async def _rac(_host):
             return (False, [])
 
-        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+        with patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)), \
              _patch_wafer(session):
             result = await fetch_url("https://public.example/")
 
@@ -715,7 +730,7 @@ class TestSSRFPinning:
         async def _rac(_host):
             return (False, [])
 
-        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+        with patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)), \
              _patch_wafer(session):
             result = await fetch_url("https://public.example/")
 
@@ -737,7 +752,7 @@ class TestSSRFPinning:
         async def _rac(_host):
             return (False, [])
 
-        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+        with patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)), \
              _patch_wafer(session):
             result = await fetch_url("https://Example.COM./")
 
@@ -764,7 +779,7 @@ class TestSSRFPinning:
         session = MockWaferSession(
             responses={listing_url: _html_response(listing_html, listing_url)},
         )
-        with patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac), \
+        with patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)), \
              _patch_wafer(session):
             result = await fetch_url(listing_url)
 
@@ -836,7 +851,7 @@ class TestWaferCleanups:
             return (False, ["1.2.3.4"])
 
         with patch("fetchaller.tools.fetch.wafer.AsyncSession", side_effect=_factory), \
-             patch("fetchaller.tools.fetch.resolve_and_check", side_effect=_rac):
+             patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)):
             await fetch_url("https://t.example/", timeout=10)
 
         assert captured["attempt_timeout"] == timedelta(seconds=10)  # per-attempt cap = caller's timeout
@@ -851,7 +866,8 @@ class TestWaferCleanups:
         session = MockWaferSession()
         session.get = AsyncMock(side_effect=wafer.ResponseTooLarge("https://big.example/", 999, 100))
         with _patch_wafer(session), \
-             patch("fetchaller.tools.fetch.resolve_and_check", new_callable=AsyncMock, return_value=(False, [])):
+             patch("fetchaller.tools.fetch.check_host", new_callable=AsyncMock,
+                   return_value=HostVerdict("big.example", False, [])):
             result = await fetch_url("https://big.example/")
         assert "error" in result
         assert "too large" in result["error"].lower()
