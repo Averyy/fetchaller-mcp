@@ -19,10 +19,11 @@ import json
 import re
 from urllib.parse import urlparse
 
+import wafer
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
-from ..security.ssrf import is_private_host
+from ..security.ssrf import check_host
 
 # ---------------------------------------------------------------------------
 # URL detection
@@ -33,6 +34,7 @@ _CSOD_JOB_PATH_RE = re.compile(
     r"^/ux/ats/careersite/(\d+)/home/requisition/(\d+)/?$"
 )
 _CSOD_BOARD_PATH_RE = re.compile(r"^/ux/ats/careersite/(\d+)/home/?$")
+_CSOD_CLOUD_HOST_RE = re.compile(r"^[a-z0-9-]+\.api\.csod\.com$")
 
 
 def _tenant(url: str) -> str | None:
@@ -291,11 +293,32 @@ async def fetch_cornerstone_board(url: str, session) -> dict | None:
     cloud = (ctx.get("endpoints") or {}).get("cloud", "").rstrip("/")
     if not (token and culture_id is not None and cloud):
         return None
-    # SSRF: `cloud` is a full base URL read from the page's csod.context JS blob
-    # and is not anchored to a domain. Refuse private/internal (or unresolvable)
-    # hosts before POSTing to it (fail closed).
-    if await is_private_host(urlparse(cloud).hostname or ""):
+    # `cloud` and the JWT both come from the page. Never send that credential
+    # outside CSOD's HTTPS regional API boundary, and pin the vetted DNS answer
+    # into a fresh no-redirect session to close DNS-rebinding TOCTOU.
+    try:
+        cloud_parsed = urlparse(cloud)
+        cloud_host = (cloud_parsed.hostname or "").lower().rstrip(".")
+        cloud_port = cloud_parsed.port
+    except (TypeError, ValueError):
         return None
+    if (
+        cloud_parsed.scheme != "https"
+        or not _CSOD_CLOUD_HOST_RE.fullmatch(cloud_host)
+        or cloud_port not in {None, 443}
+        or cloud_parsed.username is not None
+        or cloud_parsed.password is not None
+    ):
+        return None
+    verdict = await check_host(cloud_host)
+    if verdict.blocked or not verdict.ips:
+        return None
+    api_session = wafer.AsyncSession(
+        resolve={cloud_host: verdict.ips},
+        follow_redirects=False,
+        max_rotations=0,
+        max_response_size=10 * 1024 * 1024,
+    )
 
     body = {
         "careerSiteId": cid,
@@ -316,7 +339,7 @@ async def fetch_cornerstone_board(url: str, session) -> dict | None:
         "customFieldRadios": [],
     }
     try:
-        resp = await session.post(
+        resp = await api_session.post(
             f"{cloud}/rec-job-search/external/jobs",
             json=body,
             headers={

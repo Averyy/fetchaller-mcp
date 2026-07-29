@@ -12,6 +12,9 @@ ENV/
 dist/
 build/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Environment
 .env
@@ -35,8 +38,10 @@ node_modules/
 # codex-dobby review artifacts
 .codex-dobby/
 
-# Baseline snapshots (local testing)
-baselines/
+# Baseline snapshots (local testing), except the versioned Reddit release evidence.
+baselines/*
+!baselines/reddit-parity-corpus.json
+!baselines/reddit-legacy-contract-v1.json
 
 # Runtime data (cookie caches, etc.)
 data/

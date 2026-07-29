@@ -10,6 +10,7 @@ import asyncio
 import sys
 from datetime import UTC, datetime
 
+from ..security.xss import safe_log_text
 from .aliases import (
     CATEGORY_MAP,
     CONDITION_MAP,
@@ -19,7 +20,10 @@ from .aliases import (
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] marketplace: {msg}", file=sys.stderr)
+    print(
+        f"[{datetime.now(UTC).isoformat()}] marketplace: {safe_log_text(msg)}",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +69,7 @@ async def _search_kijiji(
         condition=kj_condition,
     )
 
-    _log(f"Kijiji search: {url}")
+    _log("Kijiji search request")
     result = await get_listing(url)
 
     if "error" in result:
@@ -236,7 +240,7 @@ async def _search_facebook(
                 "platform": "facebook",
                 "error": "Facebook Marketplace blocked this request (IP reputation).",
             }
-        _log(f"FB GraphQL error: {e}")
+        _log(f"FB GraphQL error: {type(e).__name__}")
         return {"platform": "facebook", "error": f"Facebook Marketplace search failed: {e}"}
 
     errors = data.get("errors", [])
@@ -254,6 +258,27 @@ async def _search_facebook(
 # ---------------------------------------------------------------------------
 
 _ALL_PLATFORMS = ("kijiji", "craigslist", "facebook")
+_MARKETPLACE_TIMEOUT = 45.0
+
+
+def _consume_background_task(task: asyncio.Task) -> None:
+    """Retrieve a late task outcome without extending the caller deadline."""
+
+    try:
+        task.exception()
+    except BaseException:
+        pass
+
+
+def _cancel_and_detach(tasks) -> None:
+    """Cancel pending searches and retrieve every racing task outcome."""
+
+    for task in tasks:
+        if task.done():
+            _consume_background_task(task)
+            continue
+        task.cancel()
+        task.add_done_callback(_consume_background_task)
 
 
 async def search_marketplace(
@@ -286,22 +311,36 @@ async def search_marketplace(
         Dict with "content" (grouped markdown) or "error".
     """
     # Determine which platforms to search
-    if platforms:
-        active = [p.lower() for p in platforms if p.lower() in _ALL_PLATFORMS]
-    else:
+    if not isinstance(query, str) or not query.strip():
+        return {"error": "Query is required"}
+    if not isinstance(location, str) or not location.strip():
+        return {"error": "Location is required"}
+    if min_price is not None and min_price < 0:
+        return {"error": "min_price must be non-negative"}
+    if max_price is not None and max_price < 0:
+        return {"error": "max_price must be non-negative"}
+    if min_price is not None and max_price is not None and min_price > max_price:
+        return {"error": "min_price must be less than or equal to max_price"}
+
+    if platforms is None:
         active = list(_ALL_PLATFORMS)
+    else:
+        active = list(dict.fromkeys(p.lower() for p in platforms if isinstance(p, str) and p.lower() in _ALL_PLATFORMS))
 
     if not active:
         return {"error": "No valid platforms specified. Use: kijiji, craigslist, facebook"}
 
     # Detect Canadian location — used for Kijiji skip and FB geocode disambiguation
     from ..craigslist.locations import is_canadian_location
+
     is_canadian = is_canadian_location(location)
 
     # Skip Kijiji for non-Canadian locations
     if "kijiji" in active and not is_canadian:
         active.remove("kijiji")
-        _log(f"Skipping Kijiji for non-Canadian location: {location}")
+        _log("Skipping Kijiji for non-Canadian location")
+        if not active:
+            return {"error": "Kijiji only supports Canadian locations"}
 
     # Disambiguate location for Facebook geocoding (e.g. "vancouver" → Vancouver, WA without this)
     fb_location = location
@@ -318,42 +357,57 @@ async def search_marketplace(
 
     for platform in active:
         if platform == "kijiji":
-            tasks.append(asyncio.ensure_future(
-                _search_kijiji(query, location, category, sort, condition, min_price, max_price)
-            ))
+            tasks.append(
+                asyncio.ensure_future(_search_kijiji(query, location, category, sort, condition, min_price, max_price))
+            )
             platform_order.append("kijiji")
         elif platform == "craigslist":
-            tasks.append(asyncio.ensure_future(
-                _search_craigslist(
-                    query, location, category, sort, condition, min_price, max_price,
-                    config=config, browser_solver=browser_solver,
+            tasks.append(
+                asyncio.ensure_future(
+                    _search_craigslist(
+                        query,
+                        location,
+                        category,
+                        sort,
+                        condition,
+                        min_price,
+                        max_price,
+                        config=config,
+                        browser_solver=browser_solver,
+                    )
                 )
-            ))
+            )
             platform_order.append("craigslist")
         elif platform == "facebook":
-            tasks.append(asyncio.ensure_future(
-                _search_facebook(query, fb_location, category, sort, condition, min_price, max_price)
-            ))
+            tasks.append(
+                asyncio.ensure_future(
+                    _search_facebook(query, fb_location, category, sort, condition, min_price, max_price)
+                )
+            )
             platform_order.append("facebook")
 
     try:
-        results = await asyncio.wait_for(
-            asyncio.gather(*tasks, return_exceptions=True),
-            timeout=45,
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=_MARKETPLACE_TIMEOUT,
         )
-    except TimeoutError:
-        _log("Marketplace search timed out after 45s")
-        # Cancel any still-running tasks
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-        # Collect whatever finished
-        results = []
-        for t in tasks:
-            if t.done() and not t.cancelled():
-                results.append(t.result())
-            else:
-                results.append(TimeoutError("Platform search timed out"))
+    except asyncio.CancelledError:
+        _cancel_and_detach(tasks)
+        raise
+
+    if pending:
+        _log(f"Marketplace search timed out after {_MARKETPLACE_TIMEOUT:g}s")
+    results: list[object] = []
+    for task in tasks:
+        if task in pending:
+            task.cancel()
+            task.add_done_callback(_consume_background_task)
+            results.append(TimeoutError("Platform search timed out"))
+            continue
+        try:
+            results.append(task.result())
+        except BaseException as exc:
+            results.append(exc)
 
     # Collect results, skip errors
     sections: list[str] = []
@@ -367,13 +421,18 @@ async def search_marketplace(
             "facebook": "Facebook Marketplace",
         }.get(platform_name, platform_name)
 
+        if isinstance(result, asyncio.CancelledError):
+            _log(f"{platform_name} cancelled")
+            errors.append(f"{display_name}: search cancelled")
+            continue
+
         if isinstance(result, Exception):
-            _log(f"{platform_name} exception: {result}")
+            _log(f"{platform_name} exception: {type(result).__name__}")
             errors.append(f"{display_name}: {result}")
             continue
 
         if "error" in result:
-            _log(f"{platform_name} error: {result['error']}")
+            _log(f"{platform_name} returned an error")
             errors.append(f"{display_name}: {result['error']}")
             continue
 

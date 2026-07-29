@@ -28,10 +28,10 @@ def _search_title(url: str) -> str:
     return "Startup jobs"
 
 
-async def get_wellfound(url: str, browser_solver=None) -> dict:
+async def get_wellfound(url: str, browser_solver=None, timeout: float | None = None) -> dict:
     """Dispatch a wellfound.com URL to the right renderer."""
     try:
-        html = await api.fetch_html(url, browser_solver=browser_solver)
+        html = await api.fetch_html(url, browser_solver=browser_solver, timeout=timeout)
 
         # wellfound serves a 200 "Page not found - 404" shell for unresolvable URLs
         # (a bare /jobs/{id} with no slug, a wrong /company/{slug}, an expired job).

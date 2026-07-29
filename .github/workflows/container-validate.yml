@@ -1,0 +1,241 @@
+name: Validate and optionally publish container
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish the exact tested image to GHCR
+        required: true
+        type: boolean
+    secrets:
+      REDDIT_CLIENT_ID:
+        description: Reddit installed-app client ID for the exact OAuth parity reads
+        required: false
+      REDDIT_CLIENT_SECRET:
+        description: Reddit installed-app client secret for the exact OAuth parity reads
+        required: false
+      REDDIT_REFRESH_TOKEN:
+        description: Reddit refresh token restricted to read and wikiread
+        required: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - name: Install dependencies
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+
+      - name: Verify offline Reddit legacy contract and fixtures
+        run: |
+          uv run pytest -q \
+            tests/test_reddit_legacy_contract.py \
+            tests/test_reddit_parity_corpus.py \
+            tests/test_reddit.py
+
+      - name: Extract image metadata
+        if: inputs.publish
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=sha,prefix=
+
+      - name: Build browser-complete image
+        run: docker build --platform linux/amd64 -t fetchaller-mcp:test .
+
+      - name: Verify guarded real-Chrome egress canaries in exact image
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -e FETCHALLER_RUN_BROWSER_CANARY=1 \
+            -e UV_CACHE_DIR=/tmp/uv-cache \
+            --mount type=bind,src="$PWD",dst=/workspace,readonly \
+            --workdir /workspace \
+            fetchaller-mcp:test \
+            sh -c '
+              uv pip install --target /tmp/test-deps \
+                pytest==9.0.3 pytest-asyncio==1.3.0
+              PYTHONPATH=/tmp/test-deps:/workspace/src \
+                /app/.venv/bin/python -m pytest -q -p no:cacheprovider \
+                  tests/test_browser_proxy.py
+            '
+
+      - name: Verify unresponsive HTTP startup exits for restart
+        run: |
+          docker rm -f fetchaller-mcp-startup-watchdog 2>/dev/null || true
+          if docker run --name fetchaller-mcp-startup-watchdog \
+            --platform linux/amd64 \
+            -e HTTP_STARTUP_TIMEOUT=3 \
+            -e APP_SHUTDOWN_TIMEOUT=2 \
+            fetchaller-mcp:test \
+            python -c 'import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(("127.0.0.1",6000)); s.listen(); c,_=s.accept(); time.sleep(30)' \
+            --http; then
+            echo "unresponsive HTTP workload unexpectedly exited successfully" >&2
+            exit 1
+          fi
+          test "$(docker inspect --format '{{.State.ExitCode}}' fetchaller-mcp-startup-watchdog)" = 1
+          docker logs fetchaller-mcp-startup-watchdog 2>&1 \
+            | grep -q 'HTTP startup exceeded 3s; restarting service'
+          docker rm fetchaller-mcp-startup-watchdog
+
+      - name: Verify supervisor kills a workload that ignores TERM
+        run: |
+          docker rm -f fetchaller-mcp-term-watchdog 2>/dev/null || true
+          if docker run --name fetchaller-mcp-term-watchdog \
+            --platform linux/amd64 \
+            -e HTTP_STARTUP_TIMEOUT=2 \
+            -e APP_SHUTDOWN_TIMEOUT=2 \
+            fetchaller-mcp:test \
+            sh -c 'trap "" TERM; while :; do sleep 1; done' \
+            -- --http; then
+            echo "TERM-ignoring workload unexpectedly exited successfully" >&2
+            exit 1
+          fi
+          test "$(docker inspect --format '{{.State.ExitCode}}' fetchaller-mcp-term-watchdog)" = 1
+          docker logs fetchaller-mcp-term-watchdog 2>&1 \
+            | grep -q 'Application ignored TERM for 2s; forcing exit'
+          docker rm fetchaller-mcp-term-watchdog
+
+      - name: Verify exact image through real stdio MCP client
+        env:
+          SMOKE_STDIO_COMMAND: '["docker","run","--rm","-i","--platform","linux/amd64","-v","fetchaller-mcp-ci-stdio-data:/app/data","fetchaller-mcp:test","python","-m","fetchaller.main"]'
+        run: uv run python scripts/smoke_test.py
+
+      - name: Verify every reachable and OAuth Reddit route before publish
+        if: inputs.publish
+        env:
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_REFRESH_TOKEN: ${{ secrets.REDDIT_REFRESH_TOKEN }}
+          SMOKE_STDIO_COMMAND: '["docker","run","--rm","-i","--platform","linux/amd64","fetchaller-mcp:test","python","-m","fetchaller.main"]'
+        run: |
+          test -n "$REDDIT_CLIENT_ID"
+          test -n "$REDDIT_CLIENT_SECRET"
+          test -n "$REDDIT_REFRESH_TOKEN"
+          uv run python scripts/reddit_parity.py \
+            --strict \
+            --include-unstable \
+            --require-oauth \
+            --output /tmp/fetchaller-reddit-parity
+
+      - name: Boot authenticated HTTP server
+        run: |
+          docker volume create fetchaller-mcp-ci-data
+          docker run -d --name fetchaller-mcp-test \
+            -p 6000:6000 \
+            --restart unless-stopped \
+            -v fetchaller-mcp-ci-data:/app/data \
+            -e MCP_API_KEY=test-api-key-local \
+            -e MCP_SERVER_URL=http://localhost:6000 \
+            -e JWT_SECRET=ci-only-jwt-secret-at-least-32-bytes \
+            -e BROWSER_PREFLIGHT=1 \
+            fetchaller-mcp:test
+
+      - name: Verify health, MCP dispatch, and OAuth persistence seed
+        run: |
+          uv run python scripts/http_smoke_test.py \
+            --url http://localhost:6000 \
+            --api-key test-api-key-local \
+            --wait-seconds 150 \
+            --oauth-client-state /tmp/fetchaller-oauth-client.json \
+            --all-tools
+
+      - name: Verify graceful operator stop and restart
+        run: |
+          docker stop --timeout 75 fetchaller-mcp-test
+          test "$(docker inspect --format '{{.State.ExitCode}}' fetchaller-mcp-test)" = 0
+          docker start fetchaller-mcp-test
+          uv run python scripts/http_smoke_test.py \
+            --url http://localhost:6000 \
+            --api-key test-api-key-local \
+            --wait-seconds 150 \
+            --oauth-client-state /tmp/fetchaller-oauth-client.json \
+            --all-tools
+
+      - name: Verify display failure triggers automatic recovery
+        run: |
+          previous_restarts="$(docker inspect --format '{{.RestartCount}}' fetchaller-mcp-test)"
+          docker exec fetchaller-mcp-test sh -c '
+            kill "$(cat /tmp/fetchaller-xvfb.pid)" 2>/dev/null || true
+            kill "$(cat /tmp/fetchaller-jwm.pid)" 2>/dev/null || true
+          '
+          recovered=0
+          i=0
+          while [ "$i" -lt 150 ]; do
+            restarts="$(docker inspect --format '{{.RestartCount}}' fetchaller-mcp-test)"
+            health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' fetchaller-mcp-test)"
+            if [ "$restarts" -gt "$previous_restarts" ] && [ "$health" = healthy ]; then
+              recovered=1
+              break
+            fi
+            i=$((i + 1))
+            sleep 1
+          done
+          test "$recovered" = 1
+          uv run python scripts/http_smoke_test.py \
+            --url http://localhost:6000 \
+            --api-key test-api-key-local \
+            --wait-seconds 150 \
+            --oauth-client-state /tmp/fetchaller-oauth-client.json \
+            --all-tools
+
+      - name: Verify container recreation with the same volume
+        run: |
+          docker rm -f fetchaller-mcp-test
+          docker run -d --name fetchaller-mcp-test \
+            -p 6000:6000 \
+            --restart unless-stopped \
+            -v fetchaller-mcp-ci-data:/app/data \
+            -e MCP_API_KEY=test-api-key-local \
+            -e MCP_SERVER_URL=http://localhost:6000 \
+            -e JWT_SECRET=ci-only-jwt-secret-at-least-32-bytes \
+            -e BROWSER_PREFLIGHT=1 \
+            fetchaller-mcp:test
+          uv run python scripts/http_smoke_test.py \
+            --url http://localhost:6000 \
+            --api-key test-api-key-local \
+            --wait-seconds 150 \
+            --oauth-client-state /tmp/fetchaller-oauth-client.json \
+            --all-tools
+
+      - name: Log in to GHCR
+        if: inputs.publish
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Promote the exact tested image
+        if: inputs.publish
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag fetchaller-mcp:test "$tag"
+            docker push "$tag"
+          done <<EOF
+          $IMAGE_TAGS
+          EOF
+
+      - name: Show container logs
+        if: always()
+        run: docker logs fetchaller-mcp-test 2>&1 || true

@@ -1,15 +1,30 @@
 """PDF to markdown extraction via pymupdf4llm."""
 
 import asyncio
-import atexit
+import importlib
+import math
+import multiprocessing
 import re
-from concurrent.futures import ThreadPoolExecutor
+import sys
+import threading
+from contextlib import redirect_stdout
 from dataclasses import dataclass
+from io import StringIO
+from multiprocessing.connection import Connection
 
 import pymupdf
-import pymupdf4llm
+
+# pymupdf4llm currently emits its optional-layout advisory on stdout during
+# import. In stdio MCP mode every stdout line is JSON-RPC, including stdout
+# inherited by spawned parser workers, so that notice corrupts the protocol.
+# Suppress this optional-package advertisement while keeping the wire and
+# production logs byte-clean.
+with redirect_stdout(StringIO()):
+    pymupdf4llm = importlib.import_module("pymupdf4llm")
 
 from ..config import Config
+from ._slots import SlotHandle
+from .html import _worker_address_space_limit
 
 
 @dataclass
@@ -22,15 +37,117 @@ class PdfResult:
     error: str | None = None
 
 
-# Thread pool for blocking PDF operations
-_executor = ThreadPoolExecutor(max_workers=2)
+# Parsing untrusted PDFs in a thread cannot be stopped: cancelling the asyncio
+# Future only abandons the thread while MuPDF keeps running. A small per-loop
+# process limit plus one disposable process per document gives timeouts real
+# cancellation semantics and prevents a run of hostile documents from
+# exhausting the server.
+_MAX_CONCURRENT_PDF_PROCESSES = 1
+_MAX_PDF_INPUT_BYTES = 50 * 1024 * 1024
+_MAX_PDF_PAGES = 2_000
+_MAX_PDF_OUTPUT_CHARS = 4 * 1024 * 1024
+_PDF_PAGE_BATCH_SIZE = 25
+_MAX_PROCESSING_TIMEOUT = 120.0
+_PROCESS_POLL_INTERVAL = 0.01
+_PDF_SLOT_ATTRIBUTE = "_fetchaller_pdf_process_slots"
 
-# Register cleanup on exit to prevent thread leaks
-atexit.register(_executor.shutdown, wait=False)
+
+def _pdf_slots() -> asyncio.Semaphore:
+    """Return parser capacity bound to the current event loop."""
+    loop = asyncio.get_running_loop()
+    slots = getattr(loop, _PDF_SLOT_ATTRIBUTE, None)
+    if slots is None:
+        slots = asyncio.Semaphore(_MAX_CONCURRENT_PDF_PROCESSES)
+        setattr(loop, _PDF_SLOT_ATTRIBUTE, slots)
+    return slots
+
+
+def _process_context() -> multiprocessing.context.BaseContext:
+    """Choose a safe context while keeping documented ``python -c`` use working."""
+    methods = multiprocessing.get_all_start_methods()
+    main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+    if (not main_file or str(main_file).startswith("<")) and "fork" in methods:
+        # spawn/forkserver cannot re-import a ``-c`` or stdin main module.
+        # This fallback is limited to those interactive development entrypoints;
+        # the MCP server and normal scripts use an isolated clean-start method.
+        return multiprocessing.get_context("fork")
+    if sys.platform.startswith("linux") and "forkserver" in methods:
+        return multiprocessing.get_context("forkserver")
+    return multiprocessing.get_context("spawn")
+
+
+def _apply_worker_limits(timeout: float) -> None:
+    """Bound a parser worker's memory and CPU on platforms that support it."""
+    if not sys.platform.startswith("linux"):
+        return
+
+    try:
+        import resource
+
+        address_soft, address_hard = resource.getrlimit(resource.RLIMIT_AS)
+        address_limit = _worker_address_space_limit()
+        if address_soft != resource.RLIM_INFINITY:
+            address_limit = min(address_limit, address_soft)
+        if address_hard != resource.RLIM_INFINITY:
+            address_limit = min(address_limit, address_hard)
+        resource.setrlimit(resource.RLIMIT_AS, (address_limit, address_hard))
+
+        cpu_soft, cpu_hard = resource.getrlimit(resource.RLIMIT_CPU)
+        cpu_limit = max(1, min(120, math.ceil(timeout) + 1))
+        if cpu_soft != resource.RLIM_INFINITY:
+            cpu_limit = min(cpu_limit, cpu_soft)
+        if cpu_hard != resource.RLIM_INFINITY:
+            cpu_limit = min(cpu_limit, cpu_hard)
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_hard))
+    except (OSError, ValueError):
+        # The parent still enforces a hard wall-clock timeout and kills this
+        # disposable process. RLIMIT is defense in depth for Linux deployments.
+        pass
+
+
+def _stop_process(process: multiprocessing.Process) -> None:
+    """Terminate and synchronously reap a disposable parser process."""
+    if process.pid is None:
+        return
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=0.25)
+    if process.is_alive():
+        process.kill()
+        process.join()
+    else:
+        process.join(timeout=0)
+
+
+def _bounded_text(text: str, max_chars: int, marker: str) -> str:
+    """Bound worker output while preserving an explicit truncation marker."""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(marker):
+        return marker[:max_chars]
+    return text[: max_chars - len(marker)].rstrip() + marker
+
+
+def _pdf_size_error(size: int, max_size: int) -> PdfResult:
+    """Build a precise size-limit error for both tiny tests and real PDFs."""
+    if size < 1024 * 1024:
+        size_label = f"{size} bytes"
+    else:
+        size_label = f"{size / (1024 * 1024):.1f}MB"
+    if max_size < 1024 * 1024:
+        max_label = f"{max_size} bytes"
+    else:
+        max_label = f"{max_size // (1024 * 1024)}MB"
+    return PdfResult(
+        text="",
+        page_count=0,
+        error=f"PDF too large: {size_label} (max {max_label})",
+    )
 
 
 def _postprocess_markdown(text: str) -> str:
     """Clean up pymupdf4llm markdown output."""
+
     # Collapse table rows where merged cells cause duplication.
     # pymupdf4llm repeats the same text across all columns for merged rows.
     def _dedup_table_row(match: re.Match) -> str:
@@ -80,28 +197,26 @@ def _postprocess_markdown(text: str) -> str:
 def _extract_pdf_sync(
     content: bytes,
     max_size: int,
+    max_pages: int = _MAX_PDF_PAGES,
+    max_output_chars: int = _MAX_PDF_OUTPUT_CHARS,
+    absolute_max_size: int = _MAX_PDF_INPUT_BYTES,
 ) -> PdfResult:
     """
-    Synchronous PDF extraction (runs in thread pool).
-
-    Note: Timeout is enforced at the async level via asyncio.wait_for,
-    not within this sync function.
+    Synchronous PDF extraction (runs inside a disposable worker process).
 
     Args:
         content: PDF file content
         max_size: Maximum allowed PDF size in bytes
+        max_pages: Maximum number of pages accepted
+        max_output_chars: Maximum extracted markdown returned to the parent
+        absolute_max_size: Non-configurable safety ceiling for input bytes
 
     Returns:
         PdfResult with text, page count, and any errors
     """
-    # Check size
-    if len(content) > max_size:
-        size_mb = len(content) / (1024 * 1024)
-        return PdfResult(
-            text="",
-            page_count=0,
-            error=f"PDF too large: {size_mb:.1f}MB (max {max_size // (1024 * 1024)}MB)",
-        )
+    effective_max_size = max(0, min(max_size, absolute_max_size))
+    if len(content) > effective_max_size:
+        return _pdf_size_error(len(content), effective_max_size)
 
     doc = None
     try:
@@ -116,9 +231,53 @@ def _extract_pdf_sync(
             )
 
         page_count = len(doc)
-        raw = pymupdf4llm.to_markdown(
-            doc, ignore_images=True, ignore_graphics=True, show_progress=False
-        )
+        if page_count > max_pages:
+            return PdfResult(
+                text="",
+                page_count=page_count,
+                error=f"PDF has too many pages: {page_count} (max {max_pages}).",
+            )
+
+        # pymupdf4llm's non-chunked mode repeatedly concatenates the complete
+        # document string. Use its page chunks and a shared header detector so
+        # normal output stays identical while large documents avoid quadratic
+        # string growth and stop once the useful output bound is reached.
+        # Bake forms/annotations before header detection, matching
+        # pymupdf4llm.to_markdown()'s ordering for ordinary whole-document use.
+        if doc.is_form_pdf or (doc.is_pdf and doc.has_annots()):
+            doc.bake()
+        header_info = pymupdf4llm.IdentifyHeaders(doc)
+        raw_parts: list[str] = []
+        raw_size = 0
+        truncated = False
+        for first_page in range(0, page_count, _PDF_PAGE_BATCH_SIZE):
+            pages = list(
+                range(
+                    first_page,
+                    min(first_page + _PDF_PAGE_BATCH_SIZE, page_count),
+                )
+            )
+            chunks = pymupdf4llm.to_markdown(
+                doc,
+                pages=pages,
+                hdr_info=header_info,
+                ignore_images=True,
+                ignore_graphics=True,
+                page_chunks=True,
+                show_progress=False,
+            )
+            for chunk in chunks:
+                page_text = chunk.get("text", "")
+                remaining = max_output_chars - raw_size
+                if len(page_text) > remaining:
+                    raw_parts.append(page_text[: max(0, remaining)])
+                    truncated = True
+                    break
+                raw_parts.append(page_text)
+                raw_size += len(page_text)
+            if truncated:
+                break
+        raw = "".join(raw_parts)
 
         # Check if PDF is empty/scanned
         if not raw or not raw.strip():
@@ -129,6 +288,12 @@ def _extract_pdf_sync(
             )
 
         text = _postprocess_markdown(raw)
+        if truncated or len(text) > max_output_chars:
+            text = _bounded_text(
+                text,
+                max_output_chars,
+                "\n\n[PDF extraction truncated at the safe processing limit]\n",
+            )
 
         return PdfResult(
             text=text,
@@ -158,6 +323,251 @@ def _extract_pdf_sync(
             doc.close()
 
 
+def _pdf_worker(
+    send_connection: Connection,
+    content: bytes,
+    max_size: int,
+    max_pages: int,
+    max_output_chars: int,
+    timeout: float,
+) -> None:
+    """Run one PDF parse in an OS-isolated worker."""
+    try:
+        _apply_worker_limits(timeout)
+        result = _extract_pdf_sync(
+            content,
+            max_size,
+            max_pages=max_pages,
+            max_output_chars=max_output_chars,
+        )
+        send_connection.send(("result", result))
+    except BaseException:
+        # Never serialize exception details from a native parser boundary.
+        try:
+            send_connection.send(("error", None))
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+    finally:
+        send_connection.close()
+
+
+def _pdf_worker_from_pipe(
+    send_connection: Connection,
+    task_connection: Connection,
+) -> None:
+    """Receive PDF bytes after clean worker startup."""
+
+    try:
+        task = task_connection.recv()
+    except (EOFError, OSError):
+        send_connection.close()
+        return
+    finally:
+        task_connection.close()
+    _pdf_worker(send_connection, *task)
+
+
+def _close_and_stop_pdf_process(
+    process: multiprocessing.Process,
+    *connections: Connection,
+) -> None:
+    for connection in connections:
+        connection.close()
+    _stop_process(process)
+
+
+def _defer_pdf_process_cleanup(
+    process: multiprocessing.Process,
+    handle: SlotHandle,
+    *connections: Connection,
+) -> None:
+    """Reap after cancellation, then hand the parser slot back.
+
+    Without the handle the caller's ``finally`` released the slot while this
+    thread was still reaping, so a cancellation storm could run more children
+    than the cap allows.
+    """
+
+    def _close_stop_and_release() -> None:
+        try:
+            _close_and_stop_pdf_process(process, *connections)
+        finally:
+            handle.release_from_thread()
+
+    cleanup_thread = threading.Thread(
+        target=_close_stop_and_release,
+        name="fetchaller-pdf-parser-cleanup",
+        daemon=True,
+    )
+    handle.transfer()
+    try:
+        cleanup_thread.start()
+    except RuntimeError:
+        handle.untransfer()
+        _close_and_stop_pdf_process(process, *connections)
+
+
+def _start_pdf_process(
+    process: multiprocessing.Process,
+    connections: tuple[Connection, ...],
+    state: dict[str, bool],
+    state_lock: threading.Lock,
+) -> bool:
+    try:
+        process.start()
+    except BaseException:
+        _close_and_stop_pdf_process(process, *connections)
+        raise
+    cleanup = False
+    with state_lock:
+        state["started"] = True
+        if state["cancelled"] and not state["cleanup_claimed"]:
+            state["cleanup_claimed"] = True
+            cleanup = True
+    if cleanup:
+        _close_and_stop_pdf_process(process, *connections)
+        return False
+    return True
+
+
+def _stop_pdf_process_and_release(process, handle: SlotHandle) -> None:
+    """Reap ``process``, then hand its slot back. Runs on a cleanup thread."""
+    try:
+        _stop_process(process)
+    finally:
+        handle.release_from_thread()
+
+
+async def _extract_pdf_in_process(
+    content: bytes,
+    max_size: int,
+    timeout: float,
+    handle: SlotHandle,
+) -> PdfResult:
+    """Start, monitor, and always reap one disposable parser process."""
+    context = _process_context()
+    try:
+        receive_connection, send_connection = context.Pipe(duplex=False)
+        task_receive_connection, task_send_connection = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_pdf_worker_from_pipe,
+            args=(
+                send_connection,
+                task_receive_connection,
+            ),
+            name="fetchaller-pdf-parser",
+            daemon=True,
+        )
+    except (OSError, RuntimeError):
+        return PdfResult(
+            text="",
+            page_count=0,
+            error="PDF parsing failed because an isolated parser could not be started.",
+        )
+
+    state = {
+        "started": False,
+        "cancelled": False,
+        "cleanup_claimed": False,
+    }
+    state_lock = threading.Lock()
+    connections = (
+        receive_connection,
+        send_connection,
+        task_receive_connection,
+        task_send_connection,
+    )
+    try:
+        started = await asyncio.to_thread(
+            _start_pdf_process,
+            process,
+            connections,
+            state,
+            state_lock,
+        )
+    except asyncio.CancelledError:
+        cleanup = False
+        with state_lock:
+            state["cancelled"] = True
+            if state["started"] and not state["cleanup_claimed"]:
+                state["cleanup_claimed"] = True
+                cleanup = True
+        if cleanup:
+            _defer_pdf_process_cleanup(process, handle, *connections)
+        raise
+    except (AssertionError, OSError, RuntimeError):
+        send_connection.close()
+        receive_connection.close()
+        task_receive_connection.close()
+        task_send_connection.close()
+        await asyncio.to_thread(_stop_process, process)
+        return PdfResult(
+            text="",
+            page_count=0,
+            error="PDF parsing failed because an isolated parser could not be started.",
+        )
+    if not started:
+        raise asyncio.CancelledError
+    send_connection.close()
+    task_receive_connection.close()
+
+    try:
+        await asyncio.to_thread(
+            task_send_connection.send,
+            (
+                content,
+                max_size,
+                _MAX_PDF_PAGES,
+                _MAX_PDF_OUTPUT_CHARS,
+                timeout,
+            ),
+        )
+        task_send_connection.close()
+        while True:
+            if receive_connection.poll():
+                try:
+                    kind, payload = receive_connection.recv()
+                except EOFError:
+                    break
+                if kind == "result" and isinstance(payload, PdfResult):
+                    return payload
+                break
+            if not process.is_alive():
+                break
+            await asyncio.sleep(_PROCESS_POLL_INTERVAL)
+    finally:
+        receive_connection.close()
+        task_send_connection.close()
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            # Hold the slot until the child is actually reaped; releasing here
+            # let a cancellation storm run more parsers than the cap allows.
+            # Transfer only AFTER the thread is running. Transferring first
+            # made a failed Thread.start() permanently leak the permit: the
+            # owner's release() had already become a no-op and no thread was
+            # alive to release it.
+            cleanup_thread = threading.Thread(
+                target=_stop_pdf_process_and_release,
+                args=(process, handle),
+                name="fetchaller-pdf-parser-cleanup",
+                daemon=True,
+            )
+            handle.transfer()
+            try:
+                cleanup_thread.start()
+            except RuntimeError:
+                handle.untransfer()
+                await asyncio.to_thread(_stop_process, process)
+        else:
+            await asyncio.to_thread(_stop_process, process)
+
+    return PdfResult(
+        text="",
+        page_count=0,
+        error="PDF parsing failed. The parser process exited unexpectedly.",
+    )
+
+
 async def extract_pdf(
     content: bytes,
     config: Config | None = None,
@@ -174,19 +584,42 @@ async def extract_pdf(
     """
     max_size = config.max_pdf_size if config else 50 * 1024 * 1024
     timeout = config.pdf_processing_timeout if config else 30
+    effective_max_size = max(0, min(max_size, _MAX_PDF_INPUT_BYTES))
 
-    loop = asyncio.get_running_loop()
+    if len(content) > effective_max_size:
+        return _pdf_size_error(len(content), effective_max_size)
+    try:
+        timeout_value = float(timeout)
+    except (TypeError, ValueError):
+        timeout_value = 0
+    if not math.isfinite(timeout_value) or timeout_value <= 0:
+        return PdfResult(
+            text="",
+            page_count=0,
+            error="PDF processing timeout must be greater than zero.",
+        )
+    timeout_value = min(timeout_value, _MAX_PROCESSING_TIMEOUT)
 
     try:
-        result = await asyncio.wait_for(
-            loop.run_in_executor(_executor, _extract_pdf_sync, content, max_size),
-            timeout=timeout,
-        )
-        return result
+        async with asyncio.timeout(timeout_value):
+            slots = _pdf_slots()
+            await slots.acquire()
+            handle = SlotHandle(slots, asyncio.get_running_loop())
+            try:
+                return await _extract_pdf_in_process(
+                    content,
+                    effective_max_size,
+                    timeout_value,
+                    handle,
+                )
+            finally:
+                # No-op when a cleanup thread has taken ownership; that thread
+                # releases only after the child is actually gone.
+                handle.release()
 
     except TimeoutError:
         return PdfResult(
             text="",
             page_count=0,
-            error=f"PDF parsing timed out after {timeout}s. The PDF may be too complex or large to process.",
+            error=(f"PDF parsing timed out after {timeout_value:g}s. The PDF may be too complex or large to process."),
         )

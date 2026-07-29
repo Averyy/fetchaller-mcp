@@ -1,15 +1,18 @@
 """Tests for web search module (Google SSR + DuckDuckGo)."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.fetchaller.search import (
+    _MAX_RESULTS_OUTPUT_CHARS,
     _cache,
     _dedup_and_merge,
     _dedup_key,
     _format_output,
+    _format_results,
     search,
 )
 from src.fetchaller.search.ddg import extract_results as ddg_extract
@@ -29,6 +32,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # ---------------------------------------------------------------------------
 # Google extraction
 # ---------------------------------------------------------------------------
+
 
 class TestGoogleExtraction:
     """Test Google SSR result extraction."""
@@ -76,6 +80,14 @@ class TestGoogleExtraction:
         response.text = ""
         response.status_code = 429
         assert is_captcha(response) is True
+
+    def test_captcha_check_handles_relative_response_url(self):
+        """A malformed/relative response URL has no hostname and must not crash."""
+        response = MagicMock()
+        response.url = "/search?q=test"
+        response.text = ""
+        response.status_code = 200
+        assert is_captcha(response) is False
 
     def test_normal_response_not_captcha(self):
         """Normal 200 response with results is NOT detected as CAPTCHA."""
@@ -234,6 +246,7 @@ class TestGoogleExtraction:
 # DDG extraction
 # ---------------------------------------------------------------------------
 
+
 class TestDDGExtraction:
     """Test DuckDuckGo HTML extraction."""
 
@@ -280,10 +293,32 @@ class TestDDGExtraction:
         results = ddg_extract("<html><body></body></html>")
         assert results == []
 
+    def test_adversarial_result_count_and_fields_are_bounded(self):
+        huge = "x" * 20_000
+        html = (
+            "<html><body>"
+            + "".join(
+                (
+                    '<div class="result">'
+                    f'<a class="result__a" href="https://example.com/{i}">'
+                    f"{huge}</a>"
+                    f'<div class="result__snippet">{huge}</div>'
+                    "</div>"
+                )
+                for i in range(2_000)
+            )
+            + "</body></html>"
+        )
+        results = ddg_extract(html)
+        assert len(results) == 20
+        assert all(len(result.title) <= 500 for result in results)
+        assert all(len(result.snippet) <= 1_000 for result in results)
+
 
 # ---------------------------------------------------------------------------
 # Dedup and merge
 # ---------------------------------------------------------------------------
+
 
 class TestDedupAndMerge:
     """Test result dedup and merge logic."""
@@ -336,6 +371,7 @@ class TestDedupAndMerge:
 # Output format
 # ---------------------------------------------------------------------------
 
+
 class TestOutputFormat:
     """Test search output formatting."""
 
@@ -351,6 +387,20 @@ class TestOutputFormat:
         assert "   https://example.com/one" in output
         assert "   Snippet one" in output
         assert "2. Title Two" in output
+
+    def test_adversarial_output_ends_at_complete_result_boundary(self):
+        results = [
+            SearchResult(
+                "t" * 10_000,
+                f"https://example.com/{index}",
+                "s" * 100_000,
+            )
+            for index in range(1_000)
+        ]
+        output = _format_results(results)
+        assert len(output) <= _MAX_RESULTS_OUTPUT_CHARS
+        assert "trailing search results" in output
+        assert output.count("https://example.com/") > 0
 
     def test_captcha_output(self):
         """CAPTCHA summary shows 'captcha' for google count."""
@@ -386,7 +436,12 @@ class TestTransportErrorsAreVisible:
 
     def test_both_engines_failed_says_so(self):
         output = _format_output(
-            "reddit api rate limits", [], 0, 0, False, 1,
+            "reddit api rate limits",
+            [],
+            0,
+            0,
+            False,
+            1,
             google_error="ConnectTimeout: timed out",
             ddg_error="ConnectTimeout: timed out",
         )
@@ -401,7 +456,12 @@ class TestTransportErrorsAreVisible:
     def test_partial_failure_keeps_results_and_flags_engine(self):
         results = [SearchResult("DDG hit", "https://ddg.com/r", "snippet")]
         output = _format_output(
-            "query", results, 0, 1, False, 1,
+            "query",
+            results,
+            0,
+            1,
+            False,
+            1,
             google_error="HTTP 503",
         )
         assert "google: ERROR" in output
@@ -461,7 +521,7 @@ class TestEngineErrorReturns:
 
     async def test_ddg_success_returns_no_error(self):
         resp = MagicMock()
-        resp.text = "<html><body></body></html>"
+        resp.text = '<html><body><div class="no-results">No results found for q</div></body></html>'
         resp.url = "https://html.duckduckgo.com/html/"
         resp.status_code = 200
         session = MagicMock()
@@ -469,10 +529,36 @@ class TestEngineErrorReturns:
         results, error = await ddg_search(session, "q")
         assert error is None
 
+    @pytest.mark.parametrize(
+        ("engine", "expected"),
+        [
+            ("google", "Unexpected Google response shape"),
+            ("ddg", "Unexpected DuckDuckGo response shape"),
+        ],
+    )
+    async def test_unknown_200_shape_is_an_error(self, engine, expected):
+        """Markup breakage cannot masquerade as a legitimate zero-result query."""
+        resp = MagicMock()
+        resp.text = "<html><body>unknown provider shell</body></html>"
+        resp.url = "https://www.google.com/search?q=q" if engine == "google" else "https://html.duckduckgo.com/html/"
+        resp.status_code = 200
+        session = MagicMock()
+        session.get = AsyncMock(return_value=resp)
+
+        if engine == "google":
+            results, captcha, error = await google_search(session, "q", 1)
+            assert captcha is False
+        else:
+            results, error = await ddg_search(session, "q")
+
+        assert results == []
+        assert expected in error
+
 
 # ---------------------------------------------------------------------------
 # Integration: search() function with mocked HTTP
 # ---------------------------------------------------------------------------
+
 
 class TestSearchIntegration:
     """Integration tests for the search() pipeline with mocked HTTP."""
@@ -497,8 +583,10 @@ class TestSearchIntegration:
         async def _fast_ddg(session, query):
             return await search_ddg(session, query)
 
-        with patch("src.fetchaller.search._rate_limited_google", _fast_google), \
-             patch("src.fetchaller.search._rate_limited_ddg", _fast_ddg):
+        with (
+            patch("src.fetchaller.search._rate_limited_google", _fast_google),
+            patch("src.fetchaller.search._rate_limited_ddg", _fast_ddg),
+        ):
             yield
 
         _cache.clear()
@@ -525,6 +613,350 @@ class TestSearchIntegration:
         assert "error" in result
 
     @pytest.mark.asyncio
+    async def test_overlong_query_is_rejected_without_hitting_engines(self):
+        """Bound query memory, provider URLs, cache keys, output, and logs."""
+        with patch("src.fetchaller.search._get_session") as get_session:
+            result = await search("x" * 513, page=1)
+
+        assert result == {"error": "Search query is too long (maximum 512 characters)."}
+        get_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_schema_maximum_query_length_is_accepted(self):
+        """The implementation accepts the MCP schema's exact maxLength."""
+
+        async def google(*_args):
+            return [
+                SearchResult("Result", "https://example.com/", "snippet")
+            ], False, None
+
+        async def ddg(*_args):
+            return [], None
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+            patch("src.fetchaller.search._rate_limited_ddg", ddg),
+        ):
+            result = await search("x" * 512, page=1)
+
+        assert "content" in result
+        assert "Result" in result["content"]
+
+    @pytest.mark.parametrize("page", [0, -1, 101])
+    @pytest.mark.asyncio
+    async def test_page_out_of_range_is_rejected(self, page):
+        """Provider pagination is bounded before sessions or cache access."""
+        with patch("src.fetchaller.search._get_session") as get_session:
+            result = await search("query", page=page)
+
+        assert result == {"error": "Search page must be between 1 and 100."}
+        get_session.assert_not_called()
+
+    @pytest.mark.parametrize("page", [True, 1.5, "2"])
+    @pytest.mark.asyncio
+    async def test_noninteger_page_is_rejected(self, page):
+        """Direct callers get the same strict integer contract as MCP schema."""
+        result = await search("query", page=page)
+
+        assert result == {"error": "Search page must be an integer."}
+
+    @pytest.mark.asyncio
+    async def test_query_control_characters_are_normalized(self):
+        """Control characters cannot inject lines into summaries or log fields."""
+        google_result = [SearchResult("Google", "https://google-result.example/", "snippet")]
+
+        async def google(*_args):
+            return google_result, False, None
+
+        async def ddg(*_args):
+            return [], None
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+            patch("src.fetchaller.search._rate_limited_ddg", ddg),
+        ):
+            result = await search("  alpha\r\nINJECT\tbeta  ", page=1)
+
+        assert result["content"].startswith('Search: "alpha INJECT beta" | google: 1')
+        assert "\r" not in result["content"]
+
+    @pytest.mark.asyncio
+    async def test_parallel_engine_error_does_not_abandon_sibling(self):
+        """One engine error still allows the other engine to return results."""
+        ddg_finished = asyncio.Event()
+
+        async def google(*_args):
+            raise RuntimeError("google failed")
+
+        async def ddg(*_args):
+            await asyncio.sleep(0)
+            ddg_finished.set()
+            return [SearchResult("DDG", "https://ddg-result.example/", "snippet")], None
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+            patch("src.fetchaller.search._rate_limited_ddg", ddg),
+        ):
+            result = await search("partial engine error", page=1)
+
+        assert ddg_finished.is_set()
+        assert "Partial results" in result["content"]
+        assert "google: ERROR" in result["content"]
+        assert "DDG" in result["content"]
+
+    @pytest.mark.asyncio
+    async def test_outer_cancellation_cancels_and_drains_both_engines(self):
+        """Cancelling search cannot leave either provider task running."""
+        google_started = asyncio.Event()
+        ddg_started = asyncio.Event()
+        google_finished = asyncio.Event()
+        ddg_finished = asyncio.Event()
+        never = asyncio.Event()
+
+        async def google(*_args):
+            google_started.set()
+            try:
+                await never.wait()
+            finally:
+                google_finished.set()
+
+        async def ddg(*_args):
+            ddg_started.set()
+            try:
+                await never.wait()
+            finally:
+                ddg_finished.set()
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+            patch("src.fetchaller.search._rate_limited_ddg", ddg),
+        ):
+            search_task = asyncio.create_task(search("cancel both engines", page=1))
+            await asyncio.wait_for(google_started.wait(), timeout=1)
+            await asyncio.wait_for(ddg_started.wait(), timeout=1)
+            search_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await search_task
+
+        await asyncio.wait_for(google_finished.wait(), timeout=1)
+        await asyncio.wait_for(ddg_finished.wait(), timeout=1)
+        assert not [
+            task for task in asyncio.all_tasks() if task.get_name().startswith("fetchaller-search-") and not task.done()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_outer_cancellation_detaches_noncooperative_engines(self):
+        """Provider cancellation suppression cannot hold an MCP caller open."""
+        release = asyncio.Event()
+        started = [asyncio.Event(), asyncio.Event()]
+        finished = [asyncio.Event(), asyncio.Event()]
+
+        async def noncooperative(index):
+            started[index].set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            finally:
+                finished[index].set()
+
+        async def google(*_args):
+            await noncooperative(0)
+            return [], False, None
+
+        async def ddg(*_args):
+            await noncooperative(1)
+            return [], None
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+            patch("src.fetchaller.search._rate_limited_ddg", ddg),
+        ):
+            caller = asyncio.create_task(search("noncooperative cancellation"))
+            await asyncio.gather(*(event.wait() for event in started))
+            caller.cancel()
+            done, _ = await asyncio.wait({caller}, timeout=0.2)
+            try:
+                assert caller in done
+                with pytest.raises(asyncio.CancelledError):
+                    caller.result()
+            finally:
+                release.set()
+                await asyncio.gather(*(event.wait() for event in finished))
+
+    def test_cancel_cleanup_retrieves_an_already_done_exception(self):
+        """Cancellation races must not emit unhandled task exceptions."""
+        import src.fetchaller.search as search_mod
+
+        done = MagicMock()
+        done.done.return_value = True
+
+        search_mod._cancel_and_detach((done,))
+
+        done.exception.assert_called_once_with()
+        done.cancel.assert_not_called()
+        done.add_done_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_child_self_cancellation_is_engine_failure_not_outer_cancel(
+        self,
+    ):
+        """A provider cancelling itself cannot cancel the completed sibling."""
+
+        async def google(*_args):
+            raise asyncio.CancelledError
+
+        async def ddg(*_args):
+            return [SearchResult("DDG", "https://ddg-result.example/", "snippet")], None
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+            patch("src.fetchaller.search._rate_limited_ddg", ddg),
+        ):
+            result = await search("self cancelled provider", page=1)
+
+        assert "content" in result
+        assert "Partial results" in result["content"]
+        assert "CancelledError" in result["content"]
+        assert "DDG" in result["content"]
+
+    @pytest.mark.asyncio
+    async def test_page_two_provider_self_cancellation_is_search_failure(self):
+        """A child self-cancel must not cancel its MCP request task."""
+
+        async def google(*_args):
+            raise asyncio.CancelledError
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+        ):
+            result = await search("self cancelled provider page two", page=2)
+
+        assert "error" in result
+        assert "CancelledError" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_search_log_uses_length_not_query_text(self, capsys):
+        """Search terms and embedded secrets are absent from stderr."""
+        query = "private-token=supersecret"
+
+        async def google(*_args):
+            return [], False, None
+
+        async def ddg(*_args):
+            return [], None
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+            patch("src.fetchaller.search._rate_limited_ddg", ddg),
+        ):
+            await search(query, page=1)
+
+        stderr = capsys.readouterr().err
+        assert query not in stderr
+        assert "supersecret" not in stderr
+        assert f"query_len={len(query)}" in stderr
+
+    @pytest.mark.asyncio
+    async def test_engine_exception_diagnostic_is_bounded_and_redacted(
+        self,
+        capsys,
+    ):
+        """Transport exception URLs/secrets/control text cannot leak to logs."""
+        secret = "never-log-this"
+        error = RuntimeError(
+            f"GET https://user:password@example.com/private/path?token={secret}\nINJECT" + ("x" * 1_000)
+        )
+
+        async def google(*_args):
+            raise error
+
+        async def ddg(*_args):
+            return [], None
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=MagicMock(),
+            ),
+            patch("src.fetchaller.search._rate_limited_google", google),
+            patch("src.fetchaller.search._rate_limited_ddg", ddg),
+        ):
+            result = await search("safe query", page=1)
+
+        stderr = capsys.readouterr().err
+        assert secret not in stderr
+        assert "password" not in stderr
+        assert "/private/path" not in stderr
+        assert "\nINJECT" not in stderr
+        assert len(stderr) < 1_000
+        assert secret not in result["content"]
+
+    @pytest.mark.asyncio
     async def test_full_pipeline_with_fixtures(self):
         """Full pipeline: mock Google + DDG returning fixture HTML, verify merged output."""
         google_html = (FIXTURES / "google_ssr.html").read_text()
@@ -545,8 +977,10 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
-             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
+        with (
+            patch("src.fetchaller.search._get_session", return_value=mock_session),
+            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
+        ):
             result = await search("python asyncio tutorial", page=1)
 
         assert "content" in result
@@ -576,8 +1010,10 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
-             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
+        with (
+            patch("src.fetchaller.search._get_session", return_value=mock_session),
+            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
+        ):
             result1 = await search("cache test query", page=1)
             first_call_count = call_count
             result2 = await search("cache test query", page=1)
@@ -602,8 +1038,10 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
-             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
+        with (
+            patch("src.fetchaller.search._get_session", return_value=mock_session),
+            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
+        ):
             result = await search("captcha test", page=1)
 
         assert "content" in result
@@ -614,23 +1052,59 @@ class TestSearchIntegration:
         assert cached[3] is True  # captcha flag preserved
 
     @pytest.mark.asyncio
-    async def test_empty_results_not_cached(self):
-        """Empty results (both engines failed) are NOT cached — may be transient."""
+    async def test_explicit_empty_results_not_cached(self):
+        """Honest zero results are returned normally but never cached."""
+
         async def mock_get(url, **kwargs):
             if "google.com" in url:
-                return self._mock_response("<html><body></body></html>")
-            return self._mock_response("<html><body></body></html>", url="https://html.duckduckgo.com/html/?q=test")
+                return self._mock_response("<html><body>No results found for query</body></html>")
+            return self._mock_response(
+                '<html><body><div class="no-results">No results found for query</div></body></html>',
+                url="https://html.duckduckgo.com/html/?q=test",
+            )
 
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
-             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
+        with (
+            patch("src.fetchaller.search._get_session", return_value=mock_session),
+            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
+        ):
             result = await search("empty results test", page=1)
 
         assert "content" in result
         assert "No results found." in result["content"]
         assert ("empty results test", 1) not in _cache
+
+    @pytest.mark.asyncio
+    async def test_all_engine_shape_failures_return_error_not_content(self):
+        """Total provider failure must set MCP isError via the error key."""
+
+        async def mock_get(url, **kwargs):
+            return self._mock_response(
+                "<html><body>unrecognized changed markup</body></html>",
+                url=url,
+            )
+
+        mock_session = AsyncMock()
+        mock_session.get = mock_get
+
+        with (
+            patch(
+                "src.fetchaller.search._get_session",
+                return_value=mock_session,
+            ),
+            patch(
+                "src.fetchaller.search._get_ddg_session",
+                return_value=mock_session,
+            ),
+        ):
+            result = await search("both providers broken", page=1)
+
+        assert "content" not in result
+        assert "Search FAILED" in result["error"]
+        assert "Unexpected Google response shape" in result["error"]
+        assert "Unexpected DuckDuckGo response shape" in result["error"]
 
     @pytest.mark.asyncio
     async def test_page2_skips_ddg(self):
@@ -645,8 +1119,10 @@ class TestSearchIntegration:
         mock_session = AsyncMock()
         mock_session.get = mock_get
 
-        with patch("src.fetchaller.search._get_session", return_value=mock_session), \
-             patch("src.fetchaller.search._get_ddg_session", return_value=mock_session):
+        with (
+            patch("src.fetchaller.search._get_session", return_value=mock_session),
+            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
+        ):
             result = await search("page 2 test", page=2)
 
         assert "content" in result
@@ -660,6 +1136,7 @@ class TestSearchIntegration:
 # ---------------------------------------------------------------------------
 # Dedup key
 # ---------------------------------------------------------------------------
+
 
 class TestDedupKey:
     """Test URL dedup key generation."""

@@ -1,6 +1,6 @@
 """URL normalization for consistent caching."""
 
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import unquote_plus, urlparse, urlunparse
 
 from ..config import TRACKING_PARAMS
 
@@ -16,36 +16,47 @@ def normalize_url(url: str) -> str:
 
     Benefits:
     - Same page with different tracking params -> single cache entry
-    - ?b=2&a=1 and ?a=1&b=2 -> same cache key
+    - Query order stays intact because some origins assign it meaning
     - Reduces redundant fetches
     """
     parsed = urlparse(url)
+    query_was_present = "?" in url.split("#", 1)[0]
 
-    # Lowercase scheme and host
+    # Lowercase only the scheme and hostname. Userinfo is case-sensitive and
+    # must never collide merely because it appeared in the same netloc.
     scheme = parsed.scheme.lower()
-    host = parsed.netloc.lower()
-
-    # Remove default ports
-    if host.endswith(":443") and scheme == "https":
-        host = host[:-4]
-    elif host.endswith(":80") and scheme == "http":
-        host = host[:-3]
+    userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+    hostname = (parsed.hostname or "").lower()
+    host_display = f"[{hostname}]" if ":" in hostname else hostname
+    port = parsed.port
+    if (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
+        port = None
+    host = f"{userinfo}{host_display}" + (f":{port}" if port is not None else "")
 
     # Parse and filter query params
-    params = parse_qs(parsed.query, keep_blank_values=True)
-    filtered = {k: v for k, v in params.items() if k.lower() not in TRACKING_PARAMS}
-
-    # Sort params for consistency
-    sorted_query = urlencode(sorted(filtered.items()), doseq=True)
+    # Remove tracking components without parsing/re-encoding anything retained.
+    # Raw spelling is part of the cache identity: origins/signature validators
+    # may distinguish ``?flag`` from ``?flag=``, ``%20`` from ``+``, escape
+    # case, and arbitrary component order.
+    retained_segments = []
+    for segment in parsed.query.split("&"):
+        raw_key = segment.partition("=")[0]
+        decoded_key = unquote_plus(raw_key)
+        if decoded_key.lower() not in TRACKING_PARAMS:
+            retained_segments.append(segment)
+    normalized_query = "&".join(retained_segments)
 
     # Reconstruct without fragment
-    return urlunparse(
+    normalized = urlunparse(
         (
             scheme,
             host,
             parsed.path,  # Keep path case (some servers are case-sensitive)
-            "",  # params (rarely used)
-            sorted_query,
+            parsed.params,  # Path parameters are part of the resource identity
+            normalized_query,
             "",  # Remove fragment
         )
     )
+    if query_was_present and not normalized_query:
+        normalized += "?"
+    return normalized

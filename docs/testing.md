@@ -33,6 +33,72 @@ For each new site module:
 3. Fix any noise that leaks through, then re-test
 4. Only commit after manual verification passes
 
+For a deployed HTTP server, run the protocol/readiness/OAuth smoke after every
+restart and use `--all-tools` for the release gate so all ten tools must return
+semantically useful live data:
+
+```bash
+uv run python scripts/http_smoke_test.py \
+  --url http://127.0.0.1:6000 \
+  --api-key "$MCP_API_KEY" \
+  --oauth-client-state /tmp/fetchaller-oauth-smoke.json \
+  --all-tools
+```
+
+The same semantic suite must also pass through a real stdio MCP client against
+the exact candidate image. `SMOKE_STDIO_COMMAND` is a JSON argument array, not
+a shell command:
+
+```bash
+SMOKE_STDIO_COMMAND='["docker","run","--rm","-i","--platform","linux/amd64","fetchaller-mcp:test","python","-m","fetchaller.main"]' \
+  uv run python scripts/smoke_test.py
+```
+
+For the New Reddit release gate, first run the independent legacy-contract and
+offline fixture gate:
+
+```bash
+uv run pytest -q \
+  tests/test_reddit_legacy_contract.py \
+  tests/test_reddit_parity_corpus.py \
+  tests/test_reddit.py
+```
+
+Then run the separate live route corpus. It records raw MCP bodies and a
+timestamped/hash-addressed cold/warm/recreated report, paced by at least five
+seconds:
+
+```bash
+SMOKE_STDIO_COMMAND='["docker","run","--rm","-i","fetchaller-mcp:candidate","python","-m","fetchaller.main"]' \
+  uv run python scripts/reddit_parity.py \
+    --strict \
+    --include-unstable \
+    --output /tmp/fetchaller-reddit-parity
+```
+
+Fixture-only routes never run live, including with `--include-unstable`; they
+are restricted to inherently non-public access states. Removed public features
+receive no waiver: the collection gate discovers Reddit's official archived
+collection URL, validates its genuine archived Redux metadata, hydrates its
+post IDs against current Reddit `/api/info`, and rejects shells, empty data, or
+missing posts. `--include-unstable` dynamically discovers current real
+post/comment, revision, multireddit, live, and collection IDs, records the
+discovery bodies, and requires every such entry. Strict mode requires stable
+live targets and any live class explicitly selected by `--include-unstable` or
+`--require-oauth`. OAuth entries without
+actual credentials remain `not_run`, never a pass; `--require-oauth` makes that
+fatal. The runner injects a fresh host-directory bind beneath `/app/data`,
+aligns the container UID/GID to its host owner, verifies an unexpired
+owner-only Reddit cookie file after warm and recreated stages, requires
+successful anonymous-cookie hydration with zero pure-HTTP Reddit verification
+attempts after recreation, and separately requires zero guarded-browser
+connections. It rejects a
+conflicting cache/ownership environment or `--env-file`, so evidence cannot use
+ambient cookies or silently re-solve. Eligible Reddit OAuth credentials are forwarded to Docker only by
+environment variable name; the evidence records the credential mode and scopes,
+never credential values. `report.json` derives its publication denominator from
+the corpus and lists every offline entry and reason separately.
+
 ## Test Organization
 
 - `test_site_detection.py` — Tests `_detect_site()` directly (URL-based, HTML-based, priority rules)
@@ -40,6 +106,23 @@ For each new site module:
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
 - `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP
+- `test_reddit.py` — Strict Reddit host recognition; normal URL→structured routing;
+  thread/listing/profile/rules/wiki renderers; score/upvote-ratio semantics;
+  nested/deleted/rich-media comments; gallery/video/crosspost/poll/status
+  metadata; access-state mapping; comment-boundary budgets; browse/search link
+  parity; shared session/limiter behavior; exact-read OAuth host/header
+  isolation, refresh/retry/reuse, pagination, timeouts, backoff, and secret
+  redaction; strict same-origin JSON redirects and nonexistent-community
+  state; canonical New Reddit wiki-tree SSR parsing plus the anonymous
+  `WikiPageRevisionsV2` page tree (CSRF, fixed route, identity, node/path
+  agreement, uniqueness) and the optional `wikiread` fallback; strict
+  archived-collection identity/Redux parsing plus current-post
+  hydration; failure truth, queue, deadline, and backoff behavior
+- `test_reddit_parity_corpus.py` — Checked-in zero-gap corpus coverage for every
+  routed representation, access-state contract, and credential/fixture gating
+- `test_reddit_legacy_contract.py` — Independent versioned Old Reddit surface
+  inventory; detects omissions from both corpus and production routing; missing
+  route/schema/renderer/MCP fixture coverage
 - `test_amazon_postprocessor.py` — Amazon URL detection and regex postprocessor unit tests
 - `test_alibaba_postprocessor.py` — Alibaba.com URL detection and regex postprocessor unit tests
 - `test_alibaba_product.py` — Alibaba product JSON extraction (detailData, SSE data, tiered pricing, supplier info)
@@ -75,7 +158,12 @@ For each new site module:
 
 ## Test URLs for Benchmarking
 
-- Reddit: `https://www.reddit.com/r/homelab/`, `https://old.reddit.com/r/homelab/`
+- Reddit listing/thread: `https://www.reddit.com/r/homelab/`,
+  `https://www.reddit.com/r/Python/comments/1v6gbps/`
+- Reddit cold/warm transport: point `WAFER_CACHE_DIR` at a new temporary
+  directory, make one bounded request, recreate the shared Reddit session with
+  the same directory, and repeat. Assert no requested/generated URL contains
+  `old.reddit.com`; never print cookie values.
 - Scrapers often blocked: `https://news.ycombinator.com/`, `https://www.nytimes.com/`
 - Simple: `https://example.com/`, `https://httpbin.org/html`
 - Cloudflare protected: `https://apollomapping.com`, `https://www.miata.net/`, `https://beyond.ca/`

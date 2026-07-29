@@ -1,6 +1,7 @@
 """HTTP middleware for rate limiting and authentication."""
 
 import hashlib
+import ipaddress
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -11,6 +12,19 @@ from starlette.responses import JSONResponse
 
 from ..security.crypto import timing_safe_compare
 from .oauth import OAuthStore
+
+_OAUTH_SENSITIVE_PATHS = {"/register", "/authorize", "/token"}
+_OAUTH_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def _sensitive_response_headers(request: Request) -> dict[str, str]:
+    if request.url.path in _OAUTH_SENSITIVE_PATHS:
+        return dict(_OAUTH_NO_STORE_HEADERS)
+    return {}
 
 
 @dataclass
@@ -32,11 +46,11 @@ class RateLimiter:
         self.requests_per_minute = requests_per_minute
         self.max_entries = max_entries
         self._entries: dict[str, RateLimitEntry] = {}
-        self._last_cleanup = time.time()
+        self._last_cleanup = time.monotonic()
 
     def _cleanup(self) -> None:
         """Remove stale entries."""
-        now = time.time()
+        now = time.monotonic()
 
         # Only cleanup every 30 seconds
         if now - self._last_cleanup < 30:
@@ -58,7 +72,7 @@ class RateLimiter:
         Returns:
             (allowed, retry_after_seconds)
         """
-        now = time.time()
+        now = time.monotonic()
         cutoff = now - 60
 
         entry = self._entries.get(client_ip)
@@ -105,12 +119,30 @@ def get_client_ip(request: Request) -> str:
     - Rate limiting is primarily a DoS mitigation, not a security boundary,
       so the risk is limited to rate limit bypass
     """
+    peer = request.client.host if request.client else "unknown"
+    trusted_specs = getattr(
+        getattr(request.app.state, "config", None),
+        "trusted_proxy_ips",
+        (),
+    )
+    trusted = False
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+        trusted = any(
+            peer_ip in ipaddress.ip_network(spec, strict=False)
+            for spec in trusted_specs
+        )
+    except ValueError:
+        trusted = False
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        # Use rightmost IP (set by our trusted reverse proxy)
-        ips = forwarded.split(",")
-        return ips[-1].strip()
-    return request.client.host if request.client else "unknown"
+    if trusted and forwarded:
+        # The closest configured proxy appends the rightmost value.
+        candidate = forwarded.split(",")[-1].strip()
+        try:
+            return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            pass
+    return peer
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -139,9 +171,51 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     },
                     "id": None,
                 },
-                headers={"Retry-After": str(retry_after or 60)},
+                headers={
+                    **_sensitive_response_headers(request),
+                    "Retry-After": str(retry_after or 60),
+                },
             )
 
+        return await call_next(request)
+
+
+class RequestBodyLimitMiddleware(BaseHTTPMiddleware):
+    """Bound request bodies while streaming, including chunked requests."""
+
+    def __init__(self, app, max_bytes: int = 1024 * 1024):
+        super().__init__(app)
+        self.max_bytes = max_bytes
+
+    async def dispatch(self, request: Request, call_next):
+        declared = request.headers.get("content-length")
+        if declared and (
+            not declared.isdigit()
+            or len(declared) > 20
+            or int(declared) > self.max_bytes
+        ):
+            return JSONResponse(
+                status_code=413 if declared.isdigit() else 400,
+                content={
+                    "error": (
+                        "request_too_large"
+                        if declared.isdigit()
+                        else "invalid_content_length"
+                    )
+                },
+                headers=_sensitive_response_headers(request),
+            )
+
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > self.max_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": "request_too_large"},
+                    headers=_sensitive_response_headers(request),
+                )
+            body.extend(chunk)
+        request._body = bytes(body)  # Starlette's cached-request receive replays this downstream.
         return await call_next(request)
 
 

@@ -5,16 +5,23 @@ preserved — raw field names, every form field, every option.
 """
 
 import json
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import pytest
+import wafer
 from bs4 import BeautifulSoup
 
 from fetchaller.content.ashby import (
     _MARKER,
+    BOARD_MAX_RESPONSE_BYTES,
+    AshbyBoardTooLargeError,
     _extract_ashby_jid,
     _extract_org_slug_from_js,
     _find_careers_chunk_url,
     extract_ashby_board_slug,
     extract_ashby_data,
+    fetch_ashby_board,
     is_ashby,
     is_ashby_board_url,
     is_ashby_embed_url,
@@ -22,6 +29,7 @@ from fetchaller.content.ashby import (
     render_ashby_board,
 )
 from fetchaller.content.html import _detect_site
+from fetchaller.tools.fetch import fetch_url
 
 
 class TestIsAshby:
@@ -134,6 +142,58 @@ class TestRenderAshbyBoard:
         out = render_ashby_board(data, "x")
         assert "## Other (1)" in out
         assert "**Stealth**" in out
+
+
+class TestFetchAshbyBoardBudget:
+    """A real board must never degrade into the SPA's title.
+
+    The board endpoint returns every posting's description inline and has no
+    pagination, so large boards (openai is ~11.5MB) blow past the 10MB budget
+    the other job-board interceptors share. Swallowing that as ``None`` sent the
+    caller to the board's HTML, which renders as nothing but ``# <org> Jobs``.
+    """
+
+    def test_budget_exceeds_the_shared_interceptor_limit(self):
+        assert BOARD_MAX_RESPONSE_BYTES > 10 * 1024 * 1024
+
+    async def test_oversized_board_raises_instead_of_falling_through(self):
+        class TooLargeSession:
+            async def get(self, url):
+                raise wafer.ResponseTooLarge(url, 12_071_757, 10_485_760)
+
+        with pytest.raises(AshbyBoardTooLargeError):
+            await fetch_ashby_board("openai", TooLargeSession())
+
+    async def test_other_transport_errors_still_fall_through(self):
+        class FailingSession:
+            async def get(self, url):
+                raise ConnectionError("boom")
+
+        assert await fetch_ashby_board("openai", FailingSession()) is None
+
+    async def test_non_200_still_falls_through(self):
+        class NotFoundSession:
+            async def get(self, url):
+                return SimpleNamespace(status_code=404, text="")
+
+        assert await fetch_ashby_board("nobody", NotFoundSession()) is None
+
+    async def test_fetch_url_reports_oversized_board_instead_of_empty_page(self):
+        async def raise_too_large(org, session):
+            raise AshbyBoardTooLargeError("too big")
+
+        with patch(
+            "fetchaller.tools.fetch.fetch_ashby_board",
+            side_effect=raise_too_large,
+        ):
+            result = await fetch_url(
+                "https://jobs.ashbyhq.com/openai",
+                timeout=10,
+            )
+
+        assert "content" not in result
+        assert "openai" in result["error"]
+        assert "read limit" in result["error"]
 
 
 def _build_app_data_html(posting: dict, organization: dict | None = None) -> str:
@@ -332,3 +392,67 @@ class TestEmbedResolutionHelpers:
 
     def test_no_slug_returns_none(self):
         assert _extract_org_slug_from_js("unrelated JS") is None
+
+
+def test_every_ashby_board_call_site_handles_the_oversize_error():
+    """All ``fetch_ashby_board`` callers must catch ``AshbyBoardTooLargeError``.
+
+    ``fetch_ashby_board`` raises rather than returning ``None`` for an oversized
+    board, precisely so the caller cannot fall through and render the SPA
+    spinner as an empty job list. There are two call sites -- the direct
+    ``jobs.ashbyhq.com/<org>`` route and the ``<script src=".../embed">``
+    detection on a company career page -- and only the direct one was guarded,
+    so an oversized embedded board escaped as an unhandled exception.
+
+    The embed branch runs behind ``run_isolated`` (a subprocess), so it cannot
+    be reached by patching from a test; assert the structural invariant instead.
+    """
+
+    import ast
+    import pathlib
+
+    source = pathlib.Path("src/fetchaller/tools/fetch.py").read_text()
+    tree = ast.parse(source)
+
+    def _calls_board_fetch(node: ast.AST) -> bool:
+        return any(
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Name)
+            and inner.func.id == "fetch_ashby_board"
+            for inner in ast.walk(node)
+        )
+
+    guarded_lines = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        catches_oversize = any(
+            handler.type is not None
+            and "AshbyBoardTooLargeError" in ast.unparse(handler.type)
+            for handler in node.handlers
+        )
+        if not catches_oversize:
+            continue
+        for stmt in node.body:
+            if _calls_board_fetch(stmt):
+                for inner in ast.walk(stmt):
+                    if (
+                        isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Name)
+                        and inner.func.id == "fetch_ashby_board"
+                    ):
+                        guarded_lines.add(inner.lineno)
+
+    all_lines = {
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "fetch_ashby_board"
+    }
+
+    assert len(all_lines) >= 2, "expected the direct and embed call sites"
+    assert all_lines == guarded_lines, (
+        "unguarded fetch_ashby_board call site(s) at line(s) "
+        f"{sorted(all_lines - guarded_lines)}"
+    )

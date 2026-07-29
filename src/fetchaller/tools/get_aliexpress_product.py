@@ -8,6 +8,7 @@ async def get_aliexpress_product(
     cache=None,
     config=None,
     browser_solver=None,
+    timeout: int = 180,
 ) -> dict:
     """Get AliExpress product details including price, specs, and reviews.
 
@@ -16,6 +17,7 @@ async def get_aliexpress_product(
         cache: ResponseCache instance.
         config: Config instance.
         browser_solver: Optional BrowserSolver for browser-based challenges.
+        timeout: End-to-end operation deadline in seconds.
 
     Returns:
         Dict with "content" (formatted text) or "error".
@@ -25,4 +27,5 @@ async def get_aliexpress_product(
         cache=cache,
         config=config,
         browser_solver=browser_solver,
+        timeout=timeout,
     )

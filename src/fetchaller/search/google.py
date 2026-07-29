@@ -7,7 +7,16 @@ from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 
+from ..content._isolated import IsolatedProcessingError, run_isolated
+from ..security.xss import redact_secrets_for_log, sanitize_for_log
 from .models import SearchResult
+
+_MAX_SEARCH_HTML_CHARS = 12 * 1024 * 1024
+_MAX_RESULTS = 20
+_MAX_TITLE_CHARS = 500
+_MAX_URL_CHARS = 8_192
+_MAX_SNIPPET_CHARS = 1_000
+_PARSER_TIMEOUT = 10.0
 
 # Google internal URLs to filter out
 _GOOGLE_INTERNAL_PREFIXES = (
@@ -30,7 +39,22 @@ _TRAILING_SEPARATORS_RE = re.compile(r"[\s·|—–-]+$")
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] {msg}", file=sys.stderr)
+    bounded = sanitize_for_log(
+        " ".join(str(msg).splitlines()),
+        max_length=1_000,
+    )
+    safe = sanitize_for_log(redact_secrets_for_log(bounded), max_length=500)
+    print(f"[{datetime.now(UTC).isoformat()}] {safe}", file=sys.stderr)
+
+
+def _error_detail(error: Exception) -> str:
+    """Build a bounded diagnostic safe for returned output and logs."""
+    bounded = sanitize_for_log(
+        " ".join(str(error).splitlines()),
+        max_length=400,
+    )
+    detail = sanitize_for_log(redact_secrets_for_log(bounded), max_length=200)
+    return f"{type(error).__name__}: {detail}"
 
 
 def is_captcha(response) -> bool:
@@ -38,11 +62,25 @@ def is_captcha(response) -> bool:
     from urllib.parse import urlparse
 
     parsed = urlparse(str(response.url))
+    hostname = (parsed.hostname or "").lower()
     return (
-        "sorry.google.com" in parsed.hostname
+        hostname == "sorry.google.com"
         or parsed.path.startswith("/sorry")
         or "unusual traffic" in response.text.lower()
         or response.status_code == 429
+    )
+
+
+def is_explicit_no_results(html: str) -> bool:
+    """Recognize Google's explicit English zero-results response."""
+    text = " ".join(BeautifulSoup(html, "html.parser").get_text(" ", strip=True).split()).lower()
+    return any(
+        marker in text
+        for marker in (
+            "did not match any documents",
+            "no results found for",
+            "there are no results for",
+        )
     )
 
 
@@ -61,7 +99,7 @@ def extract_results(html: str) -> list[SearchResult]:
         url = unquote(href.split("/url?q=")[1].split("&")[0])
 
         # Skip non-HTTP URLs (e.g., "#", "javascript:", relative paths)
-        if not url.startswith(("http://", "https://")):
+        if not url.startswith(("http://", "https://")) or len(url) > _MAX_URL_CHARS:
             continue
 
         # Filter Google internal URLs
@@ -105,9 +143,7 @@ def extract_results(html: str) -> list[SearchResult]:
                 text = div.get_text(strip=True)
                 if "›" in text and not div.find("h3"):
                     # Check if any child div also has › (if so, skip this parent)
-                    child_has_arrow = any(
-                        "›" in d.get_text(strip=True) for d in div.find_all("div")
-                    )
+                    child_has_arrow = any("›" in d.get_text(strip=True) for d in div.find_all("div"))
                     if not child_has_arrow:
                         breadcrumb_div = div
                         break
@@ -140,6 +176,7 @@ def extract_results(html: str) -> list[SearchResult]:
                     continue
                 # Decompose stacked result links before extracting text
                 from copy import copy
+
                 sib_copy = copy(sibling)
                 for stacked_link in sib_copy.find_all("a", href=lambda h: h and h.startswith("/url?q=")):
                     stacked_link.decompose()
@@ -171,14 +208,25 @@ def extract_results(html: str) -> list[SearchResult]:
             # Strip trailing separator chars (· | — etc. from Google metadata)
             snippet = _TRAILING_SEPARATORS_RE.sub("", snippet)
 
-        results.append(SearchResult(title=title, url=url, snippet=snippet))
+        results.append(
+            SearchResult(
+                title=title[:_MAX_TITLE_CHARS],
+                url=url,
+                snippet=snippet[:_MAX_SNIPPET_CHARS],
+            )
+        )
+        if len(results) >= _MAX_RESULTS:
+            break
 
     return results
 
 
-async def search_google(
-    session, query: str, page: int = 1
-) -> tuple[list[SearchResult], bool, str | None]:
+def _parse_response(html: str) -> tuple[list[SearchResult], bool]:
+    results = extract_results(html)
+    return results, not results and is_explicit_no_results(html)
+
+
+async def search_google(session, query: str, page: int = 1) -> tuple[list[SearchResult], bool, str | None]:
     """
     Search Google via Opera Mini SSR.
 
@@ -205,8 +253,9 @@ async def search_google(
             timeout=10,
         )
     except Exception as e:
-        _log(f"google request error: {type(e).__name__}: {e}")
-        return [], False, f"{type(e).__name__}: {e}"
+        detail = _error_detail(e)
+        _log(f"google request error: {type(e).__name__}")
+        return [], False, detail
 
     if is_captcha(response):
         _log("google captcha detected")
@@ -216,10 +265,25 @@ async def search_google(
         _log(f"google non-200 status: {response.status_code}")
         return [], False, f"HTTP {response.status_code}"
 
-    results = extract_results(response.text)
+    html = response.text
+    if len(html) > _MAX_SEARCH_HTML_CHARS:
+        return [], False, "Google response exceeded the safe HTML size limit"
+    try:
+        results, explicit_no_results = await run_isolated(
+            _parse_response,
+            html,
+            timeout=_PARSER_TIMEOUT,
+        )
+    except IsolatedProcessingError:
+        return [], False, "Google response parsing failed within safety limits"
 
-    # Defensive: 200 OK but zero results and not empty query — possible structural change
+    # A generic 200 with no parsed results can mean provider markup changed.
+    # Only an explicit zero-results page is allowed to report an honest zero.
     if not results:
-        _log(f"google 200 but zero results extracted. HTML prefix: {response.text[:500]}")
+        if explicit_no_results:
+            _log("google explicit zero-results response")
+            return [], False, None
+        _log(f"google unexpected 200 response shape (response_chars={len(response.text)})")
+        return [], False, "Unexpected Google response shape (HTTP 200)"
 
     return results, False, None

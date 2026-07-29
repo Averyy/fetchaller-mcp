@@ -1,5 +1,7 @@
 """Tests for Costco content module: URL detection and postprocessor."""
 
+import pytest
+
 from fetchaller.content.costco import (
     is_costco,
     is_costco_category_url,
@@ -79,6 +81,38 @@ class TestIsCostcoCategoryUrlContent:
 
     def test_non_costco(self):
         assert not is_costco_category_url("https://example.com/c/grocery")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.costco.com/laptops.html",
+            "https://www.costco.com/dog-food.html",
+            "https://www.costco.ca/computers-tablets.html",
+        ],
+    )
+    def test_legacy_html_category_paths(self, url):
+        """``/<slug>.html`` is Costco's long-standing category shape.
+
+        Only ``/c/<slug>`` was recognized, so these skipped the working search
+        API and fell through to HTML that Akamai challenges.
+        """
+
+        assert is_costco_category_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # Product pages also end in .html -- they must not be treated as
+            # categories just because of the suffix.
+            "https://www.costco.com/kirkland-signature-olive-oil.product.100334841.html",
+            "https://www.costco.com/p/12345",
+            # Nested paths are not category slugs.
+            "https://www.costco.com/warehouse-locations/foo.html",
+            "https://www.costco.com/",
+        ],
+    )
+    def test_html_suffix_alone_is_not_a_category(self, url):
+        assert not is_costco_category_url(url)
 
 
 # ---------------------------------------------------------------------------

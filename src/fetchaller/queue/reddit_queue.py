@@ -1,17 +1,53 @@
 """Reddit request queue with proactive rate limiting."""
 
 import asyncio
+import math
 import sys
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, TypeVar
 
 from ..config import Config
 
 T = TypeVar("T")
+MAX_RETRY_AFTER_SECONDS = 3600.0
+_QUEUE_STOP_GRACE_SECONDS = 1.0
+
+
+def _consume_background_task(task: asyncio.Task) -> None:
+    """Retrieve a detached callback/processor outcome without blocking."""
+
+    try:
+        task.exception()
+    except BaseException:
+        pass
+
+
+def parse_retry_after(value: str | None, *, now: float | None = None) -> float | None:
+    """Parse an HTTP Retry-After value into non-negative delay seconds."""
+
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        seconds = retry_at.timestamp() - (time.time() if now is None else now)
+    if not math.isfinite(seconds):
+        return None
+    return min(MAX_RETRY_AFTER_SECONDS, max(0.0, seconds))
 
 
 @dataclass
@@ -43,7 +79,7 @@ class QueueItem:
     kwargs: dict
     # Note: future is created in enqueue() using the running loop, not here
     future: asyncio.Future = field(default=None)  # type: ignore[assignment]
-    enqueued_at: float = field(default_factory=time.time)
+    enqueued_at: float = field(default_factory=time.monotonic)
 
 
 class RedditRequestQueue:
@@ -75,16 +111,28 @@ class RedditRequestQueue:
         """Stop the queue processor."""
         self._running = False
         if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            processor = self._task
+            processor.cancel()
+            done, pending = await asyncio.wait(
+                {processor},
+                timeout=_QUEUE_STOP_GRACE_SECONDS,
+            )
+            if pending:
+                processor.add_done_callback(_consume_background_task)
+            elif done:
+                _consume_background_task(processor)
             self._task = None
+        while True:
+            try:
+                pending = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not pending.future.done():
+                pending.future.cancel()
 
     def _count_recent_requests(self) -> int:
         """Count requests in the last minute."""
-        now = time.time()
+        now = time.monotonic()
         cutoff = now - 60
 
         # Remove old entries
@@ -95,7 +143,7 @@ class RedditRequestQueue:
 
     def _calculate_delay(self) -> float:
         """Calculate delay before next request."""
-        now = time.time()
+        now = time.monotonic()
 
         # Check backoff
         if self._backoff_until > now:
@@ -121,14 +169,56 @@ class RedditRequestQueue:
 
         return 0.0
 
-    def set_backoff(self, status_code: int) -> None:
-        """Set backoff based on response status code."""
-        now = time.time()
+    def set_backoff(
+        self,
+        status_code: int,
+        retry_after: float | None = None,
+        *,
+        default_delay: float | None = None,
+    ) -> None:
+        """Set backoff from Retry-After when supplied, otherwise use defaults.
 
+        ``default_delay`` lets a caller that has identified a *specific*,
+        known-transient block substitute a shorter fallback than the blanket
+        403 configuration. Reddit's anonymous-session gate clears in about two
+        seconds, so holding every queued request for the configured five
+        minutes turned a self-healing blip into an outage. An unrecognised 403
+        still gets the configured delay. A ``Retry-After`` header always wins,
+        and the ``max()`` below means this can only ever *lengthen* an
+        already-imposed backoff, never cut one short.
+        """
+
+        now = time.monotonic()
+
+        bounded_retry_after = (
+            min(MAX_RETRY_AFTER_SECONDS, max(0.0, retry_after))
+            if retry_after is not None and math.isfinite(retry_after)
+            else None
+        )
+        bounded_default = (
+            min(MAX_RETRY_AFTER_SECONDS, max(0.0, default_delay))
+            if default_delay is not None and math.isfinite(default_delay)
+            else None
+        )
         if status_code == 429:
-            self._backoff_until = now + self.config.backoff_rate_limit
+            fallback = (
+                self.config.backoff_rate_limit
+                if bounded_default is None
+                else bounded_default
+            )
+            delay = fallback if bounded_retry_after is None else bounded_retry_after
         elif status_code == 403:
-            self._backoff_until = now + self.config.backoff_blocked
+            fallback = (
+                self.config.backoff_blocked
+                if bounded_default is None
+                else bounded_default
+            )
+            delay = fallback if bounded_retry_after is None else bounded_retry_after
+        else:
+            return
+        # A later response with a shorter Retry-After must not shorten a backoff
+        # already imposed by an earlier response.
+        self._backoff_until = max(self._backoff_until, now + delay)
 
     async def _process_queue(self) -> None:
         """Process queued requests with rate limiting."""
@@ -155,7 +245,7 @@ class RedditRequestQueue:
                 # during a 300s (403) backoff slept the whole backoff and hung its
                 # caller far past any per-request timeout.
                 delay = self._calculate_delay()
-                total_wait = (time.time() - item.enqueued_at) + delay
+                total_wait = (time.monotonic() - item.enqueued_at) + delay
                 if total_wait > self.config.max_queue_wait:
                     if not item.future.done():
                         item.future.set_exception(
@@ -178,16 +268,49 @@ class RedditRequestQueue:
                         continue
 
                 # Record request time
-                self._request_times.append(time.time())
+                self._request_times.append(time.monotonic())
 
-                # Execute the callback
+                # Execute the callback in its own task. If the caller abandons
+                # the future while the request is in flight, cancel the
+                # network operation so it cannot monopolize this serial queue.
+                callback_task = asyncio.create_task(item.callback(*item.args, **item.kwargs))
                 try:
-                    result = await item.callback(*item.args, **item.kwargs)
-                    if not item.future.done():
-                        item.future.set_result(result)
+                    done, _ = await asyncio.wait(
+                        {callback_task, item.future},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if item.future in done and not callback_task.done():
+                        callback_task.cancel()
+                        callback_task.add_done_callback(_consume_background_task)
+                    elif callback_task in done:
+                        if callback_task.cancelled():
+                            # A callback may cancel itself or propagate
+                            # CancelledError from its own dependency. That
+                            # cancels this item, not the long-lived processor.
+                            if not item.future.done():
+                                item.future.cancel()
+                        else:
+                            result = callback_task.result()
+                            if not item.future.done():
+                                item.future.set_result(result)
+                except asyncio.CancelledError:
+                    callback_task.cancel()
+                    callback_task.add_done_callback(_consume_background_task)
+                    raise
                 except Exception as e:
                     if not item.future.done():
                         item.future.set_exception(e)
+                finally:
+                    if not callback_task.done():
+                        callback_task.cancel()
+                        callback_task.add_done_callback(_consume_background_task)
+                    if callback_task.done() and not callback_task.cancelled():
+                        # Retrieve a late exception if the caller disappeared
+                        # exactly as the callback completed.
+                        try:
+                            callback_task.exception()
+                        except asyncio.CancelledError:
+                            pass
                 item = None
 
             except asyncio.CancelledError:
@@ -243,6 +366,4 @@ class RedditRequestQueue:
             return await asyncio.wait_for(item.future, timeout=_queue_timeout)
         except TimeoutError:
             # wait_for cancels item.future; the processor skips cancelled items.
-            raise TimeoutError(
-                f"Reddit request timed out after {_queue_timeout:.0f}s waiting in queue"
-            ) from None
+            raise TimeoutError(f"Reddit request timed out after {_queue_timeout:.0f}s waiting in queue") from None

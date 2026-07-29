@@ -71,7 +71,9 @@ def _job_url(job: dict) -> str:
 
 
 def _locations(job: dict) -> str:
-    if job.get("remote"):
+    # Strict: a truthy non-boolean returned "Remote" AND discarded the
+    # real locationNames, so it lost data rather than only mislabelling.
+    if job.get("remote") is True:
         accepted = job.get("acceptedRemoteLocationNames") or []
         return f"Remote ({', '.join(accepted)})" if accepted else "Remote"
     locs = job.get("locationNames") or []
@@ -334,15 +336,29 @@ def render_search(cache: dict, url: str, title: str = "") -> str:
 
 
 def _render_company_grouped(cache: dict, startups: list[dict], url: str, title: str) -> str:
-    jobs_total = len(entities(cache, "JobListingSearchResult"))
-    head = title or "Startup job search"
-    lines = [f"# {head}", "", f"_{jobs_total} roles across {len(startups)} startups (first page)_", ""]
-
     # Most jobs first.
     def njobs(s):
         return len(s.get("highlightedJobListings") or [])
 
-    for startup in sorted(startups, key=njobs, reverse=True):
+    # Resolve every startup's jobs BEFORE counting. jobs_total used to count all
+    # JobListingSearchResult entities, including orphans that no card renders,
+    # so one referenced job plus one orphan printed "2 roles" beside one role.
+    resolved: list[tuple[dict, list[dict]]] = [
+        (
+            startup,
+            [
+                job
+                for job in deref(cache, startup.get("highlightedJobListings") or [])
+                if job
+            ],
+        )
+        for startup in sorted(startups, key=njobs, reverse=True)
+    ]
+    jobs_total = sum(len(jobs) for _, jobs in resolved)
+    head = title or "Startup job search"
+    lines = [f"# {head}", "", f"_{jobs_total} roles across {len(startups)} startups (first page)_", ""]
+
+    for startup, resolved_jobs in resolved:
         name = startup.get("name", "Startup")
         slug = startup.get("slug")
         company_url = f"{SITE}/company/{slug}" if slug else ""
@@ -362,10 +378,10 @@ def _render_company_grouped(cache: dict, startups: list[dict], url: str, title: 
         if company_url:
             lines.append(company_url)
         lines.append("")
-        jobs = deref(cache, startup.get("highlightedJobListings") or [])
-        for i, job in enumerate(jobs, 1):
-            if job:
-                lines.append(_job_line(i, job))
+        # Already filtered above, so numbering stays contiguous; enumerating
+        # the unresolved list left gaps wherever a reference did not deref.
+        for i, job in enumerate(resolved_jobs, 1):
+            lines.append(_job_line(i, job))
         lines.append("")
 
     lines.append(f"Source: {url}")

@@ -1,11 +1,44 @@
 """Tests for PDF extraction via pymupdf4llm."""
 
+import asyncio
+import multiprocessing
+import subprocess
+import sys
+import time
 from unittest.mock import patch
 
 import pymupdf
+import pymupdf4llm
+import pytest
 
 from fetchaller.config import Config
 from fetchaller.content.pdf import _extract_pdf_sync, _postprocess_markdown, extract_pdf
+
+
+async def _wait_for_no_pdf_children() -> None:
+    deadline = time.monotonic() + 2
+    while (
+        any(
+            child.name == "fetchaller-pdf-parser"
+            for child in multiprocessing.active_children()
+        )
+        and time.monotonic() < deadline
+    ):
+        await asyncio.sleep(0.01)
+
+
+def test_pdf_module_import_never_contaminates_stdio_mcp_stdout():
+    result = subprocess.run(
+        [sys.executable, "-c", "import fetchaller.content.pdf"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert "pymupdf_layout" not in result.stderr
 
 
 def _make_pdf(texts: list[str]) -> bytes:
@@ -60,6 +93,41 @@ class TestExtractPdfSync:
         assert "Page two content" in result.text
         assert "Page three content" in result.text
 
+    def test_chunked_extraction_preserves_normal_output(self):
+        texts = [f"Page {page} content" for page in range(30)]
+        pdf = _make_pdf(texts)
+        with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+            previous_output = pymupdf4llm.to_markdown(
+                doc,
+                ignore_images=True,
+                ignore_graphics=True,
+                show_progress=False,
+            )
+
+        result = _extract_pdf_sync(pdf, 50 * 1024 * 1024)
+        assert result.text == _postprocess_markdown(previous_output)
+        assert "Page 29 content" in result.text
+
+    def test_annotated_pdf_preserves_whole_document_output(self):
+        doc = pymupdf.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Annotated document content")
+        page.add_text_annot((120, 120), "review note")
+        pdf = doc.tobytes()
+        doc.close()
+
+        with pymupdf.open(stream=pdf, filetype="pdf") as expected_doc:
+            previous_output = pymupdf4llm.to_markdown(
+                expected_doc,
+                ignore_images=True,
+                ignore_graphics=True,
+                show_progress=False,
+            )
+
+        result = _extract_pdf_sync(pdf, 50 * 1024 * 1024)
+        assert result.text == _postprocess_markdown(previous_output)
+        assert "Annotated document content" in result.text
+
     def test_blank_pdf_is_empty(self):
         pdf = _make_blank_pdf(2)
         result = _extract_pdf_sync(pdf, 50 * 1024 * 1024)
@@ -86,6 +154,37 @@ class TestExtractPdfSync:
         assert result.error is not None
         assert "too large" in result.error.lower()
         assert result.page_count == 0
+
+    def test_absolute_size_ceiling_cannot_be_disabled_by_configured_limit(self):
+        result = _extract_pdf_sync(
+            b"x" * 11,
+            max_size=1_000,
+            absolute_max_size=10,
+        )
+        assert result.error == "PDF too large: 11 bytes (max 10 bytes)"
+        assert result.page_count == 0
+
+    def test_page_count_bound_rejects_before_page_extraction(self):
+        pdf = _make_blank_pdf(3)
+        result = _extract_pdf_sync(
+            pdf,
+            50 * 1024 * 1024,
+            max_pages=2,
+        )
+        assert result.error == "PDF has too many pages: 3 (max 2)."
+        assert result.page_count == 3
+
+    def test_output_bound_is_explicit(self):
+        pdf = _make_pdf([f"Page {page}: " + "content " * 50 for page in range(10)])
+        result = _extract_pdf_sync(
+            pdf,
+            50 * 1024 * 1024,
+            max_output_chars=160,
+        )
+        assert len(result.text) <= 160
+        assert result.text.endswith(
+            "[PDF extraction truncated at the safe processing limit]\n"
+        )
 
     def test_output_is_markdown(self):
         """pymupdf4llm should produce markdown with headers for larger font sizes."""
@@ -192,25 +291,88 @@ class TestExtractPdfAsync:
         assert result.error is not None
         assert "too large" in result.error.lower()
 
-    async def test_timeout_error(self):
+    async def test_nonpositive_timeout_is_rejected_before_worker_spawn(self):
+        result = await extract_pdf(
+            _make_pdf(["Content"]),
+            Config(pdf_processing_timeout=0),
+        )
+        assert result.error == "PDF processing timeout must be greater than zero."
+        assert not any(
+            child.name == "fetchaller-pdf-parser"
+            for child in multiprocessing.active_children()
+        )
+
+    async def test_timeout_releases_capacity_and_reaps_worker(self):
         config = Config(pdf_processing_timeout=0.001)  # 1ms timeout
-
-        # Create a valid PDF so it enters processing
         pdf = _make_pdf(["Content"])
-
-        # Patch _extract_pdf_sync to be slow
-        original_fn = _extract_pdf_sync
-
-        def slow_extract(*args, **kwargs):
-            import time
-            time.sleep(1)
-            return original_fn(*args, **kwargs)
-
-        with patch("fetchaller.content.pdf._extract_pdf_sync", side_effect=slow_extract):
-            result = await extract_pdf(pdf, config)
-
+        result = await extract_pdf(pdf, config)
         assert result.error is not None
         assert "timed out" in result.error.lower()
+        await _wait_for_no_pdf_children()
+        assert not any(
+            child.name == "fetchaller-pdf-parser"
+            for child in multiprocessing.active_children()
+        )
+
+        subsequent = await extract_pdf(
+            pdf,
+            Config(pdf_processing_timeout=10),
+        )
+        assert subsequent.error is None
+        assert "Content" in subsequent.text
+
+    async def test_cancellation_reaps_worker_and_releases_capacity(self):
+        task = asyncio.create_task(
+            extract_pdf(
+                _make_blank_pdf(100),
+                Config(pdf_processing_timeout=30),
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await _wait_for_no_pdf_children()
+        assert not any(
+            child.name == "fetchaller-pdf-parser"
+            for child in multiprocessing.active_children()
+        )
+
+        subsequent = await extract_pdf(
+            _make_pdf(["After cancellation"]),
+            Config(pdf_processing_timeout=10),
+        )
+        assert subsequent.error is None
+        assert "After cancellation" in subsequent.text
+
+    async def test_slow_process_start_does_not_block_timeout_or_event_loop(self):
+        loop_progressed = asyncio.Event()
+
+        async def mark_progress():
+            await asyncio.sleep(0.005)
+            loop_progressed.set()
+
+        def slow_start(*_args):
+            time.sleep(0.2)
+            return True
+
+        marker = asyncio.create_task(mark_progress())
+        started = time.monotonic()
+        with patch(
+            "fetchaller.content.pdf._start_pdf_process",
+            side_effect=slow_start,
+        ):
+            result = await extract_pdf(
+                _make_pdf(["Slow start"]),
+                Config(pdf_processing_timeout=0.02),
+            )
+        elapsed = time.monotonic() - started
+        await marker
+
+        assert "timed out" in (result.error or "").lower()
+        assert elapsed < 0.1
+        assert loop_progressed.is_set()
 
     async def test_encrypted_via_async(self):
         pdf = _make_encrypted_pdf()

@@ -1,26 +1,38 @@
 services:
   fetchaller-mcp:
+    platform: linux/amd64
     image: ghcr.io/averyy/fetchaller-mcp:latest
     build:
       context: .
       dockerfile: Dockerfile
     container_name: fetchaller-mcp
     restart: unless-stopped
+    # HTTP shutdown gives active requests 30s to finish. An issued Enterprise
+    # browser solve is bounded at 60s and may keep its owner thread alive after
+    # ASGI cancellation; preserve cleanup headroom before Docker escalates.
+    stop_grace_period: 75s
     ports:
-      - "6000:6000"
-    networks:
-      - web
+      # Bind only to the host loopback interface. Terminate public TLS in a
+      # host reverse proxy and forward to 127.0.0.1:6000.
+      - "127.0.0.1:6000:6000"
     environment:
       - HTTP_PORT=6000
       - RATE_LIMIT_REQUESTS=100
-      - MCP_API_KEY=${MCP_API_KEY}
+      - MCP_API_KEY=${MCP_API_KEY:?MCP_API_KEY must be set}
       # Must be set and STABLE across redeploys. If unset, the server generates a
       # random secret per process and every OAuth connector un-pairs on restart.
       # Generate once with: openssl rand -hex 32   (see README: JWT_SECRET)
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set - generate with 'openssl rand -hex 32', see README}
-      - DATA_DIR=${DATA_DIR:-/app/data}
+      - DATA_DIR=/app/data
+      - BROWSER_EXECUTABLE_PATH=/opt/google/chrome/chrome
       - ACCESS_TOKEN_TTL=${ACCESS_TOKEN_TTL:-2592000}
-      - MCP_SERVER_URL=${MCP_SERVER_URL:-http://localhost:6000}
+      - MCP_SERVER_URL=${MCP_SERVER_URL:?MCP_SERVER_URL must be the public HTTPS origin}
+      - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-}
+      - REDDIT_ACCESS_TOKEN=${REDDIT_ACCESS_TOKEN:-}
+      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID:-}
+      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET:-}
+      - REDDIT_REFRESH_TOKEN=${REDDIT_REFRESH_TOKEN:-}
+      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-fetchaller-mcp/3 exact-reddit-reads}
       - MOUSER_API_KEY=${MOUSER_API_KEY:-}
       - DIGIKEY_CLIENT_ID=${DIGIKEY_CLIENT_ID:-}
       - DIGIKEY_CLIENT_SECRET=${DIGIKEY_CLIENT_SECRET:-}
@@ -29,11 +41,11 @@ services:
     volumes:
       - cookie-data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6000/health"]
+      test: ["CMD", "/healthcheck.sh"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
+      start_period: 90s
     deploy:
       resources:
         limits:
@@ -47,7 +59,3 @@ services:
 
 volumes:
   cookie-data:
-
-networks:
-  web:
-    external: true

@@ -32,6 +32,15 @@ class DomainRateLimiter:
         self._last_time: float = 0.0
         self._min_interval = min_interval
         self._jitter_min, self._jitter_max = jitter
+        self._backoff_until: float = 0.0
+
+    def defer(self, seconds: float) -> None:
+        """Prevent future callers from passing until a server-requested delay ends."""
+
+        self._backoff_until = max(
+            self._backoff_until,
+            time.monotonic() + max(0.0, seconds),
+        )
 
     async def wait(self, extra_delay: float = 0.0) -> None:
         """Wait until it's safe to make a request.
@@ -41,14 +50,23 @@ class DomainRateLimiter:
                 for heavier operations (e.g., search pages).
         """
         async with self._lock:
+            spacing_target = 0.0
             if self._last_time > 0:
-                now = time.time()
-                elapsed = now - self._last_time
-                required = self._min_interval + extra_delay
-                if elapsed < required:
-                    await asyncio.sleep(required - elapsed)
-                await asyncio.sleep(random.uniform(self._jitter_min, self._jitter_max))
-            self._last_time = time.time()
+                spacing_target = (
+                    self._last_time
+                    + self._min_interval
+                    + extra_delay
+                    + random.uniform(self._jitter_min, self._jitter_max)
+                )
+            while True:
+                now = time.monotonic()
+                target = max(spacing_target, self._backoff_until)
+                if target <= now:
+                    break
+                await asyncio.sleep(target - now)
+                # Recheck: another request can receive Retry-After and call
+                # defer() while this caller is already asleep.
+            self._last_time = time.monotonic()
 
 
 # Shared instances — one per domain family.
@@ -67,10 +85,10 @@ aliexpress_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
 # 2s base is conservative enough for sequential product page fetches.
 soylent_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 
-# Reddit: old.reddit.com (HTML fetches via fetch tool)
-# Reddit allows ~10 req/min. browse_reddit/search_reddit use RedditRequestQueue,
-# but fetch tool bypasses it. 3s base keeps us well under the limit.
-reddit_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
+# Reddit anonymous JSON. MCP tool calls share RedditRequestQueue; this limiter
+# covers direct/library fetch_url calls where the server queue is not injected.
+# Six seconds plus small jitter stays below the documented ~10 req/min budget.
+reddit_limiter = DomainRateLimiter(min_interval=6.0, jitter=(0.1, 0.4))
 
 # Mouser: api.mouser.com (official API)
 # 30 req/min API limit → 2s base interval.
@@ -95,3 +113,9 @@ costco_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 # Facebook: www.facebook.com/api/graphql/ (unauthenticated GraphQL)
 # IP reputation is a concern — conservative rate limiting.
 facebook_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
+
+# LinkedIn: www.linkedin.com/jobs-guest/* (logged-out public job endpoints)
+# 3.2s was the measured safe operating point — 46 probes at that spacing drew
+# no 403, 429, Retry-After, or challenge. The blocking threshold was
+# deliberately never probed, so treat this as a floor, not a target.
+linkedin_limiter = DomainRateLimiter(min_interval=3.2, jitter=(0.1, 0.4))

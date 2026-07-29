@@ -8,9 +8,102 @@
 
 - **fetchaller-mcp** owns ALL content processing and MCP tooling: takes raw HTML/JSON/PDF from wafer and turns it into clean markdown for LLMs. Site-specific CSS selectors, BeautifulSoup cleanup, regex post-processors, HTML→markdown conversion, PDF extraction, JSON-LD extraction, search result parsing, response caching, MCP tool definitions.
 
-Content-type dispatch in `src/fetchaller/tools/fetch.py` handles: `application/json` (as-is), `text/plain`/`text/csv` (as-is), XML/RSS/Atom (feed-parse then markdown, or raw XML fallback), `application/pdf` (text extraction via pymupdf), HTML (site dispatch → markdown, or raw with `raw=true`), `image/svg+xml` (returned as raw XML text), other `image/*` (metadata summary — type, filename, size, dimensions for PNG/GIF/JPEG/WebP, Last-Modified, ETag), and any other `text/*`/`application/javascript` (raw text). Everything else returns an "Unsupported content type" error.
+Content-type dispatch in `src/fetchaller/tools/fetch.py` handles: `application/json` (as-is), `text/plain`/`text/csv` (as-is), XML/RSS/Atom (feed-parse then markdown, or raw XML fallback), `application/pdf` (text extraction via pymupdf), HTML (site dispatch → markdown, or raw with `raw=true`), `image/svg+xml` (returned as raw XML text), other `image/*` (metadata summary — type, filename, size, dimensions for PNG/GIF/JPEG/WebP, Last-Modified, ETag), and any other `text/*`/`application/javascript` (raw text). Everything else returns an "Unsupported content type" error. Normal Reddit URLs are a deliberate pre-dispatch exception: they are mapped to bounded structured requests and compact-rendered; caller-selected `.json` remains JSON. Over-budget JSON keeps a whole-scalar structural prefix and an explicit `_fetchaller_truncated` marker, rather than returning a syntactically broken slice or silently changing an upstream value.
 
-**The rule**: fetchaller NEVER does bot solving, impersonation, challenge detection, or cookie management. If a site blocks requests, that's a wafer bug — fix it in wafer, not fetchaller. Fetchaller passes a `BrowserSolver` instance to wafer sessions at construction time (dependency injection), but never calls methods on it directly.
+**The rule**: fetchaller never implements bot solving, impersonation,
+challenge detection, or cookie management. It injects wafer's shared
+`BrowserSolver` into sessions and, when configured, launches it once during
+startup readiness preflight. All challenge behavior remains inside wafer.
+
+### Reddit read path
+
+Mapped normal-URL `fetch` calls, `browse_reddit`, and `search_reddit` share a
+long-lived `wafer.AsyncSession`, persistent anonymous cookie jar, and the
+server's `RedditRequestQueue`. Wafer 0.4.1 establishes the logged-out New Reddit
+session; fetchaller never parses the verification challenge. Direct/library
+`fetch_url` calls without the injected queue use the process-wide Reddit domain
+limiter. Caller-selected `.json`, `raw=true`, and unmapped HTML fallbacks still
+use the generic fetch path and its Reddit domain limiter.
+
+Mapped routes are anonymous by default. User-context OAuth is restricted to two
+exact formerly public reads that New Reddit no longer exposes consistently:
+`oauth.reddit.com/r/{subreddit}/about/moderators` only after the anonymous
+moderator endpoint returns an unstructured 403, and
+`oauth.reddit.com/r/{subreddit}/wiki/pages/` only after strict parsing finds no
+canonical public New Reddit SSR tree. A configured direct token is held in
+memory; a complete client-ID, client-secret, and refresh-token set renews it
+under a deduplicating lock. OAuth requests share the Reddit queue and deadline.
+Bearer credentials cannot reach any other path or host, error messages never
+contain response bodies or secrets, and no roster or wiki page is inferred.
+Roster pages are merged until Reddit removes its cursor; invalid/repeated
+cursors or the bounded page cap are explicit errors, never silent truncation.
+
+Anonymous JSON redirects remain on the exact HTTPS `www.reddit.com` JSON
+origin, charge every hop to the shared queue, and share the original deadline.
+Missing locations, cross-origin targets, loops, and excess hops fail closed.
+Reddit's exact nonexistent-subreddit redirect to its JSON community search is
+mapped directly to a not-found content state instead of returning search noise.
+
+Reddit removed Post Collections in 2024, so their former metadata endpoint can
+no longer satisfy the legacy public read. For an exact collection URL,
+fetchaller queries Wayback CDX for pre-removal captures, accepts only the
+matching Reddit URL and a single exact `window.___r` collection model, and
+extracts its ordered post fullnames. It then hydrates those fullnames through
+current Reddit `/api/info`. Output labels archived metadata separately from
+current post data; identity mismatches, shells, empty models, missing posts, or
+partial hydration fail explicitly.
+
+For normal public URLs, fetchaller validates the path shape, builds a bounded
+`www.reddit.com/*.json` request, and renders only fields visible/useful to a
+public reader. Thread limits are derived from `maxTokens` (5–500 items, depth
+1–10), then the final character budget is enforced at whole-section
+boundaries. `more` nodes provide bounded continuation links, and anonymous
+`/api/morechildren` URLs are mapped into readable nested comments. Profile
+roots use five independent public sources under one deadline: metadata,
+overview, trophies, public multireddits, and moderated communities.
+
+The wiki page index is the one structured HTML-first route:
+`/r/{subreddit}/wiki/pages.json` now requires `wikiread` OAuth, while canonical
+New Reddit server-renders the public tree under
+`/r/{subreddit}/wiki/pages/`. Fetchaller reads that exact same-origin document
+through the durable Reddit session and queue, accepts only the named
+`#wikis-right-rail-container .page-tree` inside a matching
+`community_wiki`/`subreddit_wiki` page, and rejects challenge shells, error
+shells, foreign links, malformed paths, and empty trees instead of reporting
+zero pages.
+
+Communities without that New SSR tree, or whose exact anonymous HTML route
+returns an unstructured 403, fall through without transport backoff to New
+Reddit's own logged-out page tree: a `WikiPageRevisionsV2` POST on the fixed
+`https://www.reddit.com/svc/shreddit/graphql` route, authorized only by the
+`csrf_token` cookie the same anonymous session already holds. This is the route
+the wiki UI itself uses, so the page index needs no OAuth scope and no browser.
+The reply is accepted only when it stays on that exact route, returns
+`application/json`, carries no GraphQL `errors`, and describes the requested
+community (`__typename`, `name`, and `prefixedName` must all agree). Every node
+must agree with its own path: `name` is the last path component, `parent` is the
+remaining prefix, `depth` is the component count minus one, components are safe,
+and paths are unique. Namespace parents (`isPagePresent` false) are excluded
+exactly as Reddit's own index excludes them; a valid tree with no present pages
+renders zero pages, while any structural disagreement is an explicit error.
+
+The `wikiread` OAuth endpoint remains only as an optional last-resort fallback
+for a configured deployment, never as a requirement for public parity; its
+response must be a validated `wikipagelisting`, otherwise the call fails
+explicitly.
+
+The renderer reports Reddit's returned `score` as the public fuzzed score and
+`upvote_ratio` only when present. It never derives separate upvote/downvote
+counts. It preserves post/comment Markdown, outbound and discussion links,
+gallery order, native video URLs, oEmbed provider/title, crosspost source, poll
+vote data, NSFW/spoiler/locked/archived/deleted states, and useful URLs embedded
+in rich comments. Private, quarantined, banned, and not-found responses are
+mapped from Reddit's structured reason without treating those content states as
+transport failures or queue-wide backoff events.
+
+Compactness is a bounded-output property, not a parity tradeoff: the renderer
+keeps complete sections and explicit omission/continuation markers. Published
+size claims require a checked-in reproducible corpus and raw outputs.
 
 ## Content Processing Architecture
 
@@ -19,7 +112,12 @@ Content-type dispatch in `src/fetchaller/tools/fetch.py` handles: `application/j
 - **`html.py`** — Generic pipeline + dispatch. Universal junk selectors (nav, footer, ads, cookie banners, modals), markdownify conversion, whitespace cleanup. Dispatches to site modules based on URL. Includes generic JSON-LD Product fallback for sites without dedicated modules.
 - **`amazon.py`** — Amazon (all TLDs): CSS selectors, soup cleanup, regex post-processors. Covers .com, .ca, .co.uk, .de, .fr, .it, .es, .co.jp, .com.au, .in, etc.
 - **`github.py`** — GitHub: CSS selectors, soup cleanup, regex post-processors, URL transforms, file tree extraction, issue/PR/discussion extraction from embedded JSON.
-- **`reddit.py`** — Reddit: CSS selectors for old.reddit.com, URL transforms (www→old), post formatting.
+- **`reddit.py`** — Reddit: strict hostname recognition; canonical
+  `www.reddit.com` URLs; public thread/listing/search/profile/about/rules/wiki
+  structured mapping (JSON plus the canonical SSR wiki page tree);
+  comment-boundary token budgeting; compact post, nested-comment, rich-media,
+  poll, and access-state renderers. Explicit `.json` stays raw and `raw=true`
+  uses canonical New Reddit HTML.
 - **`hackernews.py`** — Hacker News: CSS selectors, table unwrapping, story block reformatter.
 - **`medium.py`** — Medium: CSS selectors (data-testid), source param stripping, post-article block removal. HTML-based detection for unknown custom domains.
 - **`huggingface.py`** — Hugging Face: data-target CSS selectors, filter tag/button soup cleanup, regex post-processors.
@@ -93,16 +191,25 @@ Platform-specific clients used by the orchestrator:
 
 All HTTP fetching is handled by `wafer` (`~/code/wafer`). Fetchaller does NOT contain any bot protection, challenge solving, or TLS fingerprinting code.
 
-- **`wafer.AsyncSession`** — per-request sessions with automatic challenge detection/solving, cookie caching, fingerprint rotation, retry/backoff
+- **`wafer.AsyncSession`** — per-request sessions with challenge detection and supported solving, cookie caching, fingerprint rotation, retry/backoff
 - **`wafer.browser.BrowserSolver`** — Patchright-based browser solver for Cloudflare, Akamai, etc. One shared instance created at server startup, passed to sessions via `browser_solver=`
+  - Every Chromium connection is forced through fetchaller's loopback-only
+    SOCKS5 egress guard. The guard applies the same private/internal address
+    policy to redirects and browser subresources, then dials only the approved
+    numeric IP. This is separate from wafer's `resolve=` pins because Chromium
+    has its own DNS/network stack. Public nonstandard ports remain available
+    subject to Chromium's own unsafe-port policy; QUIC and non-proxied WebRTC
+    UDP are disabled by the solver.
 - **`wafer.Profile.OPERA_MINI`** — first-class Opera Mini impersonation for search
-- **Challenge types wafer detects (17)**: ACW, TMD, Amazon, Cloudflare, Akamai, DataDome, PerimeterX, Imperva, Kasada, F5 Shape, AWS WAF, Vercel, Arkose, GeeTest, hCaptcha, reCAPTCHA (v2), generic JS. Detection is not the same as solving:
-  - **Inline (pure Python, no browser)**: ACW (shuffle+XOR), TMD (homepage session-warming), Amazon ("Continue shopping" form parse + follow).
+- **Challenge types wafer detects (18)**: ACW, TMD, Amazon, Reddit, Cloudflare, Akamai, DataDome, PerimeterX, Imperva, Kasada, F5 Shape, AWS WAF, Vercel, Arkose, GeeTest, hCaptcha, reCAPTCHA (v2), generic JS. Detection is not the same as solving:
+  - **Inline (pure Python, no browser)**: ACW (shuffle+XOR), TMD (homepage session-warming), Amazon ("Continue shopping" form parse + follow), Reddit (bounded logged-out New Reddit verification form parse + same-session submission). Reddit cookies are persisted without consuming the large solved homepage body.
   - **Browser solver (`BrowserSolver`)**: Cloudflare, Akamai, DataDome (WASM PoW; bails on interactive captcha), PerimeterX (press-and-hold), Imperva (native-TLS free-pass first, browser-solve on the origin page under escalation), Kasada, F5 Shape, AWS WAF, GeeTest v4 (slide), hCaptcha, reCAPTCHA **v2** (checkbox + ONNX grid).
   - **Detect-only — NOT solved**: Arkose / FunCaptcha (no solver → raises `ChallengeDetected`). Vercel and `generic_js` have no dedicated solver either, but a generic browser JS-wait passes their *passive* JS checks.
   - **reCAPTCHA v3**: not a detected challenge — minted browser-free via `session.mint_recaptcha_v3(sitekey, action)` (score token). fetchaller does not currently use this.
 
-If a site blocks requests, **fix it in wafer, not fetchaller**.
+Any browser navigation that remains challenged or blocked is a failed solve,
+not usable content. The caller's request timeout is the total budget, including
+browser work. If a site blocks requests, **fix it in wafer, not fetchaller**.
 
 ## Persistent State
 
@@ -112,9 +219,10 @@ location; it is a mounted volume and `entrypoint.sh` chowns it to `appuser`.
 
 | State | Location | Survives restart? |
 |---|---|---|
-| OAuth clients + refresh token hashes | `${DATA_DIR:-/app/data}/oauth_clients.json` | Yes |
+| OAuth clients + refresh token hashes | `/app/data/oauth_clients.json` | Yes |
 | wafer cookie cache | `${WAFER_CACHE_DIR:-/app/data/wafer}` | Yes |
-| Chromium binaries | `${PLAYWRIGHT_BROWSERS_PATH:-/app/browsers}` (baked into image) | Yes |
+| Exact Chrome for Testing used by BrowserSolver | `${BROWSER_EXECUTABLE_PATH:-/opt/google/chrome/chrome}` (baked into amd64 image) | Yes |
+| Pinned reCAPTCHA ONNX models | `/app/model-cache` (baked into image, read-only) | Yes |
 | OAuth access tokens | none — stateless JWTs signed with `JWT_SECRET` | Yes, **if `JWT_SECRET` is set** |
 | Authorization codes | memory | No — 10 min TTL, cheap to retry |
 | CSRF tokens | memory | No — 10 min TTL |
@@ -127,12 +235,10 @@ Three rules follow from this, each learned from a production bug:
    per process, silently invalidating every OAuth token on restart and forcing every user to
    re-pair by hand. HTTP mode now refuses to start without it (`ALLOW_EPHEMERAL_JWT=1` opts out
    for local dev), and `/health` exposes `jwt_secret_ephemeral`.
-2. **Never default a path to `$HOME`.** `appuser` has no home directory in the image, so
-   `Path.home()` resolves to an uncreatable path. This silently disabled the wafer cookie cache,
-   and — because the build installs browsers as root — made Chromium unreachable at runtime,
-   breaking every browser challenge solve for five months. Both now default into `/app`.
+2. **Never default durable state to `$HOME`.** `appuser` has no home directory in the image, so
+   `Path.home()` resolves to an uncreatable path. This silently disabled the wafer cookie cache.
+   Durable mutable state now defaults into `/app/data`; browser and model artifacts are immutable
+   image assets outside that volume.
 3. **Import success is not availability.** `BrowserSolver` importing proves only that the Python
-   package exists. Startup verifies the Chromium install is present *and readable by this user*
-   before logging it as available.
-
-See `todo-survivereboots.md` for the full incident write-up.
+   package exists. Startup loads both pinned models and launches the exact configured Chrome
+   executable before authenticated HTTP readiness can pass.

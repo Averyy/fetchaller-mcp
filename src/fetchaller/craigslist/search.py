@@ -18,6 +18,7 @@ import sys
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
+from ..security.xss import safe_log_text
 from .sapi import (
     cache_area_id,
     extract_area_id,
@@ -30,7 +31,11 @@ from .sapi import (
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] craigslist search: {msg}", file=sys.stderr)
+    print(
+        f"[{datetime.now(UTC).isoformat()}] craigslist search: "
+        f"{safe_log_text(msg)}",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +176,7 @@ async def _resolve_area_id(
     )
 
     if "error" in page_result:
-        _log(f"Failed to fetch CL page for area ID: {page_result['error']}")
+        _log("Failed to fetch CL page for area ID")
         return None
 
     html = page_result.get("content", "")

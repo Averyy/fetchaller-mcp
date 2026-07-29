@@ -22,10 +22,11 @@ import json
 import re
 from urllib.parse import parse_qs, urljoin, urlparse
 
+import wafer
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
-from ..security.ssrf import is_private_host
+from ..security.ssrf import check_host
 
 # ---------------------------------------------------------------------------
 # URL detection
@@ -172,7 +173,7 @@ def _render_form(form: dict, label: str | None = None) -> list[str]:
         if not title:
             return None
         ftype = field.get("type") or ""
-        req = "required" if entry.get("isRequired") else "optional"
+        req = "required" if entry.get("isRequired") is True else "optional"
         out = f"- **{title}** ({ftype}, {req})"
         options = field.get("selectableValues") or []
         if isinstance(options, list) and options:
@@ -446,12 +447,30 @@ async def resolve_ashby_embed_url(url: str, session) -> str | None:
             chunk_url = _find_careers_chunk_url(page.text, str(page.url))
             if not chunk_url:
                 return None
-            # SSRF: chunk_url is a <script src> from attacker-controlled page HTML
-            # and may be an absolute URL to any host. Refuse private/internal (or
-            # unresolvable) hosts before fetching it (fail closed).
-            if await is_private_host(urlparse(chunk_url).hostname or ""):
+            # This URL comes from attacker-controlled HTML. Resolve once, vet
+            # every address, and pin a fresh no-redirect wafer session to that
+            # exact set so DNS rebinding cannot change the connect target.
+            chunk_parsed = urlparse(chunk_url)
+            chunk_host = (chunk_parsed.hostname or "").lower().rstrip(".")
+            if (
+                chunk_parsed.scheme not in {"http", "https"}
+                or not chunk_host
+                or chunk_parsed.username is not None
+                or chunk_parsed.password is not None
+            ):
                 return None
-            chunk = await session.get(chunk_url)
+            verdict = await check_host(chunk_host)
+            if verdict.blocked or not verdict.ips:
+                return None
+            chunk_session = wafer.AsyncSession(
+                resolve={chunk_host: verdict.ips},
+                follow_redirects=False,
+                max_rotations=0,
+                max_response_size=5 * 1024 * 1024,
+            )
+            chunk = await chunk_session.get(chunk_url)
+            if chunk.status_code != 200:
+                return None
             slug = _extract_org_slug_from_js(chunk.text)
         except Exception:
             return None
@@ -467,15 +486,35 @@ async def resolve_ashby_embed_url(url: str, session) -> str | None:
 
 _BOARD_API_BASE = "https://api.ashbyhq.com/posting-api/job-board"
 
+# The board endpoint has no pagination: one request returns every posting with
+# its full description HTML inline. Large boards dwarf the 10 MB the other job
+# board interceptors use (openai alone is ~11.5 MB), and falling back to the
+# board's HTML yields nothing but the SPA title, so this path gets its own
+# budget.
+BOARD_MAX_RESPONSE_BYTES = 48 * 1024 * 1024
+
+
+class AshbyBoardTooLargeError(Exception):
+    """The board API answered, but its payload exceeded the read budget.
+
+    This is deliberately not a ``None`` fall-through: the board exists, so
+    silently rendering the SPA's title would report an empty job board as a
+    successful read.
+    """
+
 
 async def fetch_ashby_board(org: str, session) -> dict | None:
     """Fetch the full job-board listing for ``jobs.ashbyhq.com/{org}``.
 
     Returns the raw API payload (``{"jobs": [...], "apiVersion": "..."}``) or
     ``None`` on any error so callers can fall through to the normal HTML fetch.
+    An oversized payload raises :class:`AshbyBoardTooLargeError` instead, because the
+    HTML fall-through cannot represent a board that really does exist.
     """
     try:
         resp = await session.get(f"{_BOARD_API_BASE}/{org}")
+    except wafer.ResponseTooLarge as exc:
+        raise AshbyBoardTooLargeError(str(exc)) from exc
     except Exception:
         return None
     if resp.status_code != 200:
@@ -533,7 +572,7 @@ def render_ashby_board(data: dict, org: str, source_url: str | None = None) -> s
                         more_locs.append(s)
                 if more_locs:
                     details.append("+ " + ", ".join(more_locs))
-            if j.get("isRemote"):
+            if j.get("isRemote") is True:
                 details.append("Remote")
             wtype = (j.get("workplaceType") or "").strip()
             if wtype:

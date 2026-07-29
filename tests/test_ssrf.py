@@ -1,5 +1,6 @@
 """Tests for SSRF protection."""
 
+import asyncio
 import socket
 import time
 
@@ -8,6 +9,7 @@ import pytest
 from fetchaller.security import ssrf
 from fetchaller.security.ssrf import (
     BLOCK_PRIVATE,
+    BLOCK_SINKHOLE,
     BLOCK_UNRESOLVED,
     check_host,
     clear_dns_cache,
@@ -173,7 +175,26 @@ class TestFailClosed:
         monkeypatch.setattr(ssrf, "_resolve_hostname", _empty)
         is_private, ips = await resolve_and_check("does-not-resolve.example")
         assert is_private is True
+
+    async def test_unencodable_hostname_blocks_instead_of_raising(self):
+        """A label over the DNS limit makes getaddrinfo raise UnicodeError.
+
+        That escaped both resolvers as an unhandled exception -- surfacing to the
+        MCP caller as a crash on the async path, and onto a socket-server thread
+        on the sync path the browser egress proxy uses. It is simply an
+        unresolvable name, so it must fail closed like any other lookup miss.
+        """
+
+        hostname = "a" * 5000 + ".example"
+        is_private, ips = await resolve_and_check(hostname)
+        assert is_private is True
         assert ips == []
+
+    def test_unencodable_hostname_blocks_on_the_sync_proxy_path(self):
+        verdict = ssrf.check_host_sync("a" * 5000 + ".example")
+        assert verdict.blocked is True
+        assert verdict.reason == BLOCK_UNRESOLVED
+        assert verdict.ips == []
 
     async def test_async_public_host_returns_ips_to_pin(self, monkeypatch):
         async def _public(_host):
@@ -476,3 +497,272 @@ class TestCacheIsNotAliased:
         assert second.blocked is False
         assert second.ips == ["93.184.216.34"]
         assert "10.0.0.5" not in second.ips
+
+
+class TestSinkholeAnswers:
+    """A resolver answering 0.0.0.0 / :: reported a failed lookup, not a private host.
+
+    A filtering resolver (or a stale/poisoned cache) hands back the unspecified
+    address for a name it will not resolve. That address is non-routable, so the
+    private-range guard fired on it and the caller was told "Access to
+    private/internal hosts is not allowed" — a security verdict for what is
+    actually a DNS failure, pointing at entirely the wrong cause.
+    """
+
+    def setup_method(self):
+        clear_dns_cache()
+
+    @staticmethod
+    def _answers(*addresses):
+        def _resolve(*args, **kwargs):
+            return [(None, None, None, None, (address, 0)) for address in addresses]
+
+        return _resolve
+
+    async def test_ipv4_sinkhole_is_not_a_private_verdict(self, monkeypatch):
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", self._answers("0.0.0.0"))
+        monkeypatch.setattr(ssrf, "_resolve_via_doh", self._no_doh)
+
+        verdict = await check_host("sinkholed.example")
+
+        assert verdict.blocked is True  # still fails closed
+        assert verdict.reason == BLOCK_SINKHOLE
+        assert verdict.reason != BLOCK_PRIVATE
+        assert "0.0.0.0" in verdict.message
+        assert "not a" in verdict.message and "private-host policy block" in verdict.message
+
+    async def test_ipv6_sinkhole_is_not_a_private_verdict(self, monkeypatch):
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", self._answers("::"))
+        monkeypatch.setattr(ssrf, "_resolve_via_doh", self._no_doh)
+
+        verdict = await check_host("sinkholed6.example")
+
+        assert verdict.blocked is True
+        assert verdict.reason == BLOCK_SINKHOLE
+
+    async def test_sinkhole_alongside_a_real_address_keeps_the_real_one(self, monkeypatch):
+        monkeypatch.setattr(
+            ssrf.socket,
+            "getaddrinfo",
+            self._answers("0.0.0.0", "93.184.216.34"),
+        )
+
+        verdict = await check_host("mixed.example")
+
+        assert verdict.blocked is False
+        assert verdict.ips == ["93.184.216.34"]
+
+    async def test_public_resolver_fallback_recovers_the_host(self, monkeypatch):
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", self._answers("0.0.0.0"))
+
+        async def _doh(hostname):
+            assert hostname == "recovered.example"
+            return ["51.161.117.187"]
+
+        monkeypatch.setattr(ssrf, "_resolve_via_doh", _doh)
+
+        verdict = await check_host("recovered.example")
+
+        assert verdict.blocked is False
+        assert verdict.ips == ["51.161.117.187"]
+
+    async def test_fallback_answers_still_face_the_private_range_gate(self, monkeypatch):
+        """The fallback changes where the record comes from, never what is allowed."""
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", self._answers("0.0.0.0"))
+
+        async def _doh(hostname):
+            return ["169.254.169.254"]  # cloud metadata endpoint
+
+        monkeypatch.setattr(ssrf, "_resolve_via_doh", _doh)
+
+        verdict = await check_host("rebind.example")
+
+        assert verdict.blocked is True
+        assert verdict.reason == BLOCK_PRIVATE
+
+    @pytest.mark.parametrize("literal", ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0"])
+    async def test_unspecified_ip_literals_are_still_private_blocks(self, literal):
+        """Only a resolver ANSWER is reclassified. On Linux, dialing 0.0.0.0
+        reaches localhost, so a literal in the URL must stay a hard block."""
+        verdict = await check_host(literal)
+
+        assert verdict.blocked is True
+        assert verdict.reason == BLOCK_PRIVATE
+
+    async def test_ordinary_resolution_failure_is_still_unresolved(self, monkeypatch):
+        def _fail(*args, **kwargs):
+            raise socket.gaierror("nope")
+
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", _fail)
+
+        verdict = await check_host("gone.example")
+
+        assert verdict.reason == BLOCK_UNRESOLVED
+
+    async def test_sync_twin_agrees(self, monkeypatch):
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", self._answers("0.0.0.0"))
+        monkeypatch.setattr(ssrf, "_resolve_via_doh_sync", lambda hostname: [])
+
+        verdict = ssrf.check_host_sync("sync-sinkhole.example")
+
+        assert verdict.blocked is True
+        assert verdict.reason == BLOCK_SINKHOLE
+
+    async def test_fallback_is_off_unless_opted_in(self, monkeypatch):
+        """A 0.0.0.0 answer is usually a blocklist doing its job; resolving past
+        it by default would override policy nobody asked us to override."""
+        monkeypatch.delenv("DNS_DOH_FALLBACK", raising=False)
+        assert ssrf._resolvable_via_doh("example.com") is False
+        assert await ssrf._resolve_via_doh("example.com") == []
+
+    async def test_fallback_can_be_opted_into(self, monkeypatch):
+        monkeypatch.setenv("DNS_DOH_FALLBACK", "1")
+        assert ssrf._resolvable_via_doh("example.com") is True
+
+    async def test_sinkhole_is_still_named_correctly_without_the_fallback(self, monkeypatch):
+        """The actual defect was the misclassification; that fix must not
+        depend on the opt-in."""
+        monkeypatch.delenv("DNS_DOH_FALLBACK", raising=False)
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", self._answers("0.0.0.0"))
+
+        verdict = await check_host("policy-blocked.example")
+
+        assert verdict.reason == BLOCK_SINKHOLE
+        assert verdict.reason != BLOCK_PRIVATE
+
+    @staticmethod
+    async def _no_doh(hostname):
+        return []
+
+
+class TestDohAnswerParsing:
+    """The DoH response is untrusted input; only address records may escape it."""
+
+    def test_extracts_a_and_aaaa_records(self):
+        body = (
+            '{"Status":0,"Answer":['
+            '{"name":"x.example","type":1,"TTL":300,"data":"51.161.117.187"},'
+            '{"name":"x.example","type":28,"TTL":300,"data":"2606:4700::1"}]}'
+        )
+        assert ssrf._parse_doh_answer(body) == ["51.161.117.187", "2606:4700::1"]
+
+    def test_ignores_cname_and_other_chain_links(self):
+        body = (
+            '{"Status":0,"Answer":['
+            '{"name":"x.example","type":5,"data":"real.example."},'
+            '{"name":"real.example","type":1,"data":"93.184.216.34"}]}'
+        )
+        assert ssrf._parse_doh_answer(body) == ["93.184.216.34"]
+
+    def test_a_public_resolver_echoing_the_sinkhole_is_not_an_escape_hatch(self):
+        body = '{"Status":0,"Answer":[{"name":"x.example","type":1,"data":"0.0.0.0"}]}'
+        assert ssrf._parse_doh_answer(body) == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "not json",
+            "[]",
+            '{"Status":3}',
+            '{"Answer":"nope"}',
+            '{"Answer":[{"type":1,"data":"not-an-ip"}]}',
+            '{"Answer":[{"type":1}]}',
+            '{"Answer":[null]}',
+            '{"Answer":[{"type":1,"data":123}]}',
+        ],
+    )
+    def test_malformed_payloads_yield_nothing(self, body):
+        assert ssrf._parse_doh_answer(body) == []
+
+    def test_answers_are_bounded(self):
+        answers = ",".join(
+            f'{{"type":1,"data":"93.184.216.{n}"}}' for n in range(1, 200)
+        )
+        parsed = ssrf._parse_doh_answer('{"Answer":[' + answers + "]}")
+        assert len(parsed) <= ssrf._DOH_MAX_ANSWERS
+
+    def test_endpoints_are_ip_literals(self):
+        """A hostname here would need the very resolver we are working around,
+        and would recurse back into this module."""
+        import ipaddress
+        from urllib.parse import urlparse
+
+        for endpoint in ssrf._DOH_ENDPOINTS:
+            host = urlparse(endpoint).hostname
+            ipaddress.ip_address(host)  # raises if it is not a literal
+
+    def test_query_url_escapes_the_hostname(self):
+        urls = [url for _endpoint, url in ssrf._doh_query_urls("evil.example&type=ANY")]
+        # The injected parameter must survive only as escaped text inside name=.
+        assert all("evil.example%26type%3DANY" in url for url in urls)
+        assert all(url.count("&type=") == 1 for url in urls)
+
+    @pytest.mark.parametrize("hostname", ["", "x" * 254, "héllo.example"])
+    def test_unresolvable_names_never_reach_a_public_resolver(self, hostname):
+        assert ssrf._resolvable_via_doh(hostname) is False
+
+
+class TestFallbackIsBounded:
+    """The fallback is a best-effort retry of a lookup that already failed. It
+    must not be able to spend the caller's whole fetch budget doing it."""
+
+    def setup_method(self):
+        clear_dns_cache()
+
+    def test_whole_fallback_has_one_deadline(self):
+        """Four queries at the per-query timeout would be four full timeouts."""
+        assert ssrf._DOH_TOTAL_TIMEOUT <= ssrf._DOH_TIMEOUT + 2
+        assert len(ssrf._doh_query_urls("x.example")) > 1
+
+    async def test_unreachable_resolvers_return_within_the_deadline(self, monkeypatch):
+        import time as _time
+
+        class _Hang:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, **kwargs):
+                await asyncio.sleep(float(kwargs.get("timeout", 30)))
+                raise TimeoutError
+
+        monkeypatch.setattr("wafer.AsyncSession", _Hang)
+        monkeypatch.setattr(ssrf, "_DOH_TIMEOUT", 0.4)
+        monkeypatch.setattr(ssrf, "_DOH_TOTAL_TIMEOUT", 0.6)
+
+        started = _time.monotonic()
+        result = await ssrf._resolve_via_doh("slow.example")
+        elapsed = _time.monotonic() - started
+
+        assert result == []
+        assert elapsed < 1.2, f"fallback ran past its total deadline: {elapsed:.2f}s"
+
+    def test_confirmed_sinkhole_is_remembered_longer_than_a_hiccup(self):
+        """Re-deciding a stable condition every 2s re-runs the whole fallback
+        and hammers the public resolvers on every retry."""
+        assert ssrf._DNS_SINKHOLE_TTL > ssrf._DNS_NEGATIVE_TTL
+        assert ssrf._DNS_SINKHOLE_TTL <= ssrf._DNS_CACHE_TTL
+
+    async def test_the_sinkhole_marker_outlives_its_cache_entry(self, monkeypatch):
+        """If the marker expired first, the same blocked host would start
+        reporting a generic resolver failure instead of the real diagnosis."""
+
+        def _sinkhole(*args, **kwargs):
+            return [(None, None, None, None, ("0.0.0.0", 0))]
+
+        async def _no_doh(hostname):
+            return []
+
+        monkeypatch.setattr(ssrf.socket, "getaddrinfo", _sinkhole)
+        monkeypatch.setattr(ssrf, "_resolve_via_doh", _no_doh)
+
+        first = await check_host("stable-sinkhole.example")
+        second = await check_host("stable-sinkhole.example")  # served from cache
+
+        assert first.reason == BLOCK_SINKHOLE
+        assert second.reason == BLOCK_SINKHOLE

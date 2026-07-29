@@ -96,14 +96,31 @@ def extract_dayforce_canonical_board_url(html: str) -> str | None:
     next_data = extract_next_data(html)
     if not isinstance(next_data, dict):
         return None
-    rt = next_data.get("runtimeConfig") or {}
-    base_url = (rt.get("BASE_URL") or "").strip().rstrip("/")
+    rt = next_data.get("runtimeConfig")
+    if not isinstance(rt, dict):
+        return None
+    base_url_value = rt.get("BASE_URL")
+    if not isinstance(base_url_value, str):
+        return None
+    base_url = base_url_value.strip().rstrip("/")
     if base_url != "https://jobs.dayforcehcm.com":
         return None
-    query = next_data.get("query") or {}
-    namespace = (query.get("clientNamespace") or "").strip()
-    board = (query.get("careerSiteXRefCode") or "").strip()
-    locale = (next_data.get("locale") or "en-US").strip() or "en-US"
+    query = next_data.get("query")
+    if not isinstance(query, dict):
+        return None
+    namespace_value = query.get("clientNamespace")
+    board_value = query.get("careerSiteXRefCode")
+    locale_value = next_data.get("locale", "en-US")
+    if not isinstance(namespace_value, str) or not isinstance(
+        board_value,
+        str,
+    ):
+        return None
+    if not isinstance(locale_value, str):
+        return None
+    namespace = namespace_value.strip()
+    board = board_value.strip()
+    locale = locale_value.strip() or "en-US"
     if not (namespace and board):
         return None
     return f"https://jobs.dayforcehcm.com/{locale}/{namespace}/{board}"
@@ -113,9 +130,7 @@ def extract_dayforce_canonical_board_url(html: str) -> str | None:
 # __NEXT_DATA__ parsing
 # ---------------------------------------------------------------------------
 
-_NEXT_DATA_RE = re.compile(
-    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL
-)
+_NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
 
 
 def extract_next_data(html: str) -> dict | None:
@@ -187,8 +202,11 @@ def _html_to_markdown(html: str) -> str:
         return ""
     cleaned = _HTML_NBSP_P_RE.sub("", html)
     md = markdownify(
-        cleaned, heading_style="ATX", bullets="-",
-        escape_asterisks=False, escape_underscores=False,
+        cleaned,
+        heading_style="ATX",
+        bullets="-",
+        escape_asterisks=False,
+        escape_underscores=False,
     )
     return _BLANK_LINE_COLLAPSE_RE.sub("\n\n", md).strip()
 
@@ -210,14 +228,19 @@ def _stringify(value) -> str:
     return str(value)
 
 
-_POSTING_SKIP = frozenset({
-    "jobPostingContent",  # rendered as the description body
-    "postingLocations",   # rendered as its own section
-    "jobPostingAttributes",  # rendered as its own section
-    # Internal handles with no candidate-facing value
-    "assessmentId", "assessmentSentType", "jobApplicationTemplateId",
-    "postingStatus", "postingThemeOverrideBoardCode",
-})
+_POSTING_SKIP = frozenset(
+    {
+        "jobPostingContent",  # rendered as the description body
+        "postingLocations",  # rendered as its own section
+        "jobPostingAttributes",  # rendered as its own section
+        # Internal handles with no candidate-facing value
+        "assessmentId",
+        "assessmentSentType",
+        "jobApplicationTemplateId",
+        "postingStatus",
+        "postingThemeOverrideBoardCode",
+    }
+)
 
 
 def render_dayforce_job(payload: dict, source_url: str | None = None) -> str:
@@ -244,7 +267,7 @@ def render_dayforce_job(payload: dict, source_url: str | None = None) -> str:
 
     # postingLocations as its own block
     loc_lines: list[str] = []
-    for loc in (job.get("postingLocations") or []):
+    for loc in job.get("postingLocations") or []:
         if not isinstance(loc, dict):
             continue
         addr = (loc.get("formattedAddress") or "").strip()
@@ -259,7 +282,7 @@ def render_dayforce_job(payload: dict, source_url: str | None = None) -> str:
             loc_lines.append("- " + ", ".join(bits))
 
     attr_lines: list[str] = []
-    for attr in (job.get("jobPostingAttributes") or []):
+    for attr in job.get("jobPostingAttributes") or []:
         if not isinstance(attr, dict):
             continue
         name = (attr.get("name") or "").strip()
@@ -415,7 +438,7 @@ def render_dayforce_board(payload: dict, source_url: str | None = None) -> str:
         details: list[str] = []
         loc = (j.get("location") or "").strip() if isinstance(j.get("location"), str) else ""
         if not loc:
-            for ploc in (j.get("postingLocations") or []):
+            for ploc in j.get("postingLocations") or []:
                 if isinstance(ploc, dict):
                     addr = (ploc.get("formattedAddress") or "").strip()
                     city = (ploc.get("cityName") or "").strip() if isinstance(ploc.get("cityName"), str) else ""
@@ -432,8 +455,7 @@ def render_dayforce_board(payload: dict, source_url: str | None = None) -> str:
         parts.append(line)
         if jpid is not None and namespace and board_code:
             parts.append(
-                f"  - https://jobs.dayforcehcm.com/{culture or 'en-US'}/{namespace}/"
-                f"{board_code.upper()}/jobs/{jpid}"
+                f"  - https://jobs.dayforcehcm.com/{culture or 'en-US'}/{namespace}/{board_code.upper()}/jobs/{jpid}"
             )
         # Short snippet
         desc = _strip_html(j.get("jobDescription") or "")

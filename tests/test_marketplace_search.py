@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import patch
 
 import pytest
@@ -151,6 +153,57 @@ class TestKijijiLocationCrossCheck:
 
 class TestSearchMarketplace:
     @pytest.mark.asyncio
+    async def test_deadline_does_not_wait_for_noncooperative_child(
+        self,
+        monkeypatch,
+    ):
+        release = asyncio.Event()
+
+        async def noncooperative(*_args, **_kwargs):
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            return {"platform": "kijiji", "content": "too late"}
+
+        with (
+            patch(
+                "fetchaller.marketplace.search._search_kijiji",
+                side_effect=noncooperative,
+            ),
+            patch("fetchaller.marketplace.search._search_craigslist") as mock_cl,
+            patch("fetchaller.marketplace.search._search_facebook") as mock_fb,
+            patch(
+                "fetchaller.craigslist.locations.is_canadian_location",
+                return_value=True,
+            ),
+        ):
+            mock_cl.return_value = {
+                "platform": "craigslist",
+                "content": "Verified Craigslist results",
+            }
+            mock_fb.return_value = {
+                "platform": "facebook",
+                "error": "blocked",
+            }
+            monkeypatch.setattr(
+                "fetchaller.marketplace.search._MARKETPLACE_TIMEOUT",
+                0.05,
+            )
+            started = time.monotonic()
+            result = await search_marketplace(
+                query="bike",
+                location="toronto",
+            )
+            elapsed = time.monotonic() - started
+
+        assert elapsed < 0.5
+        assert "Verified Craigslist results" in result["content"]
+        assert "Kijiji: Platform search timed out" in result["content"]
+        release.set()
+        await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
     async def test_all_platforms_succeed(self):
         """When all 3 platforms return content, output has all 3 sections."""
         with (
@@ -258,6 +311,29 @@ class TestSearchMarketplace:
 
             assert "content" in result
             assert "Craigslist" in result["content"]
+
+    @pytest.mark.asyncio
+    async def test_child_cancellation_is_reported_without_crashing_or_hiding_success(self):
+        with (
+            patch("fetchaller.marketplace.search._search_kijiji") as mock_kj,
+            patch("fetchaller.marketplace.search._search_craigslist") as mock_cl,
+            patch("fetchaller.marketplace.search._search_facebook") as mock_fb,
+            patch(
+                "fetchaller.craigslist.locations.is_canadian_location",
+                return_value=True,
+            ),
+        ):
+            mock_kj.side_effect = asyncio.CancelledError
+            mock_cl.return_value = {
+                "platform": "craigslist",
+                "content": "Verified Craigslist results",
+            }
+            mock_fb.return_value = {"platform": "facebook", "error": "blocked"}
+
+            result = await search_marketplace(query="bike", location="toronto")
+
+        assert "Verified Craigslist results" in result["content"]
+        assert "Kijiji: search cancelled" in result["content"]
 
     @pytest.mark.asyncio
     async def test_specific_platforms(self):

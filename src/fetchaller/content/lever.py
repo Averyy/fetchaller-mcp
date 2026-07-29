@@ -308,7 +308,7 @@ def render_lever_job(data: dict, source_url: str | None = None) -> str:
                 form_lines.append("")
             for q in section.get("questions") or []:
                 types_str = ", ".join(q.get("field_types") or []) or "input"
-                req = "required" if q.get("required") else "optional"
+                req = "required" if q.get("required") is True else "optional"
                 line = f"- **{q['label']}** ({types_str}, {req})"
                 if q.get("description"):
                     line += f"\n  - {q['description']}"

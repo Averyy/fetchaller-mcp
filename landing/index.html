@@ -50,7 +50,7 @@
             "Web search via Google and DuckDuckGo",
             "Reddit browsing and search",
             "AliExpress and Alibaba product search",
-            "15+ sites with tailored cleanup (65-98% token savings)",
+            "Compact New Reddit rendering with whole-section output and explicit omissions",
             "Automatic bot challenge bypass (Cloudflare, Akamai, DataDome)",
             "No domain restrictions",
             "No permission prompts with allow list",
@@ -1729,10 +1729,12 @@
 <pre id="install-code" style="padding: 0;"><span class="c"># Install</span>
 git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
-uv sync && patchright install chromium
+uv sync
+uv run python -m patchright install chromium
+uv run python -m patchright install chrome
 
 <span class="c"># Add to Claude Code</span>
-claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
+claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp</pre>
                         </div>
                     </div>
                     <div class="monitor-chin">
@@ -1780,6 +1782,7 @@ claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
       <span class="s">"mcp__fetchaller__browse_reddit"</span>,
       <span class="s">"mcp__fetchaller__search_reddit"</span>,
       <span class="s">"mcp__fetchaller__search_marketplace"</span>,
+      <span class="s">"mcp__fetchaller__search_realtor"</span>,
       <span class="s">"mcp__fetchaller__get_aliexpress_product"</span>,
       <span class="s">"mcp__fetchaller__search_aliexpress"</span>,
       <span class="s">"mcp__fetchaller__get_alibaba_product"</span>,
@@ -1818,6 +1821,7 @@ claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</pre>
 - <span class="s">**search**</span> — Web search (Google + DuckDuckGo combined)
 - <span class="s">**browse_reddit**</span> / <span class="s">**search_reddit**</span> — Reddit listings and search
 - <span class="s">**search_marketplace**</span> — Search Kijiji + Craigslist + Facebook Marketplace
+- <span class="s">**search_realtor**</span> — Search realtor.ca real-estate listings
 - <span class="s">**get_aliexpress_product**</span> / <span class="s">**search_aliexpress**</span> — AliExpress products
 - <span class="s">**get_alibaba_product**</span> / <span class="s">**search_alibaba**</span> — Alibaba.com B2B products
 
@@ -1912,7 +1916,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                     </div>
                     <div class="winamp-track">
                         <span class="winamp-track-num">7.</span>
-                        <span class="winamp-track-info"><strong>Reddit</strong><span class="winamp-track-desc">Auto-converts to old.reddit.com. 65&ndash;70% token savings.</span></span>
+                        <span class="winamp-track-info"><strong>Reddit</strong><span class="winamp-track-desc">Logged-out New Reddit JSON &rarr; bounded Markdown with explicit omissions and continuation links.</span></span>
                     </div>
                     <div class="winamp-track">
                         <span class="winamp-track-num">8.</span>
@@ -2051,9 +2055,9 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                                 <h3>What do I need?</h3>
                                 <p><strong>Requirements:</strong> Python 3.12+ and <code>uv</code>. That's it.</p>
                                 <p><strong>Install:</strong></p>
-                                <p><code>git clone https://github.com/Averyy/fetchaller-mcp.git</code><br><code>cd fetchaller-mcp</code><br><code>uv sync &amp;&amp; patchright install chromium</code></p>
+                                <p><code>git clone https://github.com/Averyy/fetchaller-mcp.git</code><br><code>cd fetchaller-mcp</code><br><code>uv sync</code><br><code>uv run python -m patchright install chromium</code><br><code>uv run python -m patchright install chrome</code></p>
                                 <p><strong>Add to Claude Code:</strong></p>
-                                <p><code>claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main</code></p>
+                                <p><code>claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp</code></p>
                                 <p>No API keys required. No Docker. No build step. Restart Claude Code after adding the server and you're ready to go.</p>
                                 <div class="see-also">See Also: <a class="winhelp-link" data-topic="3">How do I set up permissions?</a></div>
                             </div>
@@ -2075,9 +2079,10 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                                 &bull; <strong>Medium</strong> &mdash; Including 100s of custom domains<br>
                                 &bull; <strong>Hugging Face</strong> &mdash; Models, datasets, spaces<br>
                                 &bull; <strong>Wikipedia</strong> &mdash; Edit buttons, navboxes, TOC stripped<br>
-                                &bull; <strong>Reddit</strong> &mdash; Auto-converts to old.reddit.com<br>
+                                &bull; <strong>Reddit</strong> &mdash; Logged-out New Reddit JSON rendered as bounded, compact Markdown<br>
                                 &bull; <strong>Amazon</strong> &mdash; All TLDs (.com, .ca, .co.uk, etc.)<br>
                                 &bull; <strong>Marketplaces</strong> &mdash; eBay, Kijiji, Craigslist, Facebook Marketplace. Search and browse listings<br>
+                                &bull; <strong>realtor.ca</strong> &mdash; Home search and individual listings<br>
                                 &bull; <strong>AliExpress</strong> &mdash; Product pages and search<br>
                                 &bull; <strong>Alibaba</strong> &mdash; B2B product pages and search<br>
                                 &bull; <strong>DigiKey</strong> &mdash; Optional API mode with OAuth2<br>
@@ -2088,11 +2093,13 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                             </div>
                             <div class="winhelp-page" data-topic="5">
                                 <h3>Does Reddit work?</h3>
-                                <p>Yes. Reddit is fully supported with two dedicated tools plus fetch:</p>
-                                <p>&bull; <strong><code>browse_reddit</code></strong> &mdash; List posts from any subreddit. Sort by hot, new, top, or rising. Includes pagination.</p>
-                                <p>&bull; <strong><code>search_reddit</code></strong> &mdash; Search posts across all of Reddit or within a specific subreddit. Filter by time period.</p>
-                                <p>&bull; <strong><code>fetch</code></strong> &mdash; Read full discussion threads with all comments. URLs are auto-converted to old.reddit.com for cleaner, lighter HTML.</p>
-                                <p>This is a major advantage over WebFetch, which blocks Reddit entirely. Claude can now browse subreddits, search for discussions, and read full threads as part of its research workflow.</p>
+                                <p>Yes. Reddit's public logged-out read flow is supported with two dedicated tools plus <code>fetch</code>:</p>
+                                <p>&bull; <strong><code>browse_reddit</code></strong> &mdash; List posts from any subreddit. Sort by hot, new, top, or rising. Includes pagination, public score, returned upvote ratio, comment count, and canonical links.</p>
+                                <p>&bull; <strong><code>search_reddit</code></strong> &mdash; Search posts across all of Reddit or within a specific subreddit. Filter by sort and time period.</p>
+                                <p>&bull; <strong><code>fetch</code></strong> &mdash; Read posts and nested comment threads up to the requested context budget. It preserves outbound/discussion links, galleries, video, crossposts, polls, public state labels, and selected-comment context.</p>
+                                <p>Normal URLs use New Reddit's anonymous JSON response and a selected-field Markdown renderer. Old Reddit input links are canonicalized to <code>www.reddit.com</code>; no normal request depends on Old Reddit. Scores stay scores. Upvote ratios and poll totals appear only when Reddit returns them; fetchaller does not invent separate up/down counts.</p>
+                                <p><strong>Bounded context:</strong> requests scale to the caller's token budget, complete sections are preserved, and every omission or continuation is named. Compactness never silently removes public content.</p>
+                                <p>This is a major advantage over WebFetch, which blocks Reddit entirely. Claude can browse, search, and read public discussions without an account while spending materially less context on page chrome.</p>
                                 <div class="see-also">See Also: <a class="winhelp-link" data-topic="6">Does it bypass Cloudflare?</a></div>
                             </div>
                             <div class="winhelp-page" data-topic="6">
@@ -2136,7 +2143,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                                 <p>&bull; <strong>Claude Code</strong> &mdash; Primary target. Use <code>claude mcp add</code> to register.<br>
                                 &bull; <strong>Claude Desktop</strong> &mdash; Add to <code>claude_desktop_config.json</code> under <code>mcpServers</code>.<br>
                                 &bull; <strong>Cursor</strong> &mdash; Add as an MCP server in Cursor's settings.<br>
-                                &bull; <strong>Any MCP client</strong> &mdash; Point it at <code>.venv/bin/python -m fetchaller.main</code>.</p>
+                                &bull; <strong>Any MCP client</strong> &mdash; Start it with <code>uv --directory /path/to/fetchaller-mcp run fetchaller-mcp</code>.</p>
                                 <p>The server exposes the same tools regardless of which client connects. Configuration (permissions, CLAUDE.md) is client-specific but the server itself is universal.</p>
                             </div>
                         </div>

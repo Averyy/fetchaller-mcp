@@ -84,6 +84,47 @@ class TestDomainRateLimiter:
             gap = timestamps[i] - timestamps[i - 1]
             assert gap >= 0.02, f"Gap {i-1}→{i}: {gap:.3f}s < 0.02s"
 
+    @pytest.mark.asyncio
+    async def test_server_requested_defer_blocks_next_call(self):
+        limiter = DomainRateLimiter(min_interval=0.0, jitter=(0.0, 0.0))
+        limiter.defer(0.05)
+
+        start = time.monotonic()
+        await limiter.wait()
+
+        assert time.monotonic() - start >= 0.04
+
+    @pytest.mark.asyncio
+    async def test_defer_while_waiter_is_sleeping_extends_existing_wait(self):
+        limiter = DomainRateLimiter(min_interval=0.04, jitter=(0.0, 0.0))
+        await limiter.wait()
+
+        start = time.monotonic()
+        waiter = asyncio.create_task(limiter.wait())
+        await asyncio.sleep(0.01)
+        limiter.defer(0.08)
+        await waiter
+
+        assert time.monotonic() - start >= 0.08
+
+    @pytest.mark.asyncio
+    async def test_relative_state_never_reads_wall_clock(self, monkeypatch):
+        from fetchaller import ratelimit
+
+        monkeypatch.setattr(
+            ratelimit.time,
+            "time",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("wall clock used")
+            ),
+        )
+        limiter = DomainRateLimiter(
+            min_interval=0.0, jitter=(0.0, 0.0)
+        )
+
+        limiter.defer(0)
+        await limiter.wait()
+
 
 class TestCrossModuleCoordination:
     """Shared limiter enforces spacing across different operations."""

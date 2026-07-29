@@ -12,10 +12,15 @@ from datetime import UTC, datetime
 import wafer
 
 from ..config import get_wafer_cache_dir
+from ..security.xss import safe_log_text
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] aliexpress reviews: {msg}", file=sys.stderr)
+    print(
+        f"[{datetime.now(UTC).isoformat()}] aliexpress reviews: "
+        f"{safe_log_text(msg)}",
+        file=sys.stderr,
+    )
 
 
 # Shared session for feedback.aliexpress.com (reuses TLS connections).
@@ -28,7 +33,11 @@ async def _get_session() -> wafer.AsyncSession:
     if _session is None:
         async with _session_lock:
             if _session is None:
-                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+                _session = wafer.AsyncSession(
+                    max_rotations=0,
+                    cache_dir=get_wafer_cache_dir(),
+                    max_response_size=5 * 1024 * 1024,
+                )
     return _session
 
 
@@ -42,6 +51,7 @@ async def fetch_reviews(
     product_id: str,
     page: int = 1,
     page_size: int = 10,
+    timeout: float = 10,
 ) -> dict:
     """Fetch product reviews from feedback.aliexpress.com.
 
@@ -70,7 +80,7 @@ async def fetch_reviews(
             url,
             params=params,
             headers={"Referer": f"https://www.aliexpress.com/item/{product_id}.html"},
-            timeout=10,
+            timeout=timeout,
         )
         if resp.status_code >= 400:
             _log(f"reviews API HTTP {resp.status_code} for product {product_id}")
@@ -81,5 +91,8 @@ async def fetch_reviews(
             return data["data"]
         return {"error": "No data field in reviews response"}
     except Exception as e:
-        _log(f"reviews API error for product {product_id}: {e}")
+        _log(
+            f"reviews API error for product {product_id}: "
+            f"{type(e).__name__}"
+        )
         return {"error": f"Reviews API error: {e}"}

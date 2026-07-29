@@ -48,6 +48,7 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
                     rate_limit=2.5,
                     rate_jitter=0.5,
                     cache_dir=get_wafer_cache_dir(),
+                    max_response_size=10 * 1024 * 1024,
                 )
     return _session
 
@@ -99,9 +100,20 @@ def extract_job_id(url: str) -> str | None:
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
 
 
-async def fetch_html(url: str, browser_solver=None) -> str:
+async def fetch_html(url: str, browser_solver=None, timeout: float | None = None) -> str:
+    """Fetch a wellfound page, bounded by the caller's remaining budget.
+
+    Without ``timeout`` this inherits the shared session's 90s total — which is
+    the budget for solving a DataDome challenge, not one a caller asking for 10s
+    ever agreed to. The fetch tool's outer deadline stops the caller waiting on
+    it either way, but only passing the real budget down keeps the request from
+    running on past the answer it can no longer be used for.
+    """
     s = await _get_session(browser_solver)
-    r = await s.get(url)
+    kwargs = {}
+    if timeout is not None and timeout > 0:
+        kwargs["timeout"] = timedelta(seconds=timeout)
+    r = await s.get(url, **kwargs)
     r.raise_for_status()
     return r.text
 

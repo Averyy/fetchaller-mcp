@@ -6,6 +6,23 @@ MCP server for fetching any URL without domain restrictions. Full Reddit support
 
 fetchaller owns content processing + MCP tools. wafer (`~/code/wafer`) owns HTTP transport + anti-detection. fetchaller NEVER does bot solving, impersonation, or cookie management — if a site blocks requests, fix it in wafer. See `docs/architecture.md` for full details.
 
+### Reddit
+
+Normal Reddit URLs use New Reddit's logged-out anonymous JSON path, except the
+wiki page index, which first reads New Reddit's canonical SSR page tree and,
+when that exact tree is unavailable or its exact anonymous route returns an
+unstructured 403, posts `WikiPageRevisionsV2` to the fixed
+`www.reddit.com/svc/shreddit/graphql` route using the same anonymous session's
+`csrf_token` cookie. Public wiki parity must pass anonymously; the OAuth
+`wikiread` endpoint is an optional fallback only and must never become a
+requirement. Wafer >=0.4.1 owns verification/cookie persistence;
+fetchaller owns strict URL mapping, SSR/API schema validation, and compact
+rendering. Never add an Old Reddit fallback or copy wafer's
+verification parser into this repo. Explicit `.json` stays raw JSON and
+`raw=true` fetches canonical New Reddit HTML. Preserve Reddit's public score as
+a score (not an upvote count); show `upvote_ratio` only when returned, and never
+invent separate up/down vote counts.
+
 ## Pre-Commit Rules
 
 **ALWAYS run lint and tests before EVERY commit. No exceptions.**

@@ -23,6 +23,7 @@ import wafer
 
 from ..config import get_wafer_cache_dir
 from ..ratelimit import craigslist_limiter
+from ..security.xss import safe_log_text
 
 _SAPI_BASE = "https://sapi.craigslist.org/web/v8/postings/search"
 
@@ -38,7 +39,11 @@ _AREA_ID_RE = re.compile(r'"areaId"\s*:\s*(\d+)')
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] craigslist sapi: {msg}", file=sys.stderr)
+    print(
+        f"[{datetime.now(UTC).isoformat()}] craigslist sapi: "
+        f"{safe_log_text(msg)}",
+        file=sys.stderr,
+    )
 
 
 _session: wafer.AsyncSession | None = None
@@ -50,7 +55,11 @@ async def _get_session() -> wafer.AsyncSession:
     if _session is None:
         async with _session_lock:
             if _session is None:
-                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+                _session = wafer.AsyncSession(
+                    max_rotations=0,
+                    cache_dir=get_wafer_cache_dir(),
+                    max_response_size=5 * 1024 * 1024,
+                )
     return _session
 
 
@@ -124,30 +133,33 @@ async def fetch_sapi(
                 params[key] = val
 
     url = f"{_SAPI_BASE}?{urlencode(params)}"
-    _log(f"SAPI request: {url}")
+    _log("SAPI request")
 
     try:
         session = await _get_session()
         resp = await session.get(url, headers=_HEADERS, timeout=15)
         if resp.status_code != 200:
-            _log(f"SAPI HTTP {resp.status_code}: {resp.text[:200]}")
+            _log(
+                f"SAPI HTTP {resp.status_code} "
+                f"(response_chars={len(resp.text)})"
+            )
             return None
         data = resp.json()
     except wafer.WaferTimeout:
         _log("SAPI request timed out")
         return None
     except (wafer.WaferError, json.JSONDecodeError) as e:
-        _log(f"SAPI request failed: {e}")
+        _log(f"SAPI request failed: {type(e).__name__}")
         return None
 
     # Validate response structure
     if not isinstance(data, dict) or "data" not in data:
-        _log(f"SAPI unexpected response shape: {str(data)[:200]}")
+        _log(f"SAPI unexpected response shape: {type(data).__name__}")
         return None
 
     errors = data.get("errors", [])
     if errors:
-        _log(f"SAPI errors: {errors}")
+        _log(f"SAPI returned {len(errors)} error(s)")
         return None
 
     return data

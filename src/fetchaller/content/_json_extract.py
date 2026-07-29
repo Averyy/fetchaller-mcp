@@ -5,6 +5,22 @@ embedded JavaScript in SSR HTML pages (Alibaba, AliExpress).
 """
 
 import json
+import math
+
+
+def _finite_json_float(value: str) -> float:
+    """Decode a JSON float only when it remains finite."""
+
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number")
+    return parsed
+
+
+def _reject_json_constant(value: str) -> None:
+    """Reject Python's non-standard NaN/Infinity JSON extensions."""
+
+    raise ValueError(f"non-standard JSON constant: {value}")
 
 
 def extract_json_object(html: str, start: int, max_scan: int = 5_000_000) -> dict | None:
@@ -41,7 +57,11 @@ def extract_json_object(html: str, start: int, max_scan: int = 5_000_000) -> dic
             depth -= 1
             if depth == 0:
                 try:
-                    return json.loads(html[start : i + 1])
-                except json.JSONDecodeError:
+                    return json.loads(
+                        html[start : i + 1],
+                        parse_float=_finite_json_float,
+                        parse_constant=_reject_json_constant,
+                    )
+                except (RecursionError, ValueError):
                     return None
     return None

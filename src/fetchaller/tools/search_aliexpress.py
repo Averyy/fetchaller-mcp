@@ -9,6 +9,7 @@ async def search_aliexpress_tool(
     sort: str = "default",
     min_price: float | None = None,
     max_price: float | None = None,
+    timeout: int = 180,
     cache=None,
     config=None,
     browser_solver=None,
@@ -21,6 +22,7 @@ async def search_aliexpress_tool(
         sort: Sort order (default, orders, price_asc, price_desc).
         min_price: Minimum price filter.
         max_price: Maximum price filter.
+        timeout: End-to-end timeout in seconds.
         cache: ResponseCache instance.
         config: Config instance.
         browser_solver: BrowserSolver for browser-based challenges.
@@ -34,6 +36,7 @@ async def search_aliexpress_tool(
         sort=sort,
         min_price=min_price,
         max_price=max_price,
+        timeout=timeout,
         cache=cache,
         config=config,
         browser_solver=browser_solver,

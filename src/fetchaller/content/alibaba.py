@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 from ._json_extract import extract_json_object
 
+_MAX_EMBEDDED_JSON_CHARS = 2_000_000
+
 # ---------------------------------------------------------------------------
 # URL detection
 # ---------------------------------------------------------------------------
@@ -82,7 +84,11 @@ def _extract_json_var(html: str, var_name: str) -> dict | None:
     if brace_start == -1 or brace_start - eq_idx > 10:
         return None
 
-    return extract_json_object(html, brace_start)
+    return extract_json_object(
+        html,
+        brace_start,
+        _MAX_EMBEDDED_JSON_CHARS,
+    )
 
 
 def extract_search_data(html: str) -> dict | None:

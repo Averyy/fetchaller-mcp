@@ -140,7 +140,7 @@ def _render_question(q: dict) -> str | None:
     label = (q.get("label") or "").strip()
     if not label:
         return None
-    req = "required" if q.get("required") else "optional"
+    req = "required" if q.get("required") is True else "optional"
     fields = q.get("fields") or []
     types = [f.get("type") for f in fields if f.get("type")]
     types_str = ", ".join(t for t in types if t) or "input"

@@ -54,6 +54,9 @@ def create_access_token(
     api_key_hash: str,
     secret: bytes,
     ttl_seconds: int,
+    *,
+    audience: str,
+    scope: str,
 ) -> str:
     """
     Create a JWT access token.
@@ -65,12 +68,20 @@ def create_access_token(
         "sub": client_id,
         "iat": now,
         "exp": now + ttl_seconds,
+        "aud": audience,
+        "scope": scope,
         "api_key_hash": api_key_hash,
     }
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
-def verify_access_token(token: str, secret: bytes) -> dict[str, Any] | None:
+def verify_access_token(
+    token: str,
+    secret: bytes,
+    *,
+    audience: str,
+    required_scope: str,
+) -> dict[str, Any] | None:
     """
     Verify a JWT access token and return its payload.
 
@@ -81,8 +92,21 @@ def verify_access_token(token: str, secret: bytes) -> dict[str, Any] | None:
             token,
             secret,
             algorithms=["HS256"],
-            options={"require": ["sub", "exp", "iat", "api_key_hash"]},
+            audience=audience,
+            options={
+                "require": [
+                    "sub",
+                    "exp",
+                    "iat",
+                    "aud",
+                    "scope",
+                    "api_key_hash",
+                ]
+            },
         )
+        scopes = payload.get("scope")
+        if not isinstance(scopes, str) or required_scope not in scopes.split():
+            return None
         return payload
     except jwt.PyJWTError:
         return None

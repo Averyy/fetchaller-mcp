@@ -92,6 +92,7 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
                     rate_limit=1.5,
                     rate_jitter=0.5,
                     cache_dir=get_wafer_cache_dir(),
+                    max_response_size=10 * 1024 * 1024,
                 )
     return _session
 
@@ -378,9 +379,27 @@ def parse_listing_html(html: str, url: str) -> dict:
             except ValueError:
                 price_value = None
 
+    # Detail URLs do not encode sale vs rent, but the SSR document does.  Prefer
+    # the site's own numeric transaction id and use visible rent cadence/text as
+    # a fallback for older page shapes.  This value is required when rebuilding
+    # the lazy-loaded "similar listings" request: rental details must use
+    # RentMin/RentMax, not compare the unit against for-sale homes.
+    transaction = "sale"
+    if (
+        re.search(r'["\']?TransactionTypeId["\']?\s*[:=]\s*["\']?3\b', html, re.I)
+        or re.search(r"\b(?:for\s+rent|for\s+lease|à\s+louer)\b", html, re.I)
+        or re.search(
+            r"(?:/\s*|\bper\s+)(?:mo(?:nth)?|month|mensuel)\b",
+            price,
+            re.I,
+        )
+    ):
+        transaction = "rent"
+
     return {
         "url": _full(url),
         "id": extract_listing_id(url),
+        "transaction": transaction,
         "price": price,
         "price_value": price_value,
         "address": address,
@@ -406,7 +425,7 @@ async def get_listing_detail(url: str, browser_solver=None) -> dict:
 
 
 async def get_similar_listings(parsed: dict, browser_solver=None, limit: int = 6) -> list[dict]:
-    """Reconstruct "similar listings": for-sale homes near this one, similar price."""
+    """Reconstruct nearby listings with the same transaction and similar price."""
     coords = parsed.get("coords")
     if not coords:
         return []
@@ -419,9 +438,10 @@ async def get_similar_listings(parsed: dict, browser_solver=None, limit: int = 6
     pv = parsed.get("price_value")
     min_price = int(pv * 0.6) if pv else None
     max_price = int(pv * 1.5) if pv else None
+    transaction = "rent" if parsed.get("transaction") == "rent" else "sale"
     try:
         data = await property_search(
-            bbox=bbox, transaction="sale", sort="newest",
+            bbox=bbox, transaction=transaction, sort="newest",
             min_price=min_price, max_price=max_price,
             records_per_page=limit + 4, browser_solver=browser_solver,
         )

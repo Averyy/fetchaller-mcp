@@ -4,9 +4,11 @@
 
 ## Tools
 
-### fetch(url, maxTokens?, timeout?, raw?)
+### fetch(url, maxTokens?, timeout?, raw?, method?, headers?, body?)
 
-Fetch any URL and return clean markdown. Handles HTML, JSON, XML, CSV, PDF, SVG (raw), and binary images (returns metadata summary: type, filename, size, dimensions, Last-Modified, ETag). Site-specific cleanup for 20+ sites (GitHub, Reddit, Amazon, eBay, Stack Overflow, HN, Wikipedia, Medium, Hugging Face, DigiKey, Mouser, Molex, FCC (fcc.report, fcc.gov), Craigslist, Kijiji, realtor.ca (home search + individual listings with similar-listing reconstruction), Facebook Marketplace, Alibaba, AliExpress, RedFlagDeals, forums, TI, Soylent, Ashby + Greenhouse + Lever + Gem + Dayforce + Cornerstone (CSOD) + Workday + BambooHR + JazzHR + HubSpot + Work at a Startup (YC) + wellfound.com (startup job search, job detail, company pages) job boards, plus embed/white-label detection for Ashby/BambooHR/JazzHR widgets and white-label Dayforce candidate portals on company-owned domains). All other sites get universal junk removal.
+Fetch any URL and return clean markdown. Handles HTML, JSON, XML, CSV, PDF, SVG (raw), and binary images (returns metadata summary: type, filename, size, dimensions, Last-Modified, ETag). Normal Reddit URLs use compact structured New Reddit rendering (logged-out JSON plus the canonical wiki-tree SSR and, after a missing tree or exact unstructured anonymous 403, New Reddit's own logged-out `WikiPageRevisionsV2` page tree on the fixed `/svc/shreddit/graphql` route — no OAuth scope and no browser) with post score/upvote ratio, nested comments, links, rich media/polls, public state labels, and comment-permalink context; explicit `.json` remains raw and `raw=true` returns canonical New Reddit HTML. Site-specific cleanup for 20+ sites (GitHub, Reddit, Amazon, eBay, Stack Overflow, HN, Wikipedia, Medium, Hugging Face, DigiKey, Mouser, Molex, FCC (fcc.report, fcc.gov), Craigslist, Kijiji, realtor.ca (home search + individual listings with similar-listing reconstruction), Facebook Marketplace, Alibaba, AliExpress, RedFlagDeals, forums, TI, Soylent, Ashby + Greenhouse + Lever + Gem + Dayforce + Cornerstone (CSOD) + Workday + BambooHR + JazzHR + HubSpot + Work at a Startup (YC) + wellfound.com (startup job search, job detail, company pages) job boards, plus embed/white-label detection for Ashby/BambooHR/JazzHR widgets and white-label Dayforce candidate portals on company-owned domains). All other sites get universal junk removal.
+
+Reddit context behavior: request size and nesting scale with the caller's token budget. Rendering preserves whole sections and uses explicit omission markers and continuation links; compactness never silently removes public content.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -14,6 +16,22 @@ Fetch any URL and return clean markdown. Handles HTML, JSON, XML, CSV, PDF, SVG 
 | maxTokens | integer | 25000 | Max tokens to return |
 | timeout | integer | 10 | Request timeout in seconds |
 | raw | boolean | false | Return raw HTML instead of markdown |
+| method | string | GET | `GET` or `POST` |
+| headers | object | — | Extra request headers (max 32; connection/framing headers refused) |
+| body | string | — | Request body, POST only (max 1MB; Content-Type defaults to application/json for JSON bodies) |
+
+POST reaches search and listing APIs that answer to nothing else — Getro (a
+large share of VC portfolio job boards), Algolia, GraphQL gateways — whose
+boards look static and read as empty over GET. A POST skips site-specific
+handling and the response cache. `PUT`/`PATCH`/`DELETE` are not accepted.
+
+Two signals guard against silently wrong conclusions on JavaScript-rendered
+pages: a `possibly_js_rendered` warning when a page's content is assembled in
+the browser (so an un-hydrated shell is not read as an empty site), and
+preservation of careers/jobs links from otherwise-stripped nav/header/footer.
+A flagged shell also returns what it still declares — meta description,
+canonical URL, and Organization `sameAs` profiles — which on a page that renders
+to nothing is the whole usable answer.
 
 ### search(query, page?)
 
@@ -26,7 +44,7 @@ Web search via Google + DuckDuckGo. Returns titles, URLs, and snippets. Use `fet
 
 ### browse_reddit(subreddit, sort?, time?, limit?, after?, timeout?)
 
-Browse subreddit posts. Returns metadata and URLs. Use `fetch` to read full post content.
+Browse subreddit posts. Returns Reddit's public score and upvote ratio (when returned), comment count, preview, pagination cursor, and canonical New Reddit URLs. Use `fetch` to read full post content and nested comments.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -39,7 +57,7 @@ Browse subreddit posts. Returns metadata and URLs. Use `fetch` to read full post
 
 ### search_reddit(query, subreddit?, sort?, time?, limit?, after?, timeout?)
 
-Search Reddit posts. Returns metadata and URLs. Use `fetch` to read full post content.
+Search Reddit posts. Returns Reddit's public score and upvote ratio (when returned), comment count, preview, pagination cursor, and canonical New Reddit URLs. Use `fetch` to read full post content and nested comments.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -66,6 +84,14 @@ Search Kijiji, Craigslist, and Facebook Marketplace simultaneously. Returns grou
 | min_price | integer | — | Minimum price in dollars |
 | max_price | integer | — | Maximum price in dollars |
 
+### search_linkedin_jobs(keywords, location?, date_posted?, workplace?, experience?, job_type?, min_salary?, sort?, start?, limit?)
+
+Search LinkedIn's public logged-out job board — no account required. Filters: date posted (any/24h/week/month), workplace (on_site/remote/hybrid), experience (internship..executive), job type (full_time/part_time/contract/temporary/internship), minimum salary (40k-120k), easy_apply (LinkedIn-internal application), under_10_applicants (few applicants so far). Returns title, company, location, posting date, LinkedIn's "Be an early applicant"/"Actively Hiring" badges when present, and a stable linkedin.com/jobs/view URL. Pagination via `start` (rows 0-999, 10 per page). `sort=recent` is applied client-side because LinkedIn's own sortBy is not honoured on this endpoint; salary is not published in logged-out results and is never implied.
+
+### get_linkedin_job(job_id)
+
+Full public detail for one LinkedIn posting: description, seniority level, employment type, job function, industries, applicant count. Applying requires a LinkedIn account. `fetch()` on a linkedin.com/jobs/view/{id} URL (including country subdomains and ?currentJobId=) returns this rendering instead of the sign-in wall.
+
 ### search_realtor(location, transaction?, property_type?, building_type?, min_price?, max_price?, min_beds?, min_baths?, ownership?, sort?, page?)
 
 Search Canadian homes for sale or rent on realtor.ca with full filters. Returns listings with price, address, beds/baths, size, agent, and a realtor.ca URL. Use `fetch` on a listing URL for the full description, every property detail, and similar nearby homes.
@@ -84,15 +110,16 @@ Search Canadian homes for sale or rent on realtor.ca with full filters. Returns 
 | sort | string | newest | newest, oldest, price-asc, price-desc |
 | page | integer | 1 | Result page (~20 per page, up to 600 total) |
 
-### get_aliexpress_product(product_id)
+### get_aliexpress_product(product_id, timeout?)
 
 Get AliExpress product details: price, specifications, ratings, and recent reviews.
 
 | Param | Type | Description |
 |-------|------|-------------|
 | product_id | string | required — Numeric product ID or full AliExpress URL |
+| timeout | integer | 180 — End-to-end budget in seconds (1–180) |
 
-### search_aliexpress(query, page?, sort?, min_price?, max_price?)
+### search_aliexpress(query, page?, sort?, min_price?, max_price?, timeout?)
 
 Search AliExpress products. Returns listings with prices, ratings, and links.
 
@@ -103,16 +130,18 @@ Search AliExpress products. Returns listings with prices, ratings, and links.
 | sort | string | default | default, orders, price_asc, price_desc |
 | min_price | number | — | Minimum price filter |
 | max_price | number | — | Maximum price filter |
+| timeout | integer | 180 | End-to-end budget in seconds (1–300) |
 
-### get_alibaba_product(product_id)
+### get_alibaba_product(product_id, timeout?)
 
 Get Alibaba.com B2B product details: tiered pricing, MOQ, lead times, supplier info, specifications.
 
 | Param | Type | Description |
 |-------|------|-------------|
 | product_id | string | required — Numeric product ID or full Alibaba.com URL |
+| timeout | integer | 180 — End-to-end budget in seconds (1–300) |
 
-### search_alibaba(query, page?, sort?, min_price?, max_price?)
+### search_alibaba(query, page?, sort?, min_price?, max_price?, timeout?)
 
 Search Alibaba.com B2B products. Returns supplier listings with tiered pricing, MOQ, and supplier info.
 
@@ -123,6 +152,7 @@ Search Alibaba.com B2B products. Returns supplier listings with tiered pricing, 
 | sort | string | default | default, price_asc, price_desc |
 | min_price | number | — | Minimum price filter (USD) |
 | max_price | number | — | Maximum price filter (USD) |
+| timeout | integer | 180 | End-to-end budget in seconds (1–300) |
 
 ## Installation
 
@@ -131,8 +161,10 @@ Requires Python 3.12+ and uv.
 ```
 git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
-uv sync && patchright install chromium
-claude mcp add fetchaller -- $(pwd)/.venv/bin/python -m fetchaller.main
+uv sync
+uv run python -m patchright install chromium
+uv run python -m patchright install chrome
+claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp
 ```
 
 Restart Claude Code after adding. No API keys required.
@@ -151,6 +183,8 @@ Add to `~/.claude/settings.json` (or `.claude/settings.local.json` for per-proje
       "mcp__fetchaller__search_reddit",
       "mcp__fetchaller__search_marketplace",
       "mcp__fetchaller__search_realtor",
+      "mcp__fetchaller__search_linkedin_jobs",
+      "mcp__fetchaller__get_linkedin_job",
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
       "mcp__fetchaller__get_alibaba_product",

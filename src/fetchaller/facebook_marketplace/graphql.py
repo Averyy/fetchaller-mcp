@@ -53,7 +53,11 @@ async def _get_session() -> wafer.AsyncSession:
     if _session is None or not _session_seeded:
         async with _session_lock:
             if _session is None:
-                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+                _session = wafer.AsyncSession(
+                    max_rotations=0,
+                    cache_dir=get_wafer_cache_dir(),
+                    max_response_size=10 * 1024 * 1024,
+                )
                 _session_seeded = False
 
             if not _session_seeded:
@@ -271,7 +275,7 @@ def parse_search_response(data: dict) -> list[dict]:
                 item["condition"] = condition
 
             # Status
-            if listing.get("is_pending"):
+            if listing.get("is_pending") is True:
                 item["status"] = "Pending"
 
             # Seller info

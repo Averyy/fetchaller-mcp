@@ -18,6 +18,7 @@ import wafer
 
 from ..config import get_wafer_cache_dir
 from ..ratelimit import kijiji_limiter
+from ..security.xss import safe_log_text
 
 _API_URL = "https://www.kijiji.ca/anvil/api"
 
@@ -40,7 +41,11 @@ async def _get_session() -> wafer.AsyncSession:
     if _session is None:
         async with _session_lock:
             if _session is None:
-                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+                _session = wafer.AsyncSession(
+                    max_rotations=0,
+                    cache_dir=get_wafer_cache_dir(),
+                    max_response_size=10 * 1024 * 1024,
+                )
     return _session
 
 
@@ -51,7 +56,11 @@ async def close_session() -> None:
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] kijiji api: {msg}", file=sys.stderr)
+    print(
+        f"[{datetime.now(UTC).isoformat()}] kijiji api: "
+        f"{safe_log_text(msg)}",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +525,7 @@ async def get_listing(url: str) -> dict:
             if not full_url.startswith("http"):
                 full_url = f"https://www.kijiji.ca{url}"
 
-            _log(f"Searching: {full_url}")
+            _log("Searching listing index")
             # Pagination must be nested inside searchResultsByUrlInput AND
             # passed as a separate variable for the mainListings field arg.
             data = await _graphql(_SEARCH_QUERY, {
@@ -545,5 +554,5 @@ async def get_listing(url: str) -> dict:
     except wafer.WaferError as e:
         return {"error": f"Kijiji API error: {e}"}
     except Exception as e:
-        _log(f"Unexpected error: {e}")
+        _log(f"Unexpected error: {type(e).__name__}")
         return {"error": f"Kijiji API error: {e}"}

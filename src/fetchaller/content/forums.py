@@ -17,6 +17,14 @@ from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
+_MAX_FEED_ITEMS = 250
+_MAX_FEED_TITLE_CHARS = 512
+_MAX_FEED_LINK_CHARS = 8_192
+_MAX_FEED_AUTHOR_CHARS = 256
+_MAX_FEED_CATEGORY_CHARS = 256
+_MAX_FEED_CATEGORIES = 20
+_MAX_FEED_DESCRIPTION_CHARS = 1_000
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -158,9 +166,7 @@ def transform_forum_url(url: str) -> ForumTransformResult:
     Handles both listing pages (forum indexes) and thread pages.
     Unknown URLs pass through unchanged.
     """
-    passthrough = ForumTransformResult(
-        url=url, is_forum_feed=False, original_url=url, forum_software=None
-    )
+    passthrough = ForumTransformResult(url=url, is_forum_feed=False, original_url=url, forum_software=None)
 
     try:
         parsed = urlparse(url)
@@ -177,16 +183,17 @@ def transform_forum_url(url: str) -> ForumTransformResult:
 
     # Already a feed URL — passthrough with metadata
     if _FEED_URL_RE.search(path + "?" + query):
-        return ForumTransformResult(
-            url=url, is_forum_feed=True, original_url=url, forum_software=software
-        )
+        return ForumTransformResult(url=url, is_forum_feed=True, original_url=url, forum_software=software)
 
     # --- vBulletin ---
     if software == "vbulletin":
         # Thread URLs: skip (external.php doesn't support thread-specific feeds)
         if _VB_THREAD_RE.search(path):
             return ForumTransformResult(
-                url=url, is_forum_feed=False, original_url=url, forum_software="vbulletin",
+                url=url,
+                is_forum_feed=False,
+                original_url=url,
+                forum_software="vbulletin",
                 is_thread=True,
             )
 
@@ -195,14 +202,16 @@ def transform_forum_url(url: str) -> ForumTransformResult:
             qs = parse_qs(query)
             forum_id = qs.get("f", [None])[0]
             if forum_id:
-                feed_url = urlunparse((
-                    parsed.scheme,
-                    parsed.netloc,
-                    "/forums/external.php",
-                    "",
-                    f"type=RSS2&forumids={forum_id}",
-                    "",
-                ))
+                feed_url = urlunparse(
+                    (
+                        parsed.scheme,
+                        parsed.netloc,
+                        "/forums/external.php",
+                        "",
+                        f"type=RSS2&forumids={forum_id}",
+                        "",
+                    )
+                )
                 return ForumTransformResult(
                     url=feed_url,
                     is_forum_feed=True,
@@ -215,12 +224,18 @@ def transform_forum_url(url: str) -> ForumTransformResult:
         # Thread URLs: skip (thread RSS is disabled on most XenForo installs)
         if _XF_THREAD_RE.search(path):
             return ForumTransformResult(
-                url=url, is_forum_feed=False, original_url=url, forum_software="xenforo",
+                url=url,
+                is_forum_feed=False,
+                original_url=url,
+                forum_software="xenforo",
                 is_thread=True,
             )
         if "index.php" in path and query and "threads/" in query:
             return ForumTransformResult(
-                url=url, is_forum_feed=False, original_url=url, forum_software="xenforo",
+                url=url,
+                is_forum_feed=False,
+                original_url=url,
+                forum_software="xenforo",
                 is_thread=True,
             )
 
@@ -229,9 +244,7 @@ def transform_forum_url(url: str) -> ForumTransformResult:
         if m:
             slug, fid = m.group(1), m.group(2)
             feed_path = f"/forums/{slug}.{fid}/index.rss"
-            feed_url = urlunparse((
-                parsed.scheme, parsed.netloc, feed_path, "", "", ""
-            ))
+            feed_url = urlunparse((parsed.scheme, parsed.netloc, feed_path, "", "", ""))
             return ForumTransformResult(
                 url=feed_url,
                 is_forum_feed=True,
@@ -245,9 +258,7 @@ def transform_forum_url(url: str) -> ForumTransformResult:
             if m:
                 slug, fid = m.group(1), m.group(2)
                 new_query = f"forums/{slug}.{fid}/index.rss"
-                feed_url = urlunparse((
-                    parsed.scheme, parsed.netloc, path, "", new_query, ""
-                ))
+                feed_url = urlunparse((parsed.scheme, parsed.netloc, path, "", new_query, ""))
                 return ForumTransformResult(
                     url=feed_url,
                     is_forum_feed=True,
@@ -261,9 +272,7 @@ def transform_forum_url(url: str) -> ForumTransformResult:
         m = _PHPBB_RFD_LISTING_RE.search(path)
         if m:
             forum_id = m.group(2)
-            feed_url = urlunparse((
-                parsed.scheme, parsed.netloc, f"/feed/forum/{forum_id}", "", "", ""
-            ))
+            feed_url = urlunparse((parsed.scheme, parsed.netloc, f"/feed/forum/{forum_id}", "", "", ""))
             return ForumTransformResult(
                 url=feed_url,
                 is_forum_feed=True,
@@ -273,7 +282,10 @@ def transform_forum_url(url: str) -> ForumTransformResult:
         # Thread/topic pages: pass through (redflagdeals.py handles HTML cleanup)
         if _PHPBB_RFD_THREAD_RE.search(path):
             return ForumTransformResult(
-                url=url, is_forum_feed=False, original_url=url, forum_software="phpbb",
+                url=url,
+                is_forum_feed=False,
+                original_url=url,
+                forum_software="phpbb",
                 is_thread=True,
             )
 
@@ -283,9 +295,7 @@ def transform_forum_url(url: str) -> ForumTransformResult:
         m = _DISCOURSE_THREAD_RE.search(path)
         if m:
             slug, tid = m.group(1), m.group(2)
-            feed_url = urlunparse((
-                parsed.scheme, parsed.netloc, f"/t/{slug}/{tid}.rss", "", "", ""
-            ))
+            feed_url = urlunparse((parsed.scheme, parsed.netloc, f"/t/{slug}/{tid}.rss", "", "", ""))
             return ForumTransformResult(
                 url=feed_url,
                 is_forum_feed=True,
@@ -297,9 +307,7 @@ def transform_forum_url(url: str) -> ForumTransformResult:
         m = _DISCOURSE_LISTING_RE.search(path)
         if m:
             slug, cid = m.group(1), m.group(2)
-            feed_url = urlunparse((
-                parsed.scheme, parsed.netloc, f"/c/{slug}/{cid}.rss", "", "", ""
-            ))
+            feed_url = urlunparse((parsed.scheme, parsed.netloc, f"/c/{slug}/{cid}.rss", "", "", ""))
             return ForumTransformResult(
                 url=feed_url,
                 is_forum_feed=True,
@@ -308,9 +316,7 @@ def transform_forum_url(url: str) -> ForumTransformResult:
             )
 
     # No transform matched — return with software info for Tier 2
-    return ForumTransformResult(
-        url=url, is_forum_feed=False, original_url=url, forum_software=software
-    )
+    return ForumTransformResult(url=url, is_forum_feed=False, original_url=url, forum_software=software)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +374,12 @@ def _text(el: ET.Element | None) -> str | None:
     return (el.text or "").strip() or None
 
 
+def _bounded_feed_text(value: str | None, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value[:limit]
+
+
 def parse_feed(xml_text: str) -> ParsedFeed | None:
     """Parse RSS 2.0 or Atom 1.0 feed XML.
 
@@ -409,14 +421,27 @@ def _parse_rss2(root: ET.Element, rdf: bool = False) -> ParsedFeed | None:
     if not item_elements and rdf:
         item_elements = root.findall("item")
 
-    for item_el in item_elements:
-        title = _text(item_el.find("title")) or "(untitled)"
-        link = _text(item_el.find("link")) or ""
+    for item_el in item_elements[:_MAX_FEED_ITEMS]:
+        title = (
+            _bounded_feed_text(
+                _text(item_el.find("title")),
+                _MAX_FEED_TITLE_CHARS,
+            )
+            or "(untitled)"
+        )
+        link = (
+            _bounded_feed_text(
+                _text(item_el.find("link")),
+                _MAX_FEED_LINK_CHARS,
+            )
+            or ""
+        )
 
         # Author: <dc:creator> or <author>
         author = _text(item_el.find(f"{{{_NS['dc']}}}creator"))
         if not author:
             author = _text(item_el.find("author"))
+        author = _bounded_feed_text(author, _MAX_FEED_AUTHOR_CHARS)
 
         # Date: <pubDate>
         pub_date = _text(item_el.find("pubDate"))
@@ -427,8 +452,8 @@ def _parse_rss2(root: ET.Element, rdf: bool = False) -> ParsedFeed | None:
 
         # Categories
         categories = [
-            c.text.strip()
-            for c in item_el.findall("category")
+            c.text.strip()[:_MAX_FEED_CATEGORY_CHARS]
+            for c in item_el.findall("category")[:_MAX_FEED_CATEGORIES]
             if c.text and c.text.strip()
         ]
 
@@ -438,22 +463,33 @@ def _parse_rss2(root: ET.Element, rdf: bool = False) -> ParsedFeed | None:
             desc_el = item_el.find("description")
         description = None
         if desc_el is not None and desc_el.text:
-            description = _strip_html(desc_el.text)[:300]
+            description = _strip_html(desc_el.text)[:_MAX_FEED_DESCRIPTION_CHARS]
 
-        items.append(FeedItem(
-            title=title,
-            link=link,
-            author=author,
-            published=published,
-            comment_count=comment_count,
-            categories=categories,
-            description=description,
-        ))
+        items.append(
+            FeedItem(
+                title=title,
+                link=link,
+                author=author,
+                published=published,
+                comment_count=comment_count,
+                categories=categories,
+                description=description,
+            )
+        )
 
     return ParsedFeed(
-        title=_text(source.find("title")),
-        link=_text(source.find("link")),
-        description=_text(source.find("description")),
+        title=_bounded_feed_text(
+            _text(source.find("title")),
+            _MAX_FEED_TITLE_CHARS,
+        ),
+        link=_bounded_feed_text(
+            _text(source.find("link")),
+            _MAX_FEED_LINK_CHARS,
+        ),
+        description=_bounded_feed_text(
+            _text(source.find("description")),
+            _MAX_FEED_DESCRIPTION_CHARS,
+        ),
         items=items,
         feed_type="rss2",
     )
@@ -487,8 +523,14 @@ def _parse_atom(root: ET.Element) -> ParsedFeed:
     feed_desc = _text(subtitle_el)
 
     items = []
-    for entry in _find_all(root, "entry"):
-        title = _text(_find(entry, "title")) or "(untitled)"
+    for entry in _find_all(root, "entry")[:_MAX_FEED_ITEMS]:
+        title = (
+            _bounded_feed_text(
+                _text(_find(entry, "title")),
+                _MAX_FEED_TITLE_CHARS,
+            )
+            or "(untitled)"
+        )
 
         # Link: prefer rel="alternate", fall back to first <link>
         link = ""
@@ -500,6 +542,7 @@ def _parse_atom(root: ET.Element) -> ParsedFeed:
                 break
             if href and not link:
                 link = href
+        link = link[:_MAX_FEED_LINK_CHARS]
 
         # Author
         author_el = _find(entry, "author")
@@ -507,6 +550,7 @@ def _parse_atom(root: ET.Element) -> ParsedFeed:
         if author_el is not None:
             name_el = _find(author_el, "name")
             author = _text(name_el)
+        author = _bounded_feed_text(author, _MAX_FEED_AUTHOR_CHARS)
 
         # Date: <updated> or <published>
         updated = _text(_find(entry, "updated"))
@@ -516,10 +560,10 @@ def _parse_atom(root: ET.Element) -> ParsedFeed:
 
         # Categories
         categories = []
-        for cat in _find_all(entry, "category"):
+        for cat in _find_all(entry, "category")[:_MAX_FEED_CATEGORIES]:
             term = cat.get("term", "").strip()
             if term:
-                categories.append(term)
+                categories.append(term[:_MAX_FEED_CATEGORY_CHARS])
 
         # Content
         content_el = _find(entry, "content")
@@ -527,22 +571,27 @@ def _parse_atom(root: ET.Element) -> ParsedFeed:
             content_el = _find(entry, "summary")
         description = None
         if content_el is not None and content_el.text:
-            description = _strip_html(content_el.text)[:300]
+            description = _strip_html(content_el.text)[:_MAX_FEED_DESCRIPTION_CHARS]
 
-        items.append(FeedItem(
-            title=title,
-            link=link,
-            author=author,
-            published=published,
-            comment_count=None,  # Atom doesn't have slash:comments
-            categories=categories,
-            description=description,
-        ))
+        items.append(
+            FeedItem(
+                title=title,
+                link=link,
+                author=author,
+                published=published,
+                comment_count=None,  # Atom doesn't have slash:comments
+                categories=categories,
+                description=description,
+            )
+        )
 
     return ParsedFeed(
-        title=feed_title,
-        link=feed_link,
-        description=feed_desc,
+        title=_bounded_feed_text(feed_title, _MAX_FEED_TITLE_CHARS),
+        link=_bounded_feed_text(feed_link, _MAX_FEED_LINK_CHARS),
+        description=_bounded_feed_text(
+            feed_desc,
+            _MAX_FEED_DESCRIPTION_CHARS,
+        ),
         items=items,
         feed_type="atom",
     )
@@ -593,6 +642,15 @@ def format_feed_as_markdown(feed: ParsedFeed) -> str:
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+def parse_and_format_feed(xml_text: str) -> tuple[str, int] | None:
+    """Parse and render a bounded feed inside one isolated operation."""
+
+    feed = parse_feed(xml_text)
+    if feed is None or not feed.items:
+        return None
+    return format_feed_as_markdown(feed), len(feed.items)
 
 
 # ---------------------------------------------------------------------------
@@ -681,21 +739,16 @@ def is_forum_html(soup: BeautifulSoup) -> bool:
 
 SELECTORS_LIST = [
     # ---- XenForo ----
-
     # Hidden SEO/social preview elements (California theme duplicate OP)
     ".california-thread-body-container > .hidden",
-
     # California theme: OP thread card header (category name, view/reply stats)
     # Only target the original post, not reply headers (which have useful author info)
     ".MessageCard__container__original-post .MessageCard__header",
-
     # California theme: collapse/expand buttons and collapsed-state preview image
     ".MessageCard__collapse-link",
     ".MessageCard__content-preview-image",
-
     # California theme: toggle-replies buttons ("Show more replies", "N Reply/Replies")
     ".toggle-replies-button",
-
     # Page structure
     ".p-nav",
     ".p-navSticky",
@@ -704,49 +757,38 @@ SELECTORS_LIST = [
     ".p-breadcrumbs",
     ".p-body-sidebar",
     ".p-body-sidebarCol",
-
     # User info column: handled in strip_forum_junk to preserve username link
     # (classic XenForo renders usernames only inside .message-cell--user on
     #  paginated pages; California theme uses MessageCard__user-info instead)
-
     # Signatures
     ".message-signature",
-
     # Action bars per post (reply, quote, like, react, bookmark)
     ".message-actionBar",
     ".actionBar",
     ".reactionsBar",
     ".reactionSummary",
-
     # Post metadata / decoration
     ".message-userArrow",
     ".message-attribution-opposite",
     ".message-footer",
     ".message-newIndicator",
     ".message-lastEdit",
-
     # Pagination
     ".pageNavWrapper",
     ".pageNav",
     ".pageNavSimple",
-
     # Blocks (similar threads, outer wrappers)
     ".block-outer--after",
     ".block--similarThreads",
-
     # Share buttons
     ".shareButtons",
-
     # Notices & browser warnings
     ".js-notices",
     ".notices",
-
     # App install prompts
     ".offCanvasMenu-installBanner",
-
     # Expand link for code/quote blocks
     ".bbCodeBlock-expandLink",
-
     # Ads — XenForo California theme (VWVortex)
     "[class*='california-ad']",
     "[class*='california-banner-ad']",
@@ -756,128 +798,101 @@ SELECTORS_LIST = [
     ".california-recommended-reading-container",
     ".related-threads-ad-container",
     ".sticky-block",
-
     # ---- XenForo 1.x (TacomaWorld, older installs) ----
-
     # User info block (left side of each post — avatar, name, title, badges)
     ".messageUserBlock",
     ".messageUserInfo",
-
     # Action buttons per post (reply, quote, like)
     ".publicControls",
     ".privateControls",
-
     # Navigation & breadcrumbs
     "#navigation",
     ".breadBoxTop",
     ".breadBoxBottom",
-
     # Product recommendation ads (TacomaWorld: tires, parts, Amazon links)
     "[class*='relProd']",
-
     # Search bar / quick search
     "#searchBar",
     "#QuickSearch",
-
     # Login bar
     "#loginBar",
-
     # Login/signup forms
     ".xenForm#login",
-
     # Notice panels
     ".PanelScrollerOff#Notices",
-
     # Pagination (XF1)
     ".pageNavLinkGroup",
     ".PageNav",
-
     # Sidebar
     ".sidebar",
-
     # ---- vBulletin / InternetBrands ----
-
     # InternetBrands platform overlay (Rennlist, CorvetteForum, etc.)
     "header.has-nav",
     "#darkmode_option",
     ".toolbox",
     ".top-nav",
-
     # Navigation & login
     ".mainnavbar",
     ".bplogin",
     "#hamburger",
     "#hamitems",
     "#hamnav",
-
     # Navbar / menus
     "#navbar",
     ".vbmenu_popup",
-
     # User profile scores & badges in posts
     ".postBitScoreItem",
     ".postBitScoreGraphContainer",
     ".postBitScoreGraph",
-
     # Garage / car list in user profiles
     ".garagelist",
-
     # Signatures
     ".fixedsig",
-
     # Action buttons per post (Appreciate, Tweet, Quote)
     "#leftControls",
     ".postBotBarItem",
     ".postBotBarItemNoBorder",
     ".postBitActionFrame",
     ".postbitbuttons",
-
     # Post header rows (date, post number)
     ".thead",
-
     # Quick reply
     "#qr_open",
-
     # Pagination
     ".pagenav",
-
     # Breadcrumbs
     "#breadcrumb",
-
     # Forum jump selector
     ".forumjump",
-
     # Social widget containers
     "#fb-root",
-
     # Online/offline status
     ".isOffline",
     ".isOnline",
-
     # ---- Discourse ----
     ".topic-footer-buttons",
     ".signup-cta",
     "#topic-progress",
     ".topic-map",
-
     # ---- phpBB ----
-    "#phpbb_alert",          # JS modal dialog
-    "#phpbb_confirm",        # JS confirmation dialog
-    "#darken",               # Modal backdrop
-    "#darkenwrapper",        # Modal wrapper
-    "dl.post_voting",        # Voting markup (definition list)
-    ".post_profilearea",     # User profile in posts
-    ".post_dateline",        # Post date/time
-    ".actionbar",            # Post action buttons (reply, quote, etc.)
-    ".pagination",           # Pagination controls
-    "#page-footer",          # Page footer
-    ".notice",               # System notices
+    "#phpbb_alert",  # JS modal dialog
+    "#phpbb_confirm",  # JS confirmation dialog
+    "#darken",  # Modal backdrop
+    "#darkenwrapper",  # Modal wrapper
+    "dl.post_voting",  # Voting markup (definition list)
+    ".post_profilearea",  # User profile in posts
+    ".post_dateline",  # Post date/time
+    ".actionbar",  # Post action buttons (reply, quote, etc.)
+    ".pagination",  # Pagination controls
+    "#page-footer",  # Page footer
+    ".notice",  # System notices
 ]
 
 
 # ---------------------------------------------------------------------------
 # Soup-level cleanup
 # ---------------------------------------------------------------------------
+
 
 # YouTube/video embed URL patterns → canonical watch URL
 def strip_forum_junk(soup: BeautifulSoup) -> None:
@@ -913,23 +928,17 @@ def strip_forum_junk(soup: BeautifulSoup) -> None:
             continue
 
     # XenForo: "Install the app" instruction blocks
-    for div in list(soup.find_all(
-        class_=lambda c: c and any("installPrompt" in cls for cls in c)
-    )):
+    for div in list(soup.find_all(class_=lambda c: c and any("installPrompt" in cls for cls in c))):
         div.decompose()
 
     # XenForo: browser warning blocks
-    for div in list(soup.find_all(
-        class_=lambda c: c and any("browserWarning" in cls for cls in c)
-    )):
+    for div in list(soup.find_all(class_=lambda c: c and any("browserWarning" in cls for cls in c))):
         div.decompose()
 
     # XenForo: "Similar threads" / related content blocks (specific class)
-    for div in list(soup.find_all(
-        class_=lambda c: c and any(
-            kw in cls for cls in c for kw in ("similarThreads", "relatedThreads")
-        )
-    )):
+    for div in list(
+        soup.find_all(class_=lambda c: c and any(kw in cls for cls in c for kw in ("similarThreads", "relatedThreads")))
+    ):
         div.decompose()
 
     # XenForo: "Similar threads" blocks identified by heading text
@@ -946,9 +955,7 @@ def strip_forum_junk(soup: BeautifulSoup) -> None:
                     parent.decompose()
 
     # XenForo: off-canvas menu elements (Mobile "Navigation", "More options")
-    for div in list(soup.find_all(
-        class_=lambda c: c and any("offCanvasMenu" in cls for cls in c)
-    )):
+    for div in list(soup.find_all(class_=lambda c: c and any("offCanvasMenu" in cls for cls in c))):
         div.decompose()
 
     # vBulletin: small navigation images (house icon, etc.)
@@ -1058,11 +1065,7 @@ def strip_forum_junk(soup: BeautifulSoup) -> None:
             src = img.get("src", "")
             if "bookmarksite" in src:
                 # Find containing list or table
-                container = (
-                    img.find_parent("ul")
-                    or img.find_parent("table")
-                    or img.find_parent("div")
-                )
+                container = img.find_parent("ul") or img.find_parent("table") or img.find_parent("div")
                 if container:
                     container.decompose()
                     break  # All sharing links are in one container
@@ -1100,10 +1103,7 @@ def strip_forum_junk(soup: BeautifulSoup) -> None:
         # Remove top nav bar table (Garage, Meets, Register, Today's Posts, Search)
         # Target: tables containing register.php + search.php links together
         for table in list(soup.find_all("table")):
-            links = [
-                (a.get("href") or "")
-                for a in table.find_all("a", href=True)
-            ]
+            links = [(a.get("href") or "") for a in table.find_all("a", href=True)]
             link_str = " ".join(links)
             if "register.php" in link_str and "search.php" in link_str:
                 table.decompose()
@@ -1150,9 +1150,7 @@ _XF_SORT_BY_RE = re.compile(
 )
 
 # Related Threads block: "Related Threads\n\n1. ?\n2. ?\n..."
-_XF_RELATED_THREADS_RE = re.compile(
-    r"(?:^|\n)Related Threads\n+(?:\d+\.\s*\?\n?)+"
-)
+_XF_RELATED_THREADS_RE = re.compile(r"(?:^|\n)Related Threads\n+(?:\d+\.\s*\?\n?)+")
 
 # Site stats: "posts\n:\s+\d+[KMB]?\n\nmembers\n:\s+..."
 _XF_SITE_STATS_RE = re.compile(
@@ -1187,29 +1185,19 @@ _XF_BROWSER_WARNING_RE = re.compile(
 )
 
 # Views/replies/participants stats: "63\nviews\n\n3\nreplies\n\n3\nparticipants"
-_XF_VIEWS_REPLIES_RE = re.compile(
-    r"(?:^|\n)\d+\nviews\n+\d+\nrepl(?:y|ies)\n+\d+\nparticipants(?:\n|$)"
-)
+_XF_VIEWS_REPLIES_RE = re.compile(r"(?:^|\n)\d+\nviews\n+\d+\nrepl(?:y|ies)\n+\d+\nparticipants(?:\n|$)")
 
 # "last post by\n[user](/members/...)\n \n1h ago" (may have whitespace-only lines)
-_XF_LAST_POST_BY_RE = re.compile(
-    r"(?:^|\n)last post by[\s\n]+\[.*?\]\([^\)]+\)[\s\n]+\d+\w?\s+ago(?:\n|$)"
-)
+_XF_LAST_POST_BY_RE = re.compile(r"(?:^|\n)last post by[\s\n]+\[.*?\]\([^\)]+\)[\s\n]+\d+\w?\s+ago(?:\n|$)")
 
 # "Install the app\n\nInstall\n\nHow to install..."
-_XF_INSTALL_APP_RE = re.compile(
-    r"(?:^|\n)Install the app\n+Install(?:\n[\s\S]*?More options)?(?:\n|$)"
-)
+_XF_INSTALL_APP_RE = re.compile(r"(?:^|\n)Install the app\n+Install(?:\n[\s\S]*?More options)?(?:\n|$)")
 
 # "[Contact us](/misc/contact)\n\nClose Menu"
-_XF_CONTACT_CLOSE_RE = re.compile(
-    r"(?:^|\n)\[Contact us\]\([^\)]+\)\n+Close Menu(?:\n|$)"
-)
+_XF_CONTACT_CLOSE_RE = re.compile(r"(?:^|\n)\[Contact us\]\([^\)]+\)\n+Close Menu(?:\n|$)")
 
 # "- [New posts](/whats-new/posts/)\n- [Search forums](/search/..."
-_XF_NAV_LINKS_RE = re.compile(
-    r"(?:^|\n)(?:-\s*\[(?:New posts|Search forums|Media|Search media)\]\([^\)]+\)\n?)+"
-)
+_XF_NAV_LINKS_RE = re.compile(r"(?:^|\n)(?:-\s*\[(?:New posts|Search forums|Media|Search media)\]\([^\)]+\)\n?)+")
 
 # "How to install the app on iOS..." instruction block
 _XF_INSTALL_HOWTO_RE = re.compile(
@@ -1218,9 +1206,7 @@ _XF_INSTALL_HOWTO_RE = re.compile(
 )
 
 # Cross-site nav links: "[GOLFMK8](//www.golfmk8.com/forums/) [GOLFMK7]..."
-_XF_CROSSSITE_NAV_RE = re.compile(
-    r"(?:^|\n)(?:\[GOLF(?:MK\d+|MKV)\]\(//[^\)]+\)\n?)+"
-)
+_XF_CROSSSITE_NAV_RE = re.compile(r"(?:^|\n)(?:\[GOLF(?:MK\d+|MKV)\]\(//[^\)]+\)\n?)+")
 
 # "[7](/forums/index.php)" — bare numeral nav link
 _XF_NUMERAL_NAV_RE = re.compile(r"(?:^|\n)\[\d+\]\(/forums/[^\)]*\)(?:\n|$)")
@@ -1229,9 +1215,7 @@ _XF_NUMERAL_NAV_RE = re.compile(r"(?:^|\n)\[\d+\]\(/forums/[^\)]*\)(?:\n|$)")
 _XF_INSTALL_DUPE_RE = re.compile(r"(?:^|\n)Install(?:\n+Install)+(?:\n|$)")
 
 # XenForo "#post-NNNN" or "#reply" anchors — transform to readable separators
-_XF_POST_ANCHOR_RE = re.compile(
-    r"(?:^|\n)\[#([\d,]+)\]\(#[^\)]*\)\n·\n\[([^\]]*)\]\(#[^\)]*\)(?:\n|$)"
-)
+_XF_POST_ANCHOR_RE = re.compile(r"(?:^|\n)\[#([\d,]+)\]\(#[^\)]*\)\n·\n\[([^\]]*)\]\(#[^\)]*\)(?:\n|$)")
 
 # XenForo 1.x: "### [Log in or Sign up](login/)" header
 _XF1_LOGIN_RE = re.compile(r"(?:^|\n)#{1,4}\s*\[Log in or Sign up\]\([^\)]+\)(?:\n|$)")
@@ -1262,9 +1246,7 @@ _XF1_TO_TOP_RE = re.compile(r"(?:^|\n)!\[To Top\]\([^\)]+\)(?:\n|$)")
 # ---- vBulletin patterns ----
 
 # Login block: "Login\n\nRemember Me?\n\n[Register](...)"
-_VB_LOGIN_RE = re.compile(
-    r"(?:^|\n)Login\n+Remember Me\?\n+\[Register\]\([^\)]+\)(?:\n|$)"
-)
+_VB_LOGIN_RE = re.compile(r"(?:^|\n)Login\n+Remember Me\?\n+\[Register\]\([^\)]+\)(?:\n|$)")
 
 # Nav table: "| [BMW Garage](...) | [BMW Meets](...) | ... |"
 _VB_NAV_TABLE_RE = re.compile(
@@ -1280,14 +1262,10 @@ _VB_THREAD_TOOLS_RE = re.compile(
 )
 
 # Breadcrumb: "[![](...)  Bimmerpost](//www.bimmerpost.com/)"
-_VB_LOGO_RE = re.compile(
-    r"(?:^|\n)\[!\[\]\([^\)]+\)\n*Bimmerpost\]\([^\)]+\)(?:\n|$)"
-)
+_VB_LOGO_RE = re.compile(r"(?:^|\n)\[!\[\]\([^\)]+\)\n*Bimmerpost\]\([^\)]+\)(?:\n|$)")
 
 # Social icons: "[![Facebook](...)](...) [![Twitter](...)](...)"
-_VB_SOCIAL_RE = re.compile(
-    r"(?:^|\n)(?:\[!\[(?:Facebook|Twitter|Instagram|YouTube)\]\([^\)]+\)\]\([^\)]+\)\n?)+"
-)
+_VB_SOCIAL_RE = re.compile(r"(?:^|\n)(?:\[!\[(?:Facebook|Twitter|Instagram|YouTube)\]\([^\)]+\)\]\([^\)]+\)\n?)+")
 
 # "❯  Thread Title" breadcrumb
 _VB_BREADCRUMB_RE = re.compile(r"(?:^|\n)❯\s+[^\n]+(?:\n|$)")
@@ -1363,9 +1341,7 @@ _XF_USER_INFO_BLOCK_RE = re.compile(
 _XF_STANDALONE_USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_ -]{1,30}\n\n")
 
 # "You have insufficient privileges to reply here." (classified/locked threads)
-_XF_INSUFFICIENT_PRIV_RE = re.compile(
-    r"(?:^|\n)You have insufficient privileges to reply here\.(?:\n|$)"
-)
+_XF_INSUFFICIENT_PRIV_RE = re.compile(r"(?:^|\n)You have insufficient privileges to reply here\.(?:\n|$)")
 
 # Unresolved emoji placeholders: [emoji846], [emoji1234] etc.
 _XF_EMOJI_PLACEHOLDER_RE = re.compile(r"\[emoji\d+\]")
@@ -1391,15 +1367,11 @@ _XF_SENSITIVE_CONTENT_RE = re.compile(
 
 # XenForo attachment metadata: file size + view count under each attachment image
 # e.g. "  126.4 KB\n  Views: 1,266"
-_XF_ATTACHMENT_META_RE = re.compile(
-    r"\n[ \t]+[\d.,]+\s+[KMG]?B\n[ \t]+Views:[ \t]+[\d.,]+"
-)
+_XF_ATTACHMENT_META_RE = re.compile(r"\n[ \t]+[\d.,]+\s+[KMG]?B\n[ \t]+Views:[ \t]+[\d.,]+")
 
 # Old quote attribution: strip dead path after "Originally Posted by **username**"
 # Matches /forum/post/NNNNN (vBulletin) and /t/NNNNN/slug#post_NNNNN (XenForo 1.x)
-_OLD_QUOTE_ATTRIB_RE = re.compile(
-    r"(Originally Posted by \*\*[^\*]+\*\*)\s+/(?:forum/post/\d+|t/\d+/[^\s]+)"
-)
+_OLD_QUOTE_ATTRIB_RE = re.compile(r"(Originally Posted by \*\*[^\*]+\*\*)\s+/(?:forum/post/\d+|t/\d+/[^\s]+)")
 
 # Old quote label: "> Quote:" line at start of blockquote — always redundant.
 # Covers "Quote:" before "Originally posted/Posted by" AND standalone "Quote:" labels.
@@ -1409,9 +1381,7 @@ _BLOCKQUOTE_QUOTE_LABEL_RE = re.compile(
 )
 
 # [View attachment XXXXXX] links that survived as markdown text
-_XF_VIEW_ATTACHMENT_RE = re.compile(
-    r"\[View attachment \d+\]\(https?://[^\)]+\)\s*"
-)
+_XF_VIEW_ATTACHMENT_RE = re.compile(r"\[View attachment \d+\]\(https?://[^\)]+\)\s*")
 
 # BBCode remnants from vBulletin→XenForo migration: [URL], [/URL], [IMG], [/IMG], etc.
 _BBCODE_TAG_RE = re.compile(
@@ -1427,27 +1397,19 @@ _XF_CATEGORY_LAST_POST_RE = re.compile(
 # ---- vBulletin extra patterns ----
 
 # Social sharing table: "| - [Submit Thread to twitter](...) ... |"
-_VB_SOCIAL_TABLE_RE = re.compile(
-    r"(?:^|\n)\|[^\n]*Submit Thread to[^\n]*\|(?:\n|$)"
-)
+_VB_SOCIAL_TABLE_RE = re.compile(r"(?:^|\n)\|[^\n]*Submit Thread to[^\n]*\|(?:\n|$)")
 
 # Previous/Next thread: "**«** [Previous Thread](...) | [Next Thread](...) **»**"
-_VB_PREV_NEXT_RE = re.compile(
-    r"(?:^|\n)\*\*«\*\*[\s\S]*?\*\*»\*\*(?:\n|$)"
-)
+_VB_PREV_NEXT_RE = re.compile(r"(?:^|\n)\*\*«\*\*[\s\S]*?\*\*»\*\*(?:\n|$)")
 
 # Permissions block (single long line): "| ... You **may not** post ... Forum Rules ... |"
-_VB_PERMISSIONS_RE = re.compile(
-    r"(?:^|\n)[^\n]*You \*\*may not\*\*[^\n]*"
-)
+_VB_PERMISSIONS_RE = re.compile(r"(?:^|\n)[^\n]*You \*\*may not\*\*[^\n]*")
 
 # "All times are GMT..." line
 _VB_ALL_TIMES_RE = re.compile(r"(?:^|\n)All times are GMT[^\n]*(?:\n|$)")
 
 # "Powered by vBulletin® Version ..."
-_VB_POWERED_BY_RE = re.compile(
-    r"(?:^|\n)Powered by vBulletin[^\n]*(?:\n(?:Copyright|©)[^\n]*)*(?:\n|$)"
-)
+_VB_POWERED_BY_RE = re.compile(r"(?:^|\n)Powered by vBulletin[^\n]*(?:\n(?:Copyright|©)[^\n]*)*(?:\n|$)")
 
 # Trademark/copyright text: "1Addicts.com, BIMMERPOST.com, ..."
 _VB_TRADEMARK_RE = re.compile(
@@ -1456,19 +1418,13 @@ _VB_TRADEMARK_RE = re.compile(
 )
 
 # Privacy/Terms links: "[Privacy Policy](...) - [Terms of Service](...) ..."
-_VB_PRIVACY_RE = re.compile(
-    r"(?:^|\n)\[Privacy Policy\]\([^\)]+\)[^\n]*(?:\n|$)"
-)
+_VB_PRIVACY_RE = re.compile(r"(?:^|\n)\[Privacy Policy\]\([^\)]+\)[^\n]*(?:\n|$)")
 
 # Contact Us / Top table: "| **[Contact Us](...) - ... - [Top](#top)** |"
-_VB_CONTACT_TOP_RE = re.compile(
-    r"(?:^|\n)\|[^\n]*Contact Us[^\n]*Top[^\n]*\|(?:\n|$)"
-)
+_VB_CONTACT_TOP_RE = re.compile(r"(?:^|\n)\|[^\n]*Contact Us[^\n]*Top[^\n]*\|(?:\n|$)")
 
 # vBulletin logo at bottom: "[![u11](...)](http://...)"
-_VB_BOTTOM_LOGO_RE = re.compile(
-    r"(?:^|\n)\[!\[[^\]]*\]\([^\)]+\)\]\([^\)]+\)\s*(?:\n|$)"
-)
+_VB_BOTTOM_LOGO_RE = re.compile(r"(?:^|\n)\[!\[[^\]]*\]\([^\)]+\)\]\([^\)]+\)\s*(?:\n|$)")
 
 # Signature separator: "__________________"
 _VB_SIG_SEPARATOR_RE = re.compile(r"(?:^|\n)_{5,}(?:\n|$)")
@@ -1495,9 +1451,7 @@ _IB_USER_FROM_RE = re.compile(r"(?:^|\n)From: \*\*[^\*]+\*\*(?:\n|$)")
 
 # User rank: "****Rennlist Member****" or "**Advanced**" or "**Racer**" etc.
 # Bold text alone on a line that's a rank (with optional rank image)
-_IB_USER_RANK_RE = re.compile(
-    r"(?:^|\n)\*+[A-Za-z ]+\*+(?:\n|$)"
-)
+_IB_USER_RANK_RE = re.compile(r"(?:^|\n)\*+[A-Za-z ]+\*+(?:\n|$)")
 
 # Rank images: "![](https://.../images/ranks/...)"
 _IB_RANK_IMAGE_RE = re.compile(r"(?:^|\n)!\[\]\([^\)]*images/ranks/[^\)]+\)(?:\n|$)")
@@ -1527,9 +1481,7 @@ _IB_THREAD_TOOLS_RE = re.compile(
 )
 
 # Forum Jump navigation (entire subforum listing)
-_IB_FORUM_JUMP_RE = re.compile(
-    r"(?:^|\n)User Control Panel\nPrivate Messages\n[\s\S]*?\[Forum Jump\]\([^\)]+\)"
-)
+_IB_FORUM_JUMP_RE = re.compile(r"(?:^|\n)User Control Panel\nPrivate Messages\n[\s\S]*?\[Forum Jump\]\([^\)]+\)")
 
 # Pagination: "- First\n- Prev\n- N / N\n- Next\n- Last"
 _IB_PAGINATION_RE = re.compile(
@@ -1548,15 +1500,11 @@ _IB_TRENDING_RE = re.compile(
 _IB_VENDOR_DIR_RE = re.compile(r"(?:^|\n)\[Vendor Directory\]\([^\)]+\)(?:\n|$)")
 
 # Forum category description: "**C8 General Discussion** description text"
-_IB_FORUM_CAT_RE = re.compile(
-    r"(?:^|\n)\*\*[A-Z][A-Za-z0-9 ]+\*\* [A-Z][^\n]{10,}(?:\n|$)"
-)
+_IB_FORUM_CAT_RE = re.compile(r"(?:^|\n)\*\*[A-Z][A-Za-z0-9 ]+\*\* [A-Z][^\n]{10,}(?:\n|$)")
 
 # "Last edited by..." in vBulletin (italic) — keep but it's fine
 # Table separator lines (standalone)
-_VB_TABLE_SEP_STANDALONE_RE = re.compile(
-    r"(?:^|\n)\|(?:\s*---\s*\|)+(?:\n|$)"
-)
+_VB_TABLE_SEP_STANDALONE_RE = re.compile(r"(?:^|\n)\|(?:\s*---\s*\|)+(?:\n|$)")
 
 # Table row with just Thread Tools link: "|  | [Thread Tools](...) |"
 _VB_THREAD_TOOLS_TABLE_RE = re.compile(
@@ -1593,6 +1541,7 @@ def postprocess_forum(markdown: str) -> str:
     markdown = _XF_CROSSSITE_NAV_RE.sub("\n", markdown)
     markdown = _XF_NUMERAL_NAV_RE.sub("\n", markdown)
     markdown = _XF_INSTALL_DUPE_RE.sub("\n", markdown)
+
     def _format_post_anchor(m: re.Match) -> str:
         num = m.group(1)
         date = m.group(2).replace("\n", " ").strip()

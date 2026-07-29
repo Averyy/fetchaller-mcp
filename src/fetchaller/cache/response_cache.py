@@ -1,6 +1,8 @@
 """Response caching for fetchaller."""
 
 import hashlib
+import math
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -28,7 +30,7 @@ class ResponseCache:
     - Max 1MB per entry
     - Don't cache PDFs (too large, rarely re-fetched)
     - Don't cache Reddit API responses (stale quickly)
-    - Respects Cache-Control: no-store
+    - Respects origin Cache-Control restrictions and maximum age
     """
 
     # Content types that should not be cached
@@ -36,6 +38,7 @@ class ResponseCache:
 
     # URL patterns that should not be cached
     NO_CACHE_PATTERNS = frozenset({"reddit.com/", ".json"})
+    _MAX_AGE_RE = re.compile(r"^\s*(?:\"(\d+)\"|(\d+))\s*$")
 
     def __init__(
         self,
@@ -59,7 +62,7 @@ class ResponseCache:
 
     def _key(self, url: str) -> str:
         """Generate cache key from URL."""
-        return hashlib.sha256(url.encode()).hexdigest()[:16]
+        return hashlib.sha256(url.encode()).hexdigest()
 
     def _should_cache(self, url: str, content_type: str) -> bool:
         """Check if this URL/content type should be cached."""
@@ -102,6 +105,7 @@ class ResponseCache:
         content_type: str,
         ttl: float | None = None,
         cache_control: str | None = None,
+        vary: str | None = None,
     ) -> None:
         """
         Cache a response.
@@ -111,19 +115,59 @@ class ResponseCache:
             content: The response content
             content_type: Content-Type header value
             ttl: Optional TTL override (uses default_ttl if not specified)
-            cache_control: Cache-Control header (respects no-store)
+            cache_control: Origin Cache-Control header. ``private``,
+                ``no-cache``, ``no-store``, and ``max-age=0`` prevent storage;
+                a positive ``max-age`` caps the requested/configured TTL.
+            vary: Origin Vary header. Responses that vary by request headers
+                are not stored because this URL-only cache has no variant keys.
         """
-        # Respect Cache-Control: no-store
-        if cache_control and "no-store" in cache_control.lower():
+        key = self._key(url)
+        effective_ttl = ttl if ttl is not None else self.default_ttl
+        try:
+            finite_ttl = math.isfinite(effective_ttl)
+        except (OverflowError, TypeError):
+            finite_ttl = False
+        if not finite_ttl:
+            self._cache.pop(key, None)
+            return
+        if vary and vary.strip():
+            self._cache.pop(key, None)
+            return
+
+        # This is a shared cache and it has no revalidation implementation.
+        # A response marked private therefore cannot be stored, and no-cache
+        # must be treated as uncacheable rather than served without validation.
+        # Invalidate an older entry too: a newly observed restrictive response
+        # must not leave stale public content reachable under the same URL.
+        cache_allowed, origin_max_age = self._cache_policy(cache_control)
+        if not cache_allowed:
+            self._cache.pop(key, None)
+            return
+
+        if origin_max_age is not None:
+            effective_ttl = min(effective_ttl, origin_max_age)
+        if effective_ttl <= 0:
+            self._cache.pop(key, None)
             return
 
         # Don't cache certain content types or URLs
         if not self._should_cache(url, content_type):
+            self._cache.pop(key, None)
             return
 
         # Don't cache huge responses
-        if len(content) > self.max_entry_size:
+        if len(content.encode("utf-8", errors="replace")) > self.max_entry_size:
+            self._cache.pop(key, None)
             return
+
+        if self.max_entries <= 0:
+            self._cache.pop(key, None)
+            return
+
+        # Replacing an existing URL is an update, not an additional entry. Drop
+        # it before capacity enforcement so refreshing a full cache does not
+        # evict an unrelated LRU entry as well.
+        self._cache.pop(key, None)
 
         # Evict if at limit: first purge expired, then LRU
         if len(self._cache) >= self.max_entries:
@@ -136,12 +180,66 @@ class ResponseCache:
                 self._cache.popitem(last=False)
 
         now = time.time()
-        self._cache[self._key(url)] = CacheEntry(
+        self._cache[key] = CacheEntry(
             content=content,
             content_type=content_type,
             fetched_at=now,
-            expires_at=now + (ttl if ttl is not None else self.default_ttl),
+            expires_at=now + effective_ttl,
         )
+
+    @classmethod
+    def _cache_policy(cls, cache_control: str | None) -> tuple[bool, int | None]:
+        """Return whether storage is allowed and the strictest origin max-age.
+
+        Cache-Control field names and directives are case-insensitive. Quoted
+        decimal max-age values are accepted; malformed or conflicting max-age
+        directives fail closed because guessing a lifetime could retain content
+        longer than the origin intended.
+        """
+        if not cache_control:
+            return True, None
+
+        ages: dict[str, list[int]] = {"max-age": [], "s-maxage": []}
+        for raw_directive in cache_control.split(","):
+            directive = raw_directive.strip()
+            if not directive:
+                continue
+
+            name, separator, value = directive.partition("=")
+            name = name.strip().lower()
+            if name in {"private", "no-cache", "no-store"}:
+                return False, None
+            if name not in ages:
+                continue
+            if not separator:
+                return False, None
+
+            match = cls._MAX_AGE_RE.fullmatch(value)
+            if match is None:
+                return False, None
+            max_age_text = match.group(1) or match.group(2)
+            # RFC 9111 requires caches to treat excessive delta-seconds as
+            # 2^31 or 2^31-1. Either is far above this cache's configured TTL;
+            # clamping also prevents adversarial thousands-digit integers.
+            significant = max_age_text.lstrip("0") or "0"
+            max_age = (
+                2_147_483_648
+                if len(significant) > 10
+                else min(int(significant), 2_147_483_648)
+            )
+            if max_age == 0:
+                return False, None
+            ages[name].append(max_age)
+
+        for values in ages.values():
+            if len(set(values)) > 1:
+                return False, None
+
+        # This is a shared cache, so s-maxage overrides max-age when present.
+        selected = ages["s-maxage"] or ages["max-age"]
+        if selected and selected[0] == 0:
+            return False, None
+        return True, selected[0] if selected else None
 
     def invalidate(self, url: str) -> None:
         """Remove a URL from cache."""

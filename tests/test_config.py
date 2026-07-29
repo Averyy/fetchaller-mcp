@@ -25,6 +25,19 @@ class TestConfig:
         config = Config(server_url="https://example.com")
         assert config.effective_server_url == "https://example.com"
 
+    @pytest.mark.parametrize(
+        ("configured", "canonical"),
+        [
+            ("https://Example.COM:443", "https://example.com"),
+            ("http://LOCALHOST:80", "http://localhost"),
+            ("https://Example.COM:8443", "https://example.com:8443"),
+        ],
+    )
+    def test_effective_server_url_is_a_canonical_origin(
+        self, configured, canonical
+    ):
+        assert Config(server_url=configured).effective_server_url == canonical
+
     def test_port_validation_valid(self):
         """Valid ports are accepted."""
         os.environ["HTTP_PORT"] = "8080"
@@ -118,6 +131,112 @@ class TestConfig:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         assert load_config().data_dir == str(tmp_path)
 
+    def test_browser_executable_path_from_environment(self, monkeypatch, tmp_path):
+        browser = tmp_path / "Chrome for Testing"
+        monkeypatch.setenv("BROWSER_EXECUTABLE_PATH", str(browser))
+
+        assert load_config().browser_executable_path == str(browser)
+
+    @pytest.mark.parametrize("value", ["", "bad\x00path", "bad\npath"])
+    def test_browser_executable_path_rejects_invalid_values(self, value):
+        with pytest.raises(ValueError, match="BROWSER_EXECUTABLE_PATH"):
+            Config(browser_executable_path=value)
+
+    def test_local_default_data_dir_is_user_writable_not_container_path(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.delenv("DATA_DIR", raising=False)
+        monkeypatch.delenv("WAFER_CACHE_DIR", raising=False)
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+
+        config = load_config()
+
+        assert config.data_dir == str(tmp_path / "fetchaller")
+        assert config.wafer_cache_dir == str(tmp_path / "fetchaller" / "wafer")
+        assert not config.data_dir.startswith("/app/")
+
+    @pytest.mark.parametrize("value", ["not-a-cidr", "10.0.0.1/999"])
+    def test_trusted_proxy_values_are_validated_at_startup(self, monkeypatch, value):
+        monkeypatch.setenv("TRUSTED_PROXY_IPS", value)
+        with pytest.raises(ValueError, match="TRUSTED_PROXY_IPS"):
+            load_config()
+
+    @pytest.mark.parametrize("value", ["nan", "inf", "-0.1"])
+    def test_retry_delays_must_be_finite_and_nonnegative(self, monkeypatch, value):
+        monkeypatch.setenv("RETRY_INITIAL_DELAY", value)
+        with pytest.raises(ValueError, match="RETRY_INITIAL_DELAY"):
+            load_config()
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "ftp://example.com",
+            "https://user:pass@example.com",
+            "https://example.com/path?query=1",
+            "https://example.com/",
+            "https://example.com/oauth",
+            "https://example.com?",
+            "https://example.com#",
+            "http://example.com",
+            "http://127.0.0.2:6000",
+            "https://example.com:",
+            "https://example.com:0",
+            "https://bad_host.example",
+            "https://éxample.com",
+            "not a url",
+        ],
+    )
+    def test_server_url_is_strict_absolute_origin(self, monkeypatch, value):
+        monkeypatch.setenv("MCP_SERVER_URL", value)
+        with pytest.raises(ValueError, match="MCP_SERVER_URL"):
+            load_config()
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "http://example.com",
+            "https://example.com/",
+            "https://example.com/oauth",
+            "https://example.com?",
+            "https://example.com#",
+        ],
+    )
+    def test_direct_config_cannot_bypass_server_origin_validation(self, value):
+        """Programmatic Config consumers enforce the same OAuth origin boundary."""
+        with pytest.raises(ValueError, match="MCP_SERVER_URL"):
+            Config(server_url=value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "https://example.com",
+            "https://example.com:8443",
+            "http://localhost:6000",
+            "http://127.0.0.1:6000",
+            "http://[::1]:6000",
+        ],
+    )
+    def test_server_url_accepts_https_or_exact_loopback_origin(
+        self,
+        monkeypatch,
+        value,
+    ):
+        monkeypatch.setenv("MCP_SERVER_URL", value)
+
+        assert load_config().effective_server_url == value
+
+    def test_authenticated_config_rejects_weak_jwt_secret(self, monkeypatch):
+        monkeypatch.setenv("MCP_API_KEY", "api-key")
+        monkeypatch.setenv("JWT_SECRET", "short")
+        with pytest.raises(ValueError, match="JWT_SECRET"):
+            load_config()
+
+    def test_programmatic_authenticated_config_rejects_weak_jwt_secret(self):
+        with pytest.raises(ValueError, match="JWT_SECRET"):
+            Config(api_key="test-api-key", jwt_secret="short")
+
     def test_allow_ephemeral_jwt_requires_explicit_one(self, monkeypatch):
         """Only ALLOW_EPHEMERAL_JWT=1 enables the unsafe local-dev escape hatch."""
         monkeypatch.setenv("ALLOW_EPHEMERAL_JWT", "true")
@@ -125,3 +244,110 @@ class TestConfig:
 
         monkeypatch.setenv("ALLOW_EPHEMERAL_JWT", "1")
         assert load_config().allow_ephemeral_jwt is True
+
+    def test_direct_reddit_access_token_is_supported_and_redacted(self):
+        config = Config(reddit_access_token="short-lived-access")
+
+        assert config.reddit_moderator_oauth_configured is True
+        assert "short-lived-access" not in repr(config)
+
+    def test_default_reddit_oauth_user_agent_describes_all_exact_reads(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("REDDIT_USER_AGENT", raising=False)
+
+        assert Config().reddit_user_agent == (
+            "fetchaller-mcp/3 exact-reddit-reads"
+        )
+        assert load_config().reddit_user_agent == (
+            "fetchaller-mcp/3 exact-reddit-reads"
+        )
+
+    def test_complete_reddit_refresh_config_loads_from_environment(self, monkeypatch):
+        monkeypatch.setenv("REDDIT_CLIENT_ID", "client-id")
+        monkeypatch.setenv("REDDIT_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("REDDIT_REFRESH_TOKEN", "refresh-token")
+        monkeypatch.setenv("REDDIT_USER_AGENT", "fetchaller test-agent")
+
+        config = load_config()
+
+        assert config.reddit_moderator_oauth_configured is True
+        assert config.reddit_client_id == "client-id"
+        assert config.reddit_client_secret == "client-secret"
+        assert config.reddit_refresh_token == "refresh-token"
+        assert config.reddit_user_agent == "fetchaller test-agent"
+        assert "client-secret" not in repr(config)
+        assert "refresh-token" not in repr(config)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"reddit_client_id": "client-id"},
+            {"reddit_client_secret": "client-secret"},
+            {"reddit_refresh_token": "refresh-token"},
+            {
+                "reddit_client_id": "client-id",
+                "reddit_client_secret": "client-secret",
+            },
+        ],
+    )
+    def test_partial_reddit_refresh_config_is_rejected_programmatically(self, kwargs):
+        with pytest.raises(ValueError, match="must be configured together"):
+            Config(**kwargs)
+
+    def test_partial_reddit_refresh_environment_is_rejected(self, monkeypatch):
+        monkeypatch.setenv("REDDIT_CLIENT_ID", "client-id")
+        monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("REDDIT_REFRESH_TOKEN", raising=False)
+
+        with pytest.raises(ValueError, match="must be configured together"):
+            load_config()
+
+    def test_empty_optional_reddit_environment_is_treated_as_unconfigured(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("REDDIT_CLIENT_ID", "")
+        monkeypatch.setenv("REDDIT_CLIENT_SECRET", "")
+        monkeypatch.setenv("REDDIT_REFRESH_TOKEN", "")
+        monkeypatch.setenv("REDDIT_ACCESS_TOKEN", "")
+
+        config = load_config()
+
+        assert config.reddit_moderator_oauth_configured is False
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("reddit_client_id", "client:id", "REDDIT_CLIENT_ID"),
+            ("reddit_client_secret", "secret\ninjection", "REDDIT_CLIENT_SECRET"),
+            ("reddit_refresh_token", "refresh token", "REDDIT_REFRESH_TOKEN"),
+            ("reddit_access_token", "bearer token", "REDDIT_ACCESS_TOKEN"),
+            ("reddit_user_agent", "agent\r\nX-Evil: yes", "REDDIT_USER_AGENT"),
+            ("reddit_access_token", "x" * 8193, "REDDIT_ACCESS_TOKEN"),
+        ],
+    )
+    def test_reddit_oauth_values_reject_injection_and_unbounded_input(
+        self,
+        field,
+        value,
+        message,
+    ):
+        kwargs = {field: value}
+        if field in {
+            "reddit_client_id",
+            "reddit_client_secret",
+            "reddit_refresh_token",
+        }:
+            kwargs.update(
+                {
+                    "reddit_client_id": "client-id",
+                    "reddit_client_secret": "client-secret",
+                    "reddit_refresh_token": "refresh-token",
+                    field: value,
+                }
+            )
+
+        with pytest.raises(ValueError, match=message):
+            Config(**kwargs)

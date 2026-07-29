@@ -4,6 +4,8 @@ Tests URL detection, CSS selector dispatch through clean_html(), and
 postprocessor dispatch through html_to_markdown().
 """
 
+import pytest
+
 from fetchaller.content.aliexpress import (
     extract_product_id_from_url,
     extract_search_products,
@@ -155,6 +157,35 @@ class TestExtractSearchProducts:
             self._make_search_html([], total=0),
             "https://www.aliexpress.com/w/wholesale-test.html",
         )
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "placeholder",
+        [
+            {
+                "productId": "1005000000000001",
+                "title": {},
+                "prices": {},
+            },
+            {
+                "productId": "1005000000000001",
+                "title": {"displayTitle": "Challenge placeholder"},
+                "prices": {"salePrice": {"formattedPrice": "$0.00"}},
+            },
+            {
+                "productId": {},
+                "title": {"displayTitle": "Wrong typed product"},
+                "prices": {"salePrice": {"formattedPrice": "$9.99"}},
+            },
+            [],
+        ],
+    )
+    def test_fetch_intercept_rejects_placeholder_item_list(self, placeholder):
+        result = extract_search_products(
+            self._make_search_html([placeholder], total=1),
+            "https://www.aliexpress.com/w/wholesale-test.html",
+        )
+
         assert result is None
 
 

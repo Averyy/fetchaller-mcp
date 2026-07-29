@@ -10,6 +10,10 @@ def get_authorize_page(
     code_challenge: str,
     error: str | None = None,
     csrf_token: str | None = None,
+    client_name: str = "OAuth client",
+    scope: str = "fetchaller:read",
+    resource: str = "",
+    csp_nonce: str = "",
 ) -> str:
     """
     Generate the OAuth authorization page HTML.
@@ -21,6 +25,16 @@ def get_authorize_page(
     safe_state = escape_html(state or "")
     safe_code_challenge = escape_html(code_challenge)
     safe_csrf = escape_html(csrf_token or "")
+    safe_client_name = escape_html(client_name)
+    safe_scope = escape_html(scope)
+    safe_resource = escape_html(resource)
+    safe_nonce = escape_html(csp_nonce)
+    from urllib.parse import urlparse
+
+    callback_origin = urlparse(redirect_uri)
+    safe_callback_origin = escape_html(
+        f"{callback_origin.scheme}://{callback_origin.netloc}"
+    )
     error_html = f'<div class="error" role="alert" aria-live="assertive">{escape_html(error)}</div>' if error else ""
 
     return f'''<!DOCTYPE html>
@@ -32,7 +46,7 @@ def get_authorize_page(
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>
+  <style nonce="{safe_nonce}">
     :root {{
       --bg-primary: #000000;
       --bg-secondary: #0a0a0a;
@@ -239,7 +253,7 @@ def get_authorize_page(
       <span class="logo-text">fetchaller</span>
     </div>
     <h1>Connect to fetchaller</h1>
-    <p class="subtitle">Enter your API key to authorize Claude to use fetchaller on your behalf.</p>
+    <p class="subtitle">Enter your API key to authorize {safe_client_name} to use fetchaller on your behalf.</p>
     {error_html}
     <form method="POST" action="/authorize" id="authForm">
       <input type="hidden" name="client_id" value="{safe_client_id}">
@@ -247,13 +261,15 @@ def get_authorize_page(
       <input type="hidden" name="state" value="{safe_state}">
       <input type="hidden" name="code_challenge" value="{safe_code_challenge}">
       <input type="hidden" name="csrf_token" value="{safe_csrf}">
+      <input type="hidden" name="scope" value="{safe_scope}">
+      <input type="hidden" name="resource" value="{safe_resource}">
       <div class="form-group">
         <label for="api_key">API Key</label>
         <input type="password" id="api_key" name="api_key" placeholder="Enter your MCP_API_KEY" required autocomplete="off">
       </div>
       <button type="submit" class="btn" id="submitBtn">Authorize</button>
     </form>
-    <script>
+    <script nonce="{safe_nonce}">
       document.getElementById('authForm').addEventListener('submit', function() {{
         var btn = document.getElementById('submitBtn');
         btn.disabled = true;
@@ -269,19 +285,24 @@ def get_authorize_page(
     <div class="info">
       <div class="info-title">What is this?</div>
       <div class="info-text">
-        This authorizes Claude to fetch web pages through your fetchaller server.
+        This authorizes {safe_client_name} to fetch web pages through your fetchaller server.
         Your API key is the <code>MCP_API_KEY</code> you set when deploying the server.
       </div>
     </div>
     <div class="client-info">
-      Requesting access: Claude
+      Requesting access: {safe_client_name}<br>
+      Callback: {safe_callback_origin}
     </div>
   </main>
 </body>
 </html>'''
 
 
-def get_authorize_success_page(redirect_url: str) -> str:
+def get_authorize_success_page(
+    redirect_url: str,
+    client_name: str = "OAuth client",
+    csp_nonce: str = "",
+) -> str:
     """
     Generate the OAuth success page that auto-redirects to the callback.
 
@@ -291,8 +312,15 @@ def get_authorize_success_page(redirect_url: str) -> str:
     import json as json_module
 
     safe_url = escape_html(redirect_url)
+    safe_client_name = escape_html(client_name)
+    safe_nonce = escape_html(csp_nonce)
     # Use JSON encoding for safe JS string interpolation (handles </script>, unicode, etc.)
-    js_url = json_module.dumps(redirect_url)
+    js_url = (
+        json_module.dumps(redirect_url)
+        .replace("<", "\\u003c")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
     return f'''<!DOCTYPE html>
 <html lang="en">
@@ -304,7 +332,7 @@ def get_authorize_success_page(redirect_url: str) -> str:
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>
+  <style nonce="{safe_nonce}">
     :root {{
       --bg-primary: #000000;
       --bg-card: rgba(255, 255, 255, 0.03);
@@ -403,6 +431,9 @@ def get_authorize_success_page(redirect_url: str) -> str:
       color: var(--text-tertiary);
       font-size: 0.8125rem;
     }}
+    .close-hint a {{
+      color: var(--text-tertiary);
+    }}
   </style>
 </head>
 <body>
@@ -414,9 +445,9 @@ def get_authorize_success_page(redirect_url: str) -> str:
     </div>
     <div class="checkmark"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg></div>
     <h1>Authorized</h1>
-    <p class="subtitle">Redirecting to Claude...</p>
-    <p class="close-hint"><a href="{safe_url}" style="color: var(--text-tertiary);">Click here if not redirected</a> · You can close this tab.</p>
+    <p class="subtitle">Redirecting to {safe_client_name}...</p>
+    <p class="close-hint"><a href="{safe_url}">Click here if not redirected</a> · You can close this tab.</p>
   </main>
-  <script>window.location.href = {js_url};</script>
+  <script nonce="{safe_nonce}">window.location.href = {js_url};</script>
 </body>
 </html>'''

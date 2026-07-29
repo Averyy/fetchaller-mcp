@@ -3,11 +3,16 @@
 import asyncio
 import functools
 import ipaddress
+import json
+import os
 import re
 import socket
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from urllib.parse import quote
 
 # Pre-compiled regexes for hot path
 _IPV4_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)$")
@@ -75,6 +80,7 @@ _DNS_CACHE_MAX = 1024
 # turns into a bogus "private host" rejection.
 _DNS_RESOLVE_TIMEOUT = 8  # seconds
 _dns_cache: dict[str, tuple[list[str], float]] = {}
+_dns_cache_lock = threading.Lock()
 
 # Dedicated resolver pool.
 #
@@ -88,12 +94,252 @@ _DNS_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fetchaller
 
 
 # Reasons a host was blocked. BLOCK_PRIVATE is a security decision;
-# BLOCK_UNRESOLVED is a resolver failure that we fail closed on. Conflating the
-# two sends people hunting for an SSRF misconfiguration that does not exist.
+# BLOCK_UNRESOLVED and BLOCK_SINKHOLE are resolver failures that we fail closed
+# on. Conflating them sends people hunting for an SSRF misconfiguration that
+# does not exist.
 BLOCK_PRIVATE = "private"
 BLOCK_UNRESOLVED = "unresolved"
+BLOCK_SINKHOLE = "sinkhole"
 
 _PRIVATE_MESSAGE = "Access to private/internal hosts is not allowed."
+
+# Answers that are never a real destination.
+#
+# A resolver handing back the unspecified address is saying the lookup produced
+# no usable record — a filtering resolver sinkholing the name, a stale or
+# poisoned cache, or an upstream that answers instead of returning NXDOMAIN.
+# 0.0.0.0 is also non-routable, so the private-range guard fired on it and the
+# caller was told "Access to private/internal hosts is not allowed" for what was
+# really a failed lookup. That reports a security policy decision for a DNS
+# problem and sends people looking for an SSRF misconfiguration that isn't there.
+#
+# Only the unspecified addresses qualify. Some blockers sinkhole to 127.0.0.1
+# instead, but that is equally a legitimate split-horizon answer, so re-resolving
+# past it would bypass a deliberate internal mapping. 0.0.0.0 and :: have no such
+# legitimate use as a destination.
+#
+# This changes only how a *resolver answer* is classified. An IP literal in the
+# URL still goes through _is_private_ip and stays blocked: on Linux, connecting
+# to 0.0.0.0 reaches localhost.
+
+
+def _is_sinkhole_answer(ip_str: str) -> bool:
+    """True if a resolver answer is the unspecified address (a failed lookup)."""
+    try:
+        return ipaddress.ip_address(ip_str.split("%", 1)[0]).is_unspecified
+    except ValueError:
+        return False
+
+
+def _split_sinkhole_answers(ips: list[str]) -> tuple[list[str], bool]:
+    """Partition resolver answers into real addresses and sinkhole placeholders.
+
+    Returns ``(real_addresses, saw_sinkhole)``. A mixed answer keeps the real
+    addresses — the placeholder alongside them is noise, not a verdict.
+    """
+    real = [ip for ip in ips if not _is_sinkhole_answer(ip)]
+    return real, len(real) != len(ips)
+
+
+# How long a confirmed sinkhole is remembered.
+#
+# Longer than _DNS_NEGATIVE_TTL on purpose. That two seconds exists so a
+# transient resolver hiccup does not strand a healthy host. "The resolver
+# sinkholes this name AND public resolvers cannot resolve it either" is not a
+# hiccup — it is a stable condition, and re-deciding it every two seconds means
+# paying the whole DoH fallback again and hammering the public resolvers on
+# every retry of a host that is going to keep failing.
+_DNS_SINKHOLE_TTL = 30
+
+# Hosts whose most recent lookup came back sinkholed, so check_host can say so
+# instead of reporting a generic resolver failure. Diagnostic state only — the
+# access decision is still "blocked" either way. Expires on the same clock as
+# the matching negative DNS entry, so the two never disagree about a host.
+_sinkholed: dict[str, float] = {}
+
+
+def _mark_sinkholed(hostname: str, now: float) -> None:
+    with _dns_cache_lock:
+        if len(_sinkholed) >= _DNS_CACHE_MAX:
+            for key in [k for k, exp in _sinkholed.items() if now >= exp]:
+                del _sinkholed[key]
+            if len(_sinkholed) >= _DNS_CACHE_MAX:
+                for key in list(_sinkholed)[: _DNS_CACHE_MAX // 2]:
+                    del _sinkholed[key]
+        _sinkholed[hostname] = now + _DNS_SINKHOLE_TTL
+
+
+def _was_sinkholed(hostname: str) -> bool:
+    with _dns_cache_lock:
+        expires_at = _sinkholed.get(hostname)
+    return expires_at is not None and time.monotonic() < expires_at
+
+
+# DNS-over-HTTPS fallback, used ONLY after a sinkholed answer.
+#
+# The endpoints are IP literals on purpose: a hostname here would need resolving
+# by the very resolver we are working around, and would recurse back into this
+# module. Both operators publish certificates with these IPs in the SAN list, so
+# TLS verification still applies.
+#
+# Every address this returns is handed back through the same private-range gate
+# as a system-resolver answer — the fallback changes where the record comes
+# from, never whether the destination is allowed.
+_DOH_ENDPOINTS = (
+    "https://1.1.1.1/dns-query",  # Cloudflare
+    "https://8.8.8.8/resolve",  # Google
+)
+_DOH_TIMEOUT = 5  # seconds, per query
+_DOH_TOTAL_TIMEOUT = 6  # seconds for the whole fallback, however many queries
+_DOH_MAX_ANSWERS = 32
+_DOH_MAX_RESPONSE = 64 * 1024
+# DNS record types that carry an address. Everything else in an answer chain
+# (CNAME, DNAME, ...) is a link to follow, not a destination.
+_DOH_ADDRESS_TYPES = (1, 28)  # A, AAAA
+
+
+def _doh_fallback_enabled() -> bool:
+    """Whether to re-resolve sinkholed hosts against a public resolver.
+
+    OFF by default, and deliberately so. A 0.0.0.0 answer is usually a resolver
+    doing its job — a Pi-hole, a UniFi gateway, an enterprise blocklist — and
+    quietly resolving past it overrides a policy someone set, while disclosing
+    the requested hostname to Cloudflare or Google.
+
+    The defect this module actually had was calling that answer a private-host
+    block. Naming it correctly is the fix: BLOCK_SINKHOLE says the resolver is
+    at fault, so the resolver can be repaired rather than worked around.
+
+    Set DNS_DOH_FALLBACK=1 to opt in where a broken resolver cannot be fixed.
+
+    Read per call rather than cached at import so a deployment can toggle it
+    without a rebuild, and so tests can exercise both paths.
+    """
+    return os.environ.get("DNS_DOH_FALLBACK", "0") == "1"
+
+
+def _parse_doh_answer(body: str) -> list[str]:
+    """Extract address records from a DoH JSON response.
+
+    Returns an empty list for anything malformed. Private addresses are NOT
+    filtered here — that stays with the single caller-side gate in check_host.
+    """
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    answers = payload.get("Answer")
+    if not isinstance(answers, list):
+        return []
+
+    found: list[str] = []
+    for answer in answers[:_DOH_MAX_ANSWERS]:
+        if not isinstance(answer, dict) or answer.get("type") not in _DOH_ADDRESS_TYPES:
+            continue
+        data = answer.get("data")
+        if not isinstance(data, str):
+            continue
+        try:
+            address = ipaddress.ip_address(data.strip())
+        except ValueError:
+            continue
+        if address.is_unspecified:
+            # A public resolver echoing the sinkhole is not an escape hatch.
+            continue
+        text = str(address)
+        if text not in found:
+            found.append(text)
+    return found
+
+
+def _doh_query_urls(hostname: str) -> list[tuple[str, str]]:
+    """(endpoint, url) pairs to try, A records first then AAAA."""
+    name = quote(hostname, safe="")
+    return [
+        (endpoint, f"{endpoint}?name={name}&type={qtype}")
+        for endpoint in _DOH_ENDPOINTS
+        for qtype in ("A", "AAAA")
+    ]
+
+
+def _resolvable_via_doh(hostname: str) -> bool:
+    """Guard shared by both DoH paths: only plain public-looking names."""
+    if not _doh_fallback_enabled():
+        return False
+    # A name we could not hand to getaddrinfo has no business going to a public
+    # resolver either, and the length cap keeps a hostile URL from building an
+    # oversized query string.
+    return bool(hostname) and len(hostname) <= 253 and hostname.isascii()
+
+
+async def _resolve_via_doh(hostname: str) -> list[str]:
+    """Re-resolve a sinkholed host against public resolvers (async)."""
+    if not _resolvable_via_doh(hostname):
+        return []
+
+    import wafer
+
+    # One deadline for the whole fallback, not per query. There are four queries
+    # (two resolvers x A/AAAA); at _DOH_TIMEOUT each, an unreachable resolver
+    # would otherwise burn four full timeouts and eat the caller's entire fetch
+    # budget on what is only a best-effort retry of a lookup that already failed.
+    deadline = time.monotonic() + _DOH_TOTAL_TIMEOUT
+    for _endpoint, url in _doh_query_urls(hostname):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            async with wafer.AsyncSession(max_retries=1, max_rotations=0) as session:
+                resp = await session.get(
+                    url,
+                    headers={"accept": "application/dns-json"},
+                    timeout=min(_DOH_TIMEOUT, remaining),
+                    max_response_size=_DOH_MAX_RESPONSE,
+                )
+        except Exception:
+            # Any transport failure just means this resolver is unreachable;
+            # try the next query, then give up and fail closed as before.
+            continue
+        if getattr(resp, "status_code", None) != 200:
+            continue
+        addresses = _parse_doh_answer(resp.text)
+        if addresses:
+            return addresses
+    return []
+
+
+def _resolve_via_doh_sync(hostname: str) -> list[str]:
+    """Blocking twin of :func:`_resolve_via_doh` for the browser egress proxy."""
+    if not _resolvable_via_doh(hostname):
+        return []
+
+    import wafer
+
+    # Same single deadline as the async twin — more important here, because this
+    # runs on a browser-proxy socket thread that a connection is waiting on.
+    deadline = time.monotonic() + _DOH_TOTAL_TIMEOUT
+    for _endpoint, url in _doh_query_urls(hostname):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            with wafer.SyncSession(max_retries=1, max_rotations=0) as session:
+                resp = session.get(
+                    url,
+                    headers={"accept": "application/dns-json"},
+                    timeout=min(_DOH_TIMEOUT, remaining),
+                    max_response_size=_DOH_MAX_RESPONSE,
+                )
+        except Exception:
+            continue
+        if getattr(resp, "status_code", None) != 200:
+            continue
+        addresses = _parse_doh_answer(resp.text)
+        if addresses:
+            return addresses
+    return []
 
 
 @dataclass(frozen=True)
@@ -120,6 +366,14 @@ class HostVerdict:
                 f"Could not resolve host '{self.hostname}' — DNS lookup failed or timed out. "
                 f"Blocked as a precaution. This is a name-resolution failure, not a "
                 f"private-host policy block; the host may be fine. Retry shortly."
+            )
+        if self.reason == BLOCK_SINKHOLE:
+            return (
+                f"DNS resolution failed for '{self.hostname}': the resolver answered with "
+                f"0.0.0.0/:: (a sinkhole answer, not a real address), and the public-resolver "
+                f"fallback could not resolve it either. This is a DNS problem — the resolver "
+                f"in use is filtering or has a stale record for this name — not a "
+                f"private-host policy block. The host itself may be perfectly reachable."
             )
         return _PRIVATE_MESSAGE
 
@@ -189,7 +443,8 @@ async def _resolve_hostname(hostname: str) -> list[str] | None:
     """
     now = time.monotonic()
 
-    cached = _dns_cache.get(hostname)
+    with _dns_cache_lock:
+        cached = _dns_cache.get(hostname)
     if cached:
         ips, expires_at = cached
         if now < expires_at:
@@ -212,20 +467,100 @@ async def _resolve_hostname(hostname: str) -> list[str] | None:
             timeout=_DNS_RESOLVE_TIMEOUT,
         )
         ips = list(set(addr[4][0] for addr in results))
-    except (socket.gaierror, socket.herror, OSError, TimeoutError):
+    except (socket.gaierror, socket.herror, OSError, TimeoutError, UnicodeError):
+        # UnicodeError covers hostnames getaddrinfo cannot even IDNA-encode
+        # (a label over 63 bytes, for one). That is an unresolvable name, not a
+        # caller-visible crash, so it fails closed like any other lookup miss.
+        #
         # Cache the failure only briefly (see _DNS_NEGATIVE_TTL): enough to stop
         # a stampede, far too short to strand a host that comes back.
-        _evict_dns_cache(now)
-        _dns_cache[hostname] = ([], now + _DNS_NEGATIVE_TTL)
+        with _dns_cache_lock:
+            _evict_dns_cache(now)
+            _dns_cache[hostname] = ([], now + _DNS_NEGATIVE_TTL)
         return None
+
+    ips, saw_sinkhole = _split_sinkhole_answers(ips)
+    if not ips and saw_sinkhole:
+        # The resolver answered, but with nothing addressable. Re-ask a public
+        # resolver before failing: this is the case where the name is fine and
+        # only the local resolver is broken.
+        ips = await _resolve_via_doh(hostname)
+        if not ips:
+            _mark_sinkholed(hostname, now)
+            with _dns_cache_lock:
+                _evict_dns_cache(now)
+                _dns_cache[hostname] = ([], now + _DNS_SINKHOLE_TTL)
+            return None
 
     if not ips:
         return []
 
-    _evict_dns_cache(now)
-    _dns_cache[hostname] = (ips, now + _DNS_CACHE_TTL)
+    with _dns_cache_lock:
+        _evict_dns_cache(now)
+        _dns_cache[hostname] = (ips, now + _DNS_CACHE_TTL)
 
     return ips
+
+
+def _resolve_hostname_sync(hostname: str) -> list[str] | None:
+    """Blocking resolver twin used by the browser egress proxy.
+
+    Resolution still runs on the dedicated bounded DNS pool and has the same
+    deadline/cache semantics as :func:`_resolve_hostname`.  The browser proxy
+    runs on socket-server threads, so this function must not depend on an
+    asyncio event loop.
+    """
+
+    now = time.monotonic()
+    with _dns_cache_lock:
+        cached = _dns_cache.get(hostname)
+    if cached:
+        ips, expires_at = cached
+        if now < expires_at:
+            return list(ips) if ips else None
+
+    future = _DNS_EXECUTOR.submit(
+        socket.getaddrinfo,
+        hostname,
+        None,
+        socket.AF_UNSPEC,
+        socket.SOCK_STREAM,
+    )
+    try:
+        results = future.result(timeout=_DNS_RESOLVE_TIMEOUT)
+        ips = list({addr[4][0] for addr in results})
+    except (
+        socket.gaierror,
+        socket.herror,
+        OSError,
+        FutureTimeoutError,
+        UnicodeError,
+    ):
+        # See _resolve_hostname: an un-encodable hostname is an unresolvable
+        # one. On this path it would otherwise escape onto a proxy thread.
+        future.cancel()
+        with _dns_cache_lock:
+            _evict_dns_cache(now)
+            _dns_cache[hostname] = ([], now + _DNS_NEGATIVE_TTL)
+        return None
+
+    ips, saw_sinkhole = _split_sinkhole_answers(ips)
+    if not ips and saw_sinkhole:
+        ips = _resolve_via_doh_sync(hostname)
+        if not ips:
+            _mark_sinkholed(hostname, now)
+            with _dns_cache_lock:
+                _evict_dns_cache(now)
+                _dns_cache[hostname] = ([], now + _DNS_SINKHOLE_TTL)
+            return None
+
+    if not ips:
+        return []
+
+    with _dns_cache_lock:
+        _evict_dns_cache(now)
+        _dns_cache[hostname] = (ips, now + _DNS_CACHE_TTL)
+    return list(ips)
 
 
 def _is_private_host_sync(hostname: str) -> bool | None:
@@ -265,12 +600,22 @@ def _is_private_host_sync(hostname: str) -> bool | None:
             return True
         return _is_private_ip(hostname)
 
-    # Check for bracketed IPv6 addresses [::1]
+    # Check for bracketed IPv6 addresses [::1]. Invalid literals (including
+    # scope-id tricks such as ``[fe80::1%25eth0]``) fail closed instead of
+    # falling through as an apparently public fixed address.
     if hostname.startswith("[") and hostname.endswith("]"):
+        try:
+            ipaddress.IPv6Address(hostname[1:-1])
+        except ipaddress.AddressValueError:
+            return True
         return _is_private_ip(hostname[1:-1])
 
     # Check for non-bracketed IPv6 addresses (::1, fe80::1, etc.)
     if ":" in hostname and not hostname.startswith("["):
+        try:
+            ipaddress.IPv6Address(hostname)
+        except ipaddress.AddressValueError:
+            return True
         return _is_private_ip(hostname)
 
     # Need DNS resolution
@@ -298,10 +643,12 @@ async def check_host(hostname: str) -> HostVerdict:
         return HostVerdict(hostname, result, [], BLOCK_PRIVATE if result else None)
 
     # DNS rebinding protection: resolve hostname and check all IPs
-    resolved_ips = await _resolve_hostname(hostname.lower())
+    normalized = hostname.lower()
+    resolved_ips = await _resolve_hostname(normalized)
     if not resolved_ips:
         # Fail closed on both the failure (None) and the empty-answer ([]) case.
-        return HostVerdict(hostname, True, [], BLOCK_UNRESOLVED)
+        reason = BLOCK_SINKHOLE if _was_sinkholed(normalized) else BLOCK_UNRESOLVED
+        return HostVerdict(hostname, True, [], reason)
     for ip in resolved_ips:
         if _is_private_ip(ip):
             return HostVerdict(hostname, True, [], BLOCK_PRIVATE)
@@ -349,28 +696,44 @@ def is_private_host_sync(hostname: str) -> bool:
 
     Uses blocking DNS resolution. Do NOT call from async code.
     """
-    result = _is_private_host_sync(hostname)
+    return check_host_sync(hostname).blocked
+
+
+def check_host_sync(hostname: str) -> HostVerdict:
+    """Synchronous :func:`check_host` with approved numeric IPs.
+
+    This is the security boundary used by the browser SOCKS proxy: it returns
+    the exact public addresses the proxy may dial, so no hostname resolution
+    occurs after validation.  Do not call it from an asyncio event-loop thread.
+    """
+
+    normalized = hostname.strip().rstrip(".").lower()
+    if not normalized:
+        return HostVerdict(hostname, True, [], BLOCK_PRIVATE)
+
+    result = _is_private_host_sync(normalized)
     if result is not None:
-        return result
+        if result:
+            return HostVerdict(hostname, True, [], BLOCK_PRIVATE)
+        try:
+            literal = str(ipaddress.ip_address(normalized.strip("[]")))
+        except ValueError:
+            # A static public verdict is only expected for canonical IP
+            # literals. Fail closed if that invariant ever changes.
+            return HostVerdict(hostname, True, [], BLOCK_PRIVATE)
+        return HostVerdict(hostname, False, [literal])
 
-    # Blocking DNS fallback
-    hostname = hostname.lower()
-    try:
-        results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        ips = list(set(addr[4][0] for addr in results))
-    except (socket.gaierror, socket.herror, OSError):
-        ips = []
-
-    if not ips:
-        return True  # Fail closed: an unresolvable host is blocked, not allowed.
-
-    for ip in ips:
-        if _is_private_ip(ip):
-            return True
-
-    return False
+    resolved_ips = _resolve_hostname_sync(normalized)
+    if not resolved_ips:
+        reason = BLOCK_SINKHOLE if _was_sinkholed(normalized) else BLOCK_UNRESOLVED
+        return HostVerdict(hostname, True, [], reason)
+    if any(_is_private_ip(ip) for ip in resolved_ips):
+        return HostVerdict(hostname, True, [], BLOCK_PRIVATE)
+    return HostVerdict(hostname, False, list(resolved_ips))
 
 
 def clear_dns_cache() -> None:
     """Clear the DNS resolution cache. Useful for testing."""
-    _dns_cache.clear()
+    with _dns_cache_lock:
+        _dns_cache.clear()
+        _sinkholed.clear()

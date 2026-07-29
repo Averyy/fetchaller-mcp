@@ -22,6 +22,7 @@ import wafer
 
 from ..config import get_wafer_cache_dir
 from ..ratelimit import costco_limiter
+from ..security.xss import safe_log_text
 
 # Default API keys (extracted from Costco search pages)
 _DEFAULT_KEYS: dict[str, str] = {
@@ -94,7 +95,11 @@ _LOCALE_MAP: dict[str, str] = {
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] costco api: {msg}", file=sys.stderr)
+    print(
+        f"[{datetime.now(UTC).isoformat()}] costco api: "
+        f"{safe_log_text(msg)}",
+        file=sys.stderr,
+    )
 
 
 _session: wafer.AsyncSession | None = None
@@ -106,7 +111,11 @@ async def _get_session() -> wafer.AsyncSession:
     if _session is None:
         async with _session_lock:
             if _session is None:
-                _session = wafer.AsyncSession(max_rotations=0, cache_dir=get_wafer_cache_dir())
+                _session = wafer.AsyncSession(
+                    max_rotations=0,
+                    cache_dir=get_wafer_cache_dir(),
+                    max_response_size=10 * 1024 * 1024,
+                )
     return _session
 
 
@@ -159,7 +168,7 @@ async def _refresh_api_key(domain: str, session: wafer.AsyncSession) -> str:
     _default_keys_exhausted.add(domain)
 
     url = f"https://www.costco.{domain}/s?keyword=test"
-    _log(f"Fetching API key from {url}")
+    _log(f"Fetching API key for .{domain}")
 
     try:
         resp = await session.get(url, timeout=15)
@@ -169,14 +178,17 @@ async def _refresh_api_key(domain: str, session: wafer.AsyncSession) -> str:
                 _api_keys[domain] = key
                 _default_keys_exhausted.discard(domain)
                 _save_cached_keys()
-                _log(f"Extracted API key for .{domain}: {key[:8]}...")
+                _log(f"Extracted API key for .{domain}")
                 return key
             else:
                 _log(f"Could not extract API key from .{domain} HTML ({len(resp.text)} chars)")
         else:
             _log(f"Failed to fetch .{domain} search page: HTTP {resp.status_code}")
     except (wafer.WaferError, wafer.WaferTimeout) as e:
-        _log(f"Failed to fetch .{domain} search page: {e}")
+        _log(
+            f"Failed to fetch .{domain} search page: "
+            f"{type(e).__name__}"
+        )
 
     # Refresh failed — return empty so caller knows to bail out.
     # Don't return the hardcoded default here; it likely just got a 401.
@@ -243,7 +255,7 @@ async def search(
     }
 
     url = f"{endpoint}?{urlencode(params)}"
-    _log(f"Search request: {url}")
+    _log(f"Search request for .{domain}")
 
     try:
         resp = await session.get(url, headers=headers, timeout=15)
@@ -251,7 +263,7 @@ async def search(
         _log("Search request timed out")
         return None
     except wafer.WaferError as e:
-        _log(f"Search request failed: {e}")
+        _log(f"Search request failed: {type(e).__name__}")
         return None
 
     # On 401, refresh the API key and retry once
@@ -272,7 +284,7 @@ async def search(
             _log("Retry request timed out")
             return None
         except wafer.WaferError as e:
-            _log(f"Retry request failed: {e}")
+            _log(f"Retry request failed: {type(e).__name__}")
             return None
 
     if resp.status_code == 401:
@@ -282,17 +294,20 @@ async def search(
         return None
 
     if resp.status_code != 200:
-        _log(f"Search HTTP {resp.status_code}: {resp.text[:200]}")
+        _log(
+            f"Search HTTP {resp.status_code} "
+            f"(response_chars={len(resp.text)})"
+        )
         return None
 
     try:
         data = resp.json()
     except json.JSONDecodeError as e:
-        _log(f"Failed to parse JSON response: {e}")
+        _log(f"Failed to parse JSON response: {type(e).__name__}")
         return None
 
     if not isinstance(data, dict) or "response" not in data:
-        _log(f"Unexpected response shape: {str(data)[:200]}")
+        _log(f"Unexpected response shape: {type(data).__name__}")
         return None
 
     return data

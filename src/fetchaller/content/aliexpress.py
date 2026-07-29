@@ -6,12 +6,15 @@ strip_aliexpress_junk, postprocess_aliexpress) plus:
 - Search data extraction from embedded ``_init_data_`` JSON
 """
 
+import math
 import re
 from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup
 
 from ._json_extract import extract_json_object
+from ._numeric import bounded_number_text
+from ._price import has_positive_price
 
 # ---------------------------------------------------------------------------
 # URL detection
@@ -58,6 +61,13 @@ def extract_product_id_from_url(url: str) -> str | None:
 
 # Search URL: /w/wholesale-*.html
 _SEARCH_PATH_RE = re.compile(r"/w/wholesale-(.+?)\.html")
+_MAX_SEARCH_PRODUCTS = 60
+_MAX_SEARCH_OUTPUT_CHARS = 100_000
+_MAX_QUERY_CHARS = 512
+_MAX_TITLE_CHARS = 500
+_MAX_PRICE_CHARS = 256
+_MAX_METADATA_CHARS = 256
+_MAX_INIT_DATA_CHARS = 2_000_000
 
 
 def is_aliexpress_search_url(url: str) -> bool:
@@ -86,7 +96,14 @@ def extract_init_data(html: str) -> dict | None:
         if data_offset != -1 and data_offset < end_idx:
             json_start = html.find("{", data_offset + 5)
             if json_start != -1 and json_start < end_idx:
-                result = extract_json_object(html, json_start, end_idx - json_start + 100)
+                payload_chars = end_idx - json_start
+                if payload_chars > _MAX_INIT_DATA_CHARS:
+                    return None
+                result = extract_json_object(
+                    html,
+                    json_start,
+                    payload_chars,
+                )
                 if result is not None:
                     return result
 
@@ -100,31 +117,113 @@ def extract_init_data(html: str) -> dict | None:
     json_start = html.find("{", data_idx + 5)
     if json_start == -1:
         return None
-    return extract_json_object(html, json_start, 2_000_000)
+    return extract_json_object(html, json_start, _MAX_INIT_DATA_CHARS)
+
+
+def _bounded_scalar(value: object, maximum: int) -> str:
+    """Return one compact scalar, rejecting complex or oversized fields."""
+
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return ""
+    if isinstance(value, float) and not math.isfinite(value):
+        return ""
+    text = " ".join(str(value).split())
+    if not text or len(text) > maximum:
+        return ""
+    return text
+
+
+def _search_product_title(product: dict) -> str:
+    """Return a bounded plain title from current or legacy item-list fields."""
+
+    value = product.get("title")
+    if isinstance(value, dict):
+        value = value.get("displayTitle") or value.get("seoTitle")
+    return _bounded_scalar(value, _MAX_TITLE_CHARS)
+
+
+def valid_search_product(product: object) -> bool:
+    """Require a substantive, product-bound AliExpress search offer.
+
+    Challenge and hydration shells can expose an ``itemList.content`` array
+    containing placeholder dictionaries.  A real offer must bind a canonical
+    product ID to a human title and a positive sale price.
+    """
+
+    if not isinstance(product, dict):
+        return False
+    product_id = product.get("productId")
+    if not isinstance(product_id, (str, int)) or isinstance(product_id, bool):
+        return False
+    product_id = str(product_id)
+    if re.fullmatch(r"\d{8,20}", product_id) is None:
+        return False
+
+    title = _search_product_title(product)
+    if not title:
+        return False
+    if not any(character.isalpha() for character in title):
+        return False
+
+    prices = product.get("prices")
+    if not isinstance(prices, dict):
+        return False
+    sale = prices.get("salePrice")
+    if not isinstance(sale, dict):
+        return False
+    formatted_price = sale.get("formattedPrice")
+    if formatted_price not in (None, ""):
+        return has_positive_price(
+            formatted_price,
+            require_currency=True,
+        )
+    return has_positive_price(
+        sale.get("minPrice"),
+        require_currency=False,
+    )
+
+
+def valid_search_products(products: object) -> list[dict]:
+    """Filter an embedded item list down to substantive bound offers."""
+
+    if not isinstance(products, list):
+        return []
+    # AliExpress exposes at most 60 products for one page. Bound before field
+    # validation so a hostile embedded list cannot amplify CPU or MCP output.
+    return [
+        product
+        for product in products[:_MAX_SEARCH_PRODUCTS]
+        if valid_search_product(product)
+    ]
 
 
 def _format_search_product(idx: int, product: dict) -> str:
     """Format a single search result product."""
     lines = []
 
-    title = ""
-    title_mod = product.get("title", {})
-    if isinstance(title_mod, dict):
-        title = title_mod.get("displayTitle") or title_mod.get("seoTitle", "")
-    elif isinstance(title_mod, str):
-        title = title_mod
-
+    title = _search_product_title(product)
     lines.append(f"{idx}. {title}")
 
     # Price. Use `or {}` (not just a default): the API sends explicit JSON null
     # for these fields on some listings, and `.get("prices", {})` only defaults
     # when the key is *absent* — a null would slip through and crash `.get()`.
-    prices = product.get("prices") or {}
-    sale = prices.get("salePrice") or {}
-    original = prices.get("originalPrice") or {}
-    price_str = sale.get("formattedPrice") or sale.get("minPrice", "")
-    orig_str = original.get("formattedPrice", "")
-    discount = sale.get("discount", "")
+    prices = product.get("prices")
+    prices = prices if isinstance(prices, dict) else {}
+    sale = prices.get("salePrice")
+    sale = sale if isinstance(sale, dict) else {}
+    original = prices.get("originalPrice")
+    original = original if isinstance(original, dict) else {}
+    price_str = _bounded_scalar(
+        sale.get("formattedPrice") or sale.get("minPrice"),
+        _MAX_PRICE_CHARS,
+    )
+    orig_str = _bounded_scalar(
+        original.get("formattedPrice"),
+        _MAX_PRICE_CHARS,
+    )
+    if not has_positive_price(orig_str, require_currency=True):
+        orig_str = ""
+    discount = _discount_percentage(sale.get("discount"))
 
     price_parts = []
     if price_str:
@@ -137,13 +236,23 @@ def _format_search_product(idx: int, product: dict) -> str:
         lines.append(f"   Price: {' '.join(price_parts)}")
 
     # Rating & orders
-    eval_mod = product.get("evaluation") or {}
-    trade_mod = product.get("trade") or {}
+    eval_mod = product.get("evaluation")
+    eval_mod = eval_mod if isinstance(eval_mod, dict) else {}
+    trade_mod = product.get("trade")
+    trade_mod = trade_mod if isinstance(trade_mod, dict) else {}
     meta_parts = []
-    if eval_mod.get("starRating"):
-        meta_parts.append(f"★{eval_mod['starRating']}")
-    if trade_mod.get("tradeDesc"):
-        meta_parts.append(trade_mod["tradeDesc"])
+    star_rating = bounded_number_text(
+        eval_mod.get("starRating"),
+        minimum=0,
+        maximum=5,
+    )
+    trade_description = _trade_description(
+        trade_mod.get("tradeDesc"),
+    )
+    if star_rating:
+        meta_parts.append(f"★{star_rating}")
+    if trade_description:
+        meta_parts.append(trade_description)
     if meta_parts:
         lines.append(f"   {' | '.join(meta_parts)}")
 
@@ -155,14 +264,95 @@ def _format_search_product(idx: int, product: dict) -> str:
     return "\n".join(lines)
 
 
+def _trade_description(value: object) -> str:
+    """Return a finite AliExpress sale-count description."""
+
+    text = _bounded_scalar(value, _MAX_METADATA_CHARS)
+    if not text:
+        return ""
+    match = re.fullmatch(
+        r"(\d+(?:,\d{3})*)(?:\+)?\s+(?:sold|orders?)",
+        text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return ""
+    if not bounded_number_text(
+        match.group(1),
+        minimum=0,
+        maximum=1_000_000_000,
+        integral=True,
+        allow_grouping=True,
+    ):
+        return ""
+    return text
+
+
+def _discount_percentage(value: object) -> str:
+    """Return a finite, unsigned percentage or omit malformed metadata."""
+
+    if isinstance(value, bool):
+        return ""
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)
+        elif isinstance(value, str) and len(value) <= 32 and re.fullmatch(
+            r"(?:\d+(?:\.\d+)?|\.\d+)",
+            value.strip(),
+        ):
+            number = float(value)
+        else:
+            return ""
+    except (OverflowError, ValueError):
+        return ""
+    if not math.isfinite(number) or not 0 < number <= 100:
+        return ""
+    return f"{number:g}"
+
+
 def format_search_results(products: list[dict], query: str, page: int, total: int) -> str:
     """Format search results into numbered list."""
-    header = f'Search: "{query}" | page {page} | {total} results'
+    products = valid_search_products(products)
+    query_text = _bounded_scalar(query, _MAX_QUERY_CHARS) or "aliexpress"
+    page_number = (
+        page
+        if isinstance(page, int) and not isinstance(page, bool) and page >= 1
+        else 1
+    )
+    total_count = (
+        min(total, 1_000_000_000)
+        if isinstance(total, int) and not isinstance(total, bool) and total >= 0
+        else len(products)
+    )
+    header = f'Search: "{query_text}" | page {page_number} | {total_count} results'
     if not products:
         return f"{header}\n\nNo products found."
 
-    formatted = [_format_search_product(i + 1 + (page - 1) * 60, p) for i, p in enumerate(products)]
-    return f"{header}\n\n" + "\n\n".join(formatted)
+    prefix = f"{header}\n\n"
+    formatted: list[str] = []
+    length = len(prefix)
+    for index, product in enumerate(products[:_MAX_SEARCH_PRODUCTS]):
+        item = _format_search_product(
+            index + 1 + (page_number - 1) * _MAX_SEARCH_PRODUCTS,
+            product,
+        )
+        separator = 2 if formatted else 0
+        if length + separator + len(item) > _MAX_SEARCH_OUTPUT_CHARS:
+            marker = "[Additional products omitted to enforce the search output limit.]"
+            while formatted:
+                removed = formatted.pop()
+                length -= len(removed) + (2 if formatted else 0)
+                marker_separator = 2 if formatted else 0
+                if (
+                    length + marker_separator + len(marker)
+                    <= _MAX_SEARCH_OUTPUT_CHARS
+                ):
+                    break
+            formatted.append(marker)
+            break
+        formatted.append(item)
+        length += separator + len(item)
+    return prefix + "\n\n".join(formatted)
 
 
 def extract_search_products(html: str, url: str) -> str | None:
@@ -186,6 +376,7 @@ def extract_search_products(html: str, url: str) -> str | None:
     except (KeyError, TypeError):
         return None
 
+    products = valid_search_products(products)
     if not products:
         return None
 

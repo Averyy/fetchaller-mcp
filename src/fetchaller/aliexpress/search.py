@@ -8,19 +8,29 @@ BrowserSolver, so we fetch the search page directly and extract the data.
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
+import time
 from datetime import UTC, datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import wafer
 
 from ..config import get_wafer_cache_dir
-from ..content.aliexpress import extract_init_data, format_search_results
+from ..content.aliexpress import (
+    extract_init_data,
+    format_search_results,
+    valid_search_products,
+)
 from ..ratelimit import aliexpress_limiter
+from ..security.xss import safe_log_text
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] aliexpress search: {msg}", file=sys.stderr)
+    print(
+        f"[{datetime.now(UTC).isoformat()}] aliexpress search: {safe_log_text(msg)}",
+        file=sys.stderr,
+    )
 
 
 # Module-level session — reuses TLS identity and cookies across searches.
@@ -37,6 +47,7 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
                 _session = wafer.AsyncSession(
                     browser_solver=browser_solver,
                     cache_dir=get_wafer_cache_dir(),
+                    max_response_size=10 * 1024 * 1024,
                 )
     return _session
 
@@ -45,6 +56,7 @@ async def close_session() -> None:
     """Release the shared session (for shutdown cleanup)."""
     global _session
     _session = None
+
 
 # Sort option mapping
 _SORT_MAP = {
@@ -66,15 +78,15 @@ def _build_search_url(
     query_slug = quote(query.replace(" ", "-"), safe="-")
     sort_type = _SORT_MAP.get(sort, "default")
     url = f"https://www.aliexpress.com/w/wholesale-{query_slug}.html"
-    params = [f"page={page}"]
+    params: list[tuple[str, object]] = [("page", page)]
     if sort_type != "default":
-        params.append(f"sortType={sort_type}")
+        params.append(("sortType", sort_type))
     if min_price is not None:
-        params.append(f"minPrice={min_price}")
+        params.append(("minPrice", min_price))
     if max_price is not None:
-        params.append(f"maxPrice={max_price}")
+        params.append(("maxPrice", max_price))
     if params:
-        url += "?" + "&".join(params)
+        url += "?" + urlencode(params, quote_via=quote)
     return url
 
 
@@ -91,15 +103,16 @@ def _parse_search_html(html: str, query: str) -> dict | None:
         root_fields = init_data["data"]["root"]["fields"]
         mods = root_fields.get("mods", {})
         item_list = mods.get("itemList", {})
-        products = item_list.get("content", [])
+        products = valid_search_products(item_list.get("content", []))
         page_info = root_fields.get("pageInfo", {})
         total = page_info.get("totalResults", len(products))
         page = page_info.get("page", 1)
-    except (KeyError, TypeError) as e:
-        _log(f"unexpected _init_data_ structure: {e}")
+    except (AttributeError, KeyError, TypeError) as e:
+        _log(f"unexpected _init_data_ structure: {type(e).__name__}")
         return None
 
     if not products:
+        _log("embedded item list contained no substantive priced products")
         return None
 
     content = format_search_results(products, query, page, total)
@@ -112,6 +125,7 @@ async def search_aliexpress(
     sort: str = "default",
     min_price: float | None = None,
     max_price: float | None = None,
+    timeout: int = 180,
     cache=None,
     config=None,
     browser_solver=None,
@@ -128,6 +142,7 @@ async def search_aliexpress(
         sort: Sort order (default, orders, price_asc, price_desc).
         min_price: Minimum price filter.
         max_price: Maximum price filter.
+        timeout: End-to-end request and browser-challenge timeout in seconds.
         cache: ResponseCache instance.
         config: Config instance.
         browser_solver: BrowserSolver for challenge solving.
@@ -135,42 +150,58 @@ async def search_aliexpress(
     Returns:
         Dict with "content" (formatted results) or "error".
     """
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or not 0 < timeout <= 300
+    ):
+        return {"error": "timeout must be greater than zero and at most 300 seconds."}
     if not browser_solver:
         return {"error": "AliExpress search requires a browser solver (not available). Install wafer-py[browser]."}
 
-    # Domain-level rate limiting (shared with aliexpress product).
-    # extra_delay=2.0 → 3.0 base + 2.0 = 5.0s minimum between search requests.
-    await aliexpress_limiter.wait(extra_delay=2.0)
-
-    url = _build_search_url(query, page, sort, min_price, max_price)
-
-    session = await _get_session(browser_solver)
+    deadline = time.monotonic() + timeout
     try:
-        resp = await session.get(
-            url,
-            headers={"Referer": "https://www.aliexpress.com/"},
-            timeout=30,
-        )
+        async with asyncio.timeout(timeout):
+            # Domain-level rate limiting (shared with aliexpress product).
+            # Lock contention, spacing, and Retry-After deferral consume the
+            # same advertised end-to-end budget as fetch and challenge solve.
+            await aliexpress_limiter.wait(extra_delay=2.0)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            url = _build_search_url(query, page, sort, min_price, max_price)
+            session = await _get_session(browser_solver)
+            resp = await session.get(
+                url,
+                headers={"Referer": "https://www.aliexpress.com/"},
+                timeout=remaining,
+            )
+
+            if resp.status_code >= 400:
+                _log(f"HTTP {resp.status_code} for search request")
+                return {"error": f"AliExpress search returned HTTP {resp.status_code}"}
+
+            html = await asyncio.to_thread(lambda: resp.text)
+            result = await asyncio.to_thread(_parse_search_html, html, query)
+            if result:
+                return result
+
+            # _init_data_ not found — page might be a challenge page or empty
+            if "_____tmd_____" in html:
+                _log("TMD punish page in response (challenge not solved)")
+                return {"error": "AliExpress search blocked by TMD bot protection."}
     except wafer.ChallengeDetected as e:
         _log(f"challenge not solved: {e.challenge_type}")
         return {"error": f"AliExpress search blocked by {e.challenge_type} bot protection."}
     except wafer.WaferError as e:
-        _log(f"wafer error: {e}")
+        _log(f"wafer error: {type(e).__name__}")
         return {"error": f"AliExpress search failed: {e}"}
+    except TimeoutError:
+        return {
+            "error": (f"Request timed out after {timeout}s. Try increasing the timeout parameter for slow servers.")
+        }
 
-    if resp.status_code >= 400:
-        _log(f"HTTP {resp.status_code} for search query '{query}'")
-        return {"error": f"AliExpress search returned HTTP {resp.status_code}"}
-
-    html = resp.text
-    result = _parse_search_html(html, query)
-    if result:
-        return result
-
-    # _init_data_ not found — page might be a challenge page or empty
-    if "_____tmd_____" in html:
-        _log("TMD punish page in response (challenge not solved)")
-        return {"error": "AliExpress search blocked by TMD bot protection."}
-
-    _log(f"no _init_data_ found in response ({len(html)} chars)")
+    _log(f"could not extract substantive product data ({len(html)} chars)")
     return {"error": "AliExpress search failed. Could not extract product data from response."}

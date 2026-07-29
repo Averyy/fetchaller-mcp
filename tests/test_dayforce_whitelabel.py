@@ -8,11 +8,15 @@ jobs.dayforcehcm.com board URL.
 
 import json
 
+import pytest
+
 from fetchaller.content import dayforce
 
 
 def _wrap(next_data: dict) -> str:
-    return f'<html><body><script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script></body></html>'
+    return (
+        f'<html><body><script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script></body></html>'
+    )
 
 
 def test_detects_white_label_dayforce():
@@ -60,3 +64,33 @@ def test_defaults_locale_when_missing():
     assert dayforce.extract_dayforce_canonical_board_url(_wrap(next_data)) == (
         "https://jobs.dayforcehcm.com/en-US/ns/BOARD"
     )
+
+
+@pytest.mark.parametrize(
+    "next_data",
+    [
+        {"runtimeConfig": "bad"},
+        {"runtimeConfig": {"BASE_URL": 42}},
+        {
+            "runtimeConfig": {"BASE_URL": "https://jobs.dayforcehcm.com"},
+            "query": "bad",
+        },
+        {
+            "runtimeConfig": {"BASE_URL": "https://jobs.dayforcehcm.com"},
+            "query": {
+                "clientNamespace": 42,
+                "careerSiteXRefCode": "BOARD",
+            },
+        },
+        {
+            "runtimeConfig": {"BASE_URL": "https://jobs.dayforcehcm.com"},
+            "query": {
+                "clientNamespace": "tenant",
+                "careerSiteXRefCode": "BOARD",
+            },
+            "locale": 42,
+        },
+    ],
+)
+def test_malformed_nested_next_data_fails_closed(next_data):
+    assert dayforce.extract_dayforce_canonical_board_url(_wrap(next_data)) is None

@@ -32,7 +32,13 @@ def is_costco_product_url(url: str) -> bool:
 
 # Search/category URL patterns
 _SEARCH_PATH_RE = re.compile(r"^/s\b", re.I)
+# Costco serves categories in two shapes: the newer ``/c/<slug>`` and the
+# long-standing ``/<slug>.html`` (``/laptops.html``, ``/dog-food.html``). Only
+# the first was recognized, so the ``.html`` form skipped the working search API
+# and fell through to browser-solved HTML. Product pages carry ``.product.`` or
+# ``/p/`` and are excluded by is_costco_product_url before this is consulted.
 _CATEGORY_PATH_RE = re.compile(r"^/c/", re.I)
+_CATEGORY_HTML_PATH_RE = re.compile(r"^/[a-z0-9][a-z0-9-]*\.html$", re.I)
 
 
 def is_costco_search_url(url: str) -> bool:
@@ -45,9 +51,12 @@ def is_costco_search_url(url: str) -> bool:
 
 def is_costco_category_url(url: str) -> bool:
     """Check if URL is a Costco category/browse page (CSR, needs API)."""
-    if not is_costco(url):
+    if not is_costco(url) or is_costco_product_url(url):
         return False
-    return bool(_CATEGORY_PATH_RE.match(urlparse(url).path))
+    path = urlparse(url).path
+    return bool(
+        _CATEGORY_PATH_RE.match(path) or _CATEGORY_HTML_PATH_RE.match(path)
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -10,9 +10,11 @@ from .crypto import (
 )
 from .ssrf import (
     BLOCK_PRIVATE,
+    BLOCK_SINKHOLE,
     BLOCK_UNRESOLVED,
     HostVerdict,
     check_host,
+    check_host_sync,
     is_private_host,
     is_private_host_sync,
     resolve_and_check,
@@ -21,9 +23,11 @@ from .xss import escape_html, sanitize_for_log
 
 __all__ = [
     "BLOCK_PRIVATE",
+    "BLOCK_SINKHOLE",
     "BLOCK_UNRESOLVED",
     "HostVerdict",
     "check_host",
+    "check_host_sync",
     "create_access_token",
     "escape_html",
     "generate_id",

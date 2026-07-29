@@ -247,7 +247,8 @@ def _extract_comments(item: dict) -> list[dict]:
         for edge in timeline.get("edges", []):
             node = edge.get("node", {})
             if node.get("__typename") == "IssueComment":
-                if node.get("isHidden"):
+                # Strict: a truthy non-boolean would DROP a visible comment.
+                if node.get("isHidden") is True:
                     continue
                 comments.append(node)
     return comments

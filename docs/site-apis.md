@@ -155,3 +155,73 @@ Key behaviors:
 - **Order in dispatch matters**: Posting URLs are checked before board URLs (`/{org}/{uuid}` is more specific than `/{org}`). Posting regex requires two path segments; board regex requires exactly one. For Dayforce, CSOD, BambooHR, JazzHR, and Workday the URL shapes already disambiguate (`.../jobs/{id}` vs `.../home/requisition/{reqid}` vs `.../careers/{id}` vs `.../apply/{id}` vs `.../job/{externalPath}` for postings; bare board paths otherwise).
 - **Renderers preserve raw field names**: Each platform's renderer dumps the API's own keys/enums (`FullTime`, `REMOTE`, `full_time`, `hybrid`, `postingType`, `availableCultures`, `locationType: 2`) without translation — companies expose different metadata, and translation loses signal.
 - **Pagination quirks**: Workday's salesforce.wd12 tenant returns `total=N` only on page 1 and zeros it on subsequent pages — the Workday board fetcher locks `total` to the first page's value to avoid an early break. Other Workday tenants (CAE, NVIDIA, Mastercard, Adobe) all behave normally.
+
+
+## LinkedIn public guest jobs
+
+Logged-out `/jobs-guest/` endpoints only. No credentials, no injected cookies,
+no apply flow — the detail fragment shows whether an apply button exists but
+never exposes an unauthenticated apply URL, and that is where this stops.
+
+| Endpoint | Returns |
+|---|---|
+| `/jobs-guest/jobs/api/seeMoreJobPostings/search` | HTML `<li>` cards, max 10 per response |
+| `/jobs-guest/api/typeaheadHits?typeaheadType=GEO&query=` | JSON array (served as `text/plain`) resolving a location to a `geoId` |
+| `/jobs-guest/jobs/api/jobPosting/{id}` | HTML fragment for one posting |
+
+Note the typeahead path: the `/jobs-guest/jobs/api/typeaheadHits` variant is a 404.
+
+**Filters** (all live-confirmed against the logged-out filter form):
+`f_TPR` = `r86400`/`r604800`/`r2592000`; `f_WT` = 1 on-site, 2 remote, 3 hybrid;
+`f_E` = 1..6 internship→executive; `f_JT` = F/P/C/T/I;
+`f_SB2` = 21..25 for $40k..$120k; `f_AL=true` Easy Apply; `f_EA=true` "Under 10
+applicants".
+
+`f_AL`/`f_EA` labels come from LinkedIn's own logged-out filter bar, and both
+were verified against each returned posting's detail fragment (2026-07-29):
+`f_AL` returned 5/5 postings with an Easy Apply button and no off-site link
+against a baseline of 0/5; `f_EA` returned 5/5 reading "Be among the first 25
+applicants" against a baseline of "Over 200 applicants". The public detail
+bands applicant counts at 25, so the exact "under 10" threshold is not
+independently observable — what is proven is that it selects low-applicant
+postings.
+
+**Card badges.** `.job-posting-benefits__text` carries "Be an early applicant"
+and "Actively Hiring" — present on 46 of 60 cards for one live query. It is the
+only applicant-volume signal on a logged-out card (no count, no salary), so it
+is extracted and rendered.
+
+**Pagination.** `start` is an absolute row offset, not a page number. Rows
+0–999 answer; 1000+ returns HTTP 400 with an empty body, which the client
+treats as end-of-results rather than an error.
+
+**Two-surface strategy.** The public JSERP page (`/jobs/search`) carries its own
+list of **60** cards — six times the fragment endpoint's 10 — in one request. It
+ignores `start` (every offset returns the same first card), so it is a one-shot
+first-page surface, not a pagination route. `start=0` therefore uses the page
+(one request covers any allowed limit); `start>0` uses the fragment endpoint.
+Both parse with the same card selectors.
+
+**Deliberately not exposed:**
+
+- `sortBy` — LinkedIn's logged-out surface does not honour it. Measured
+  2026-07-29 against `keywords=engineer&location=Toronto`:
+  `sortBy=R`, `sortBy=DD`, `sortBy=RD` and `f_SORT=DD` all returned identical
+  results from the fragment endpoint across 3 pages; the JSERP page returned an
+  identical job-ID sequence for `R` and `DD`; and posting dates were never in
+  descending order under any of them. `f_TPR` DID change the result set in the
+  same session, so filters reach the backend and sort specifically does not.
+  The page merely echoes a supplied `sortBy` back into its own filter links.
+  `sort=recent` is applied client-side over the fetched window instead.
+- Job types `V`/`O`. Accepted syntactically, but sampled postings reported
+  Full-time, so their meaning was never established.
+- Salary on cards. No salary markup appeared in any sampled fragment, including
+  salary-filtered searches. The output says salary is not published rather than
+  implying these postings have none.
+
+**Rate limit.** 3.2s minimum interval (`linkedin_limiter`), the measured safe
+operating point across 46 probes with no 403/429/challenge. The blocking
+threshold was deliberately never probed, so treat it as a floor.
+
+Modules: `src/fetchaller/linkedin/{api,parse,render,search,url}.py`.
+Full endpoint evidence: `.codex-dobby/linkedin_guest_api_spec.md`.

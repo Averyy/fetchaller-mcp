@@ -2,7 +2,7 @@
 """Compare pdfplumber vs pymupdf4llm output on sample PDFs.
 
 Usage:
-    .venv/bin/python scripts/compare_pdf_backends.py
+    uv run python scripts/compare_pdf_backends.py
 """
 
 import time
@@ -81,7 +81,7 @@ def main():
             print(f"\n... ({len(mupdf_text) - PREVIEW_CHARS} more chars)")
 
         # Summary
-        print(f"\n--- Summary ---")
+        print("\n--- Summary ---")
         if pdfplumber:
             print(f"  pdfplumber:  {len(plumber_text):>8} chars in {plumber_time:.3f}s")
         print(f"  pymupdf4llm: {len(mupdf_text):>8} chars in {mupdf_time:.3f}s")

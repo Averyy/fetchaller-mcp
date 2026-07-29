@@ -1,5 +1,8 @@
 """URL detection, filter mapping, and rendering unit tests for realtor.ca."""
 
+from unittest.mock import AsyncMock, patch
+
+import pytest
 from bs4 import BeautifulSoup
 
 from fetchaller.realtor import api, render
@@ -258,15 +261,62 @@ class TestParseListing:
         assert p["price"] == "$500,000"
         assert p["price_value"] == 500000
         assert p["address"] == "1 Main St, Ottawa"
+        assert p["transaction"] == "sale"
         assert p["beds"] == "3 Beds"
         assert p["description"] == "Nice home."
         assert ("Property Type", "House") in p["details"]
-        assert p["rooms"] == [("Main level Living room", "4.6 m x 4.3 m"), ("Kitchen", "3.7 m x 2.9 m")]
+        assert p["rooms"] == [
+            ("Main level Living room", "4.6 m x 4.3 m"),
+            ("Kitchen", "3.7 m x 2.9 m"),
+        ]
         assert p["location_description"] == "Cross Streets: Main."
         assert p["agent"] == "Jane Agent"
         assert p["brokerage"] == "ACME REALTY Brokerage"
         assert p["mls"] == "X999999"
         assert p["coords"] == (45.42, -75.70)
+
+    @pytest.mark.parametrize(
+        "signal",
+        [
+            '<script>window.listing={"TransactionTypeId":"3"}</script>',
+            "<div>For Rent</div>",
+            '<div id="listingPriceValue">$2,450 / month</div>',
+        ],
+    )
+    def test_rental_transaction_is_inferred_from_ssr(self, signal):
+        html = _LISTING_HTML.replace(
+            '<div id="listingPriceValue">$500,000</div>',
+            signal
+            if "listingPriceValue" in signal
+            else '<div id="listingPriceValue">$2,450</div>' + signal,
+        )
+
+        parsed = api.parse_listing_html(
+            html,
+            "https://www.realtor.ca/real-estate/123/1-main-st",
+        )
+
+        assert parsed["transaction"] == "rent"
+
+    @pytest.mark.asyncio
+    async def test_rental_similar_listings_use_rent_price_filters(self):
+        parsed = {
+            "id": "123",
+            "coords": (45.42, -75.70),
+            "price_value": 2000,
+            "transaction": "rent",
+        }
+        with patch(
+            "fetchaller.realtor.api.property_search",
+            new_callable=AsyncMock,
+            return_value={"Results": [_SAMPLE_RESULT]},
+        ) as search:
+            await api.get_similar_listings(parsed)
+
+        kwargs = search.await_args.kwargs
+        assert kwargs["transaction"] == "rent"
+        assert kwargs["min_price"] == 1200
+        assert kwargs["max_price"] == 3000
 
 
 class TestWaferErrorTyped:

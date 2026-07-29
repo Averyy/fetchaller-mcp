@@ -201,7 +201,7 @@ def _render_question(q: dict) -> str | None:
         types = answer_type or display_type or "input"
     if q.get("fileType"):
         types += f" ({q['fileType']})"
-    req = "required" if q.get("isRequired") else "optional"
+    req = "required" if q.get("isRequired") is True else "optional"
     line = f"- **{text}** ({types}, {req})"
     desc_html = q.get("description") or ""
     if desc_html:
@@ -261,7 +261,7 @@ def render_gem_job(data: dict, source_url: str | None = None) -> str:
         ft = (f.get("fieldType") or "").strip()
         if not ft:
             continue
-        req = "required" if f.get("isRequired") else "optional"
+        req = "required" if f.get("isRequired") is True else "optional"
         base_lines.append(f"- **{ft}** ({req})")
 
     # Custom questions + demographic survey — each rendered in source order,

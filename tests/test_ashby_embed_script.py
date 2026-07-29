@@ -9,6 +9,7 @@ canonical board API.
 from unittest.mock import AsyncMock, patch
 
 from fetchaller.content import ashby
+from fetchaller.security.ssrf import HostVerdict
 
 
 def test_basic_embed_script():
@@ -51,10 +52,71 @@ async def test_resolve_embed_refuses_internal_chunk_url():
             return _Resp(u)
 
     jid = "12345678-1234-1234-1234-123456789abc"
-    with patch("fetchaller.content.ashby.is_private_host", new_callable=AsyncMock, return_value=True):
+    with patch(
+        "fetchaller.content.ashby.check_host",
+        new_callable=AsyncMock,
+        return_value=HostVerdict(
+            "169.254.169.254",
+            True,
+            [],
+            "private",
+        ),
+    ):
         result = await ashby.resolve_ashby_embed_url(
             f"https://attacker.example/careers?ashby_jid={jid}", _Session()
         )
     assert result is None
     # The internal chunk URL was never fetched (only the embed page was).
     assert not any("169.254.169.254" in c for c in calls)
+
+
+async def test_resolve_embed_pins_secondary_chunk_dns_and_disables_redirects():
+    jid = "12345678-1234-1234-1234-123456789abc"
+    page_html = (
+        '<script src="https://cdn.example/_next/static/chunks/pages/'
+        'careers-a.js"></script>'
+    )
+
+    class _PageResponse:
+        text = page_html
+        url = "https://attacker.example/careers"
+
+    class _PageSession:
+        async def get(self, _url, **_kwargs):
+            return _PageResponse()
+
+    class _ChunkResponse:
+        status_code = 200
+        text = 'const board = "https://jobs.ashbyhq.com/verified-org";'
+
+    class _PinnedSession:
+        async def get(self, _url, **_kwargs):
+            return _ChunkResponse()
+
+    with (
+        patch(
+            "fetchaller.content.ashby.check_host",
+            new_callable=AsyncMock,
+            return_value=HostVerdict(
+                "cdn.example",
+                False,
+                ["203.0.113.10", "2001:db8::10"],
+            ),
+        ),
+        patch(
+            "fetchaller.content.ashby.wafer.AsyncSession",
+            return_value=_PinnedSession(),
+        ) as session_type,
+    ):
+        result = await ashby.resolve_ashby_embed_url(
+            f"https://attacker.example/careers?ashby_jid={jid}",
+            _PageSession(),
+        )
+
+    assert result == f"https://jobs.ashbyhq.com/verified-org/{jid}"
+    session_type.assert_called_once_with(
+        resolve={"cdn.example": ["203.0.113.10", "2001:db8::10"]},
+        follow_redirects=False,
+        max_rotations=0,
+        max_response_size=5 * 1024 * 1024,
+    )

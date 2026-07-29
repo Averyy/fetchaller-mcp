@@ -14,11 +14,16 @@ import sys
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
+from ..security.xss import safe_log_text
 from . import api
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now(UTC).isoformat()}] costco search: {msg}", file=sys.stderr)
+    print(
+        f"[{datetime.now(UTC).isoformat()}] costco search: "
+        f"{safe_log_text(msg)}",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +269,10 @@ async def search_costco(
     domain = params["domain"]
     start = params.get("start", 0)
 
-    _log(f"Searching Costco.{domain} for '{query}' (start={start})")
+    _log(
+        f"Searching Costco.{domain} "
+        f"(query_chars={len(query)}, start={start})"
+    )
 
     data = await api.search(query=query, domain=domain, start=start)
     if not data:

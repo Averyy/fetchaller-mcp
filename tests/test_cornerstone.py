@@ -12,6 +12,7 @@ from fetchaller.content.cornerstone import (
     render_cornerstone_board,
     render_cornerstone_job,
 )
+from fetchaller.security.ssrf import HostVerdict
 
 
 class TestUrlDetection:
@@ -204,10 +205,85 @@ class TestBoardSsrf:
                 posts.append(u)
                 return _Resp()
 
-        with patch("fetchaller.content.cornerstone.is_private_host",
-                   new_callable=AsyncMock, return_value=True):
-            result = await fetch_cornerstone_board(
-                "https://acme.csod.com/ux/ats/careersite/5/home", _Session()
-            )
+        result = await fetch_cornerstone_board(
+            "https://acme.csod.com/ux/ats/careersite/5/home",
+            _Session(),
+        )
         assert result is None
         assert posts == []  # never POSTed to the internal cloud host
+
+    async def test_board_pins_official_cloud_and_never_reuses_page_session_for_jwt(self):
+        page_html = (
+            '<script>csod.context={"token":"secret-jwt","cultureID":1,'
+            '"cultureName":"en-US","corp":"acme",'
+            '"endpoints":{"cloud":"https://us.api.csod.com/"}};</script>'
+        )
+
+        class _PageResponse:
+            status_code = 200
+            text = page_html
+
+        class _PageSession:
+            posts: list[str] = []
+
+            async def get(self, _url, **_kwargs):
+                return _PageResponse()
+
+            async def post(self, url, **_kwargs):
+                self.posts.append(url)
+                raise AssertionError("JWT must not use the unpinned page session")
+
+        posted: list[tuple[str, dict]] = []
+
+        class _ApiResponse:
+            status_code = 200
+
+            def json(self):
+                return {"data": {"requisitions": [], "totalCount": 0}}
+
+        class _PinnedSession:
+            async def post(self, url, **kwargs):
+                posted.append((url, kwargs))
+                return _ApiResponse()
+
+        page_session = _PageSession()
+        with (
+            patch(
+                "fetchaller.content.cornerstone.check_host",
+                new_callable=AsyncMock,
+                return_value=HostVerdict(
+                    "us.api.csod.com",
+                    False,
+                    ["203.0.113.20"],
+                ),
+            ),
+            patch(
+                "fetchaller.content.cornerstone.wafer.AsyncSession",
+                return_value=_PinnedSession(),
+            ) as session_type,
+        ):
+            result = await fetch_cornerstone_board(
+                "https://acme.csod.com/ux/ats/careersite/5/home",
+                page_session,
+            )
+
+        assert result == {
+            "requisitions": [],
+            "totalCount": 0,
+            "context": {
+                "token": "secret-jwt",
+                "cultureID": 1,
+                "cultureName": "en-US",
+                "corp": "acme",
+                "endpoints": {"cloud": "https://us.api.csod.com/"},
+            },
+        }
+        assert page_session.posts == []
+        session_type.assert_called_once_with(
+            resolve={"us.api.csod.com": ["203.0.113.20"]},
+            follow_redirects=False,
+            max_rotations=0,
+            max_response_size=10 * 1024 * 1024,
+        )
+        assert posted[0][0] == "https://us.api.csod.com/rec-job-search/external/jobs"
+        assert posted[0][1]["headers"]["authorization"] == "Bearer secret-jwt"
