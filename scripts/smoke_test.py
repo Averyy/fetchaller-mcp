@@ -202,7 +202,9 @@ def _validate_aliexpress_product(product_id: str) -> SemanticCheck:
             return "missing numeric AliExpress core product price"
         if not re.search(
             r"(?m)^(?:Store:\s+\S|"
-            r"(?:Variants|Specifications):\s*\n\s+\S)",
+            r"(?:Variants|Specifications):\s*\n\s+\S|"
+            r"Source: verified AliExpress search listing snapshot; "
+            r"full product modules were unavailable\.)",
             text,
         ):
             return "missing AliExpress product attributes"

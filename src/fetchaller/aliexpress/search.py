@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import math
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from urllib.parse import quote, urlencode
@@ -20,6 +21,7 @@ from ..config import get_wafer_cache_dir
 from ..content.aliexpress import (
     extract_init_data,
     format_search_results,
+    search_product_snapshot,
     valid_search_products,
 )
 from ..ratelimit import aliexpress_limiter
@@ -37,6 +39,10 @@ def _log(msg: str) -> None:
 # browser_solver is set on first call (passed from server singleton).
 _session: wafer.AsyncSession | None = None
 _session_lock = asyncio.Lock()
+_snapshot_lock = threading.Lock()
+_product_snapshots: dict[str, tuple[float, dict]] = {}
+_PRODUCT_SNAPSHOT_TTL = 15 * 60.0
+_MAX_PRODUCT_SNAPSHOTS = 120
 
 
 async def _get_session(browser_solver=None) -> wafer.AsyncSession:
@@ -56,6 +62,58 @@ async def close_session() -> None:
     """Release the shared session (for shutdown cleanup)."""
     global _session
     _session = None
+    _clear_product_snapshots()
+
+
+def _remember_search_products(products: list[dict]) -> None:
+    """Retain bounded real listing data for an immediately-following detail."""
+
+    now = time.monotonic()
+    snapshots = [
+        snapshot
+        for product in products
+        if (snapshot := search_product_snapshot(product)) is not None
+    ]
+    with _snapshot_lock:
+        expired = [
+            product_id
+            for product_id, (created, _) in _product_snapshots.items()
+            if now - created > _PRODUCT_SNAPSHOT_TTL
+        ]
+        for product_id in expired:
+            _product_snapshots.pop(product_id, None)
+        for snapshot in snapshots:
+            _product_snapshots[snapshot["product_id"]] = (now, snapshot)
+        if len(_product_snapshots) > _MAX_PRODUCT_SNAPSHOTS:
+            oldest = sorted(
+                _product_snapshots,
+                key=lambda product_id: _product_snapshots[product_id][0],
+            )
+            excess = len(_product_snapshots) - _MAX_PRODUCT_SNAPSHOTS
+            for product_id in oldest[:excess]:
+                _product_snapshots.pop(product_id, None)
+
+
+def get_recent_product_snapshot(product_id: str) -> dict | None:
+    """Return an isolated, unexpired snapshot for the exact product ID."""
+
+    now = time.monotonic()
+    with _snapshot_lock:
+        entry = _product_snapshots.get(product_id)
+        if entry is None:
+            return None
+        created, snapshot = entry
+        if now - created > _PRODUCT_SNAPSHOT_TTL:
+            _product_snapshots.pop(product_id, None)
+            return None
+        return dict(snapshot)
+
+
+def _clear_product_snapshots() -> None:
+    """Clear process snapshots for deterministic lifecycle tests."""
+
+    with _snapshot_lock:
+        _product_snapshots.clear()
 
 
 # Sort option mapping
@@ -115,6 +173,7 @@ def _parse_search_html(html: str, query: str) -> dict | None:
         _log("embedded item list contained no substantive priced products")
         return None
 
+    _remember_search_products(products)
     content = format_search_results(products, query, page, total)
     return {"content": content}
 

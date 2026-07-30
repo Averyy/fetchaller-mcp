@@ -197,6 +197,44 @@ def valid_search_products(products: object) -> list[dict]:
     ]
 
 
+def search_product_snapshot(product: object) -> dict | None:
+    """Return a bounded product-ID-bound snapshot from one valid search offer."""
+
+    if not valid_search_product(product):
+        return None
+    assert isinstance(product, dict)
+    product_id = str(product["productId"])
+    prices = product["prices"]
+    sale = prices["salePrice"]
+    original = prices.get("originalPrice")
+    original = original if isinstance(original, dict) else {}
+    evaluation = product.get("evaluation")
+    evaluation = evaluation if isinstance(evaluation, dict) else {}
+    trade = product.get("trade")
+    trade = trade if isinstance(trade, dict) else {}
+    trade_description = _trade_description(trade.get("tradeDesc"))
+    return {
+        "_source": "search_listing",
+        "product_id": product_id,
+        "title": _search_product_title(product),
+        "sale_price": _bounded_scalar(
+            sale.get("formattedPrice") or sale.get("minPrice"),
+            _MAX_PRICE_CHARS,
+        ),
+        "original_price": _bounded_scalar(
+            original.get("formattedPrice"),
+            _MAX_PRICE_CHARS,
+        ),
+        "discount": _discount_percentage(sale.get("discount")),
+        "rating": bounded_number_text(
+            evaluation.get("starRating"),
+            minimum=0,
+            maximum=5,
+        ),
+        "orders": trade_description.partition(" ")[0],
+    }
+
+
 def _format_search_product(idx: int, product: dict) -> str:
     """Format a single search result product."""
     lines = []

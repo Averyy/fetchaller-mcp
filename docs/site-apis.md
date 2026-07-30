@@ -10,12 +10,19 @@ SSR HTML only — no MTop API exists for the international site (`h5api.m.alibab
 
 ### AliExpress
 
-MTop API at `acs.aliexpress.com` for product details (token bootstrap + MD5 signing). SSR HTML fallback for search. Wafer handles TMD transparently. Separate reviews API at `feedback.aliexpress.com/pc/searchEvaluation.do`.
+MTop API at `acs.aliexpress.com` for product details (token bootstrap + MD5
+signing). SSR HTML fallback for search. Wafer handles TMD transparently. When a
+live search is immediately followed by detail for one of its exact canonical
+product IDs, fetchaller retains a bounded 15-minute copy of that validated
+listing. If MTop is unavailable, it returns that narrower title/price/rating
+snapshot with an explicit source label before attempting the canonical
+browser-rendered product document. Separate reviews API at
+`feedback.aliexpress.com/pc/searchEvaluation.do`.
 
 **MTop client**: `src/fetchaller/aliexpress/mtop.py` — token lifecycle, request signing, auto-refresh.
 
 Key gotchas:
-- Product pages are CSR (`isCSR: true`). `window.runParams` is declared empty — data comes from MTop `mtop.aliexpress.pdp.pc.query`, NOT embedded HTML.
+- Product pages are CSR (`isCSR: true`). `window.runParams` is declared empty — full modules come from MTop `mtop.aliexpress.pdp.pc.query`, not raw HTTP HTML. A wafer browser render may expose JSON-LD/DOM detail and is the final fallback after MTop and an exact recent search snapshot.
 - MTop response may be JSONP (`mtopjsonp1({...})`). Always strip wrapper before JSON.parse.
 - MTop needs locale params: `_lang`, `_currency`, `country`, `clientType` required in data dict.
 - `SITEM_NOT_EXIST`: Delisted products return `ret: ["SUCCESS"]` but `errorCode == "SITEM_NOT_EXIST"`.

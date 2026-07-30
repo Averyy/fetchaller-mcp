@@ -165,6 +165,23 @@ def test_aliexpress_reviews_only_is_not_a_product_success() -> None:
     assert validate(reviews_only) is not None
 
 
+def test_aliexpress_labeled_search_snapshot_is_a_product_success() -> None:
+    aliexpress_id = "1005006727707575"
+    validate = _validate_aliexpress_product(aliexpress_id)
+
+    assert (
+        validate(
+            "Braided USB C Cable\n"
+            f"https://www.aliexpress.com/item/{aliexpress_id}.html\n\n"
+            "Price: US $9.99\n"
+            "★4.8 | 5000+ sold\n"
+            "Source: verified AliExpress search listing snapshot; "
+            "full product modules were unavailable.\n"
+        )
+        is None
+    )
+
+
 def test_commerce_gates_reject_placeholder_or_empty_core_data() -> None:
     aliexpress_id = "1005006727707575"
     assert (

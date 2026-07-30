@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from fetchaller.aliexpress.product import (
+    _extract_from_chrome_html,
     _extract_product_data,
+    _fetch_browser_product,
     _format_output,
     _format_rating_breakdown,
     _format_reviews,
@@ -296,6 +298,62 @@ class TestExtractProductData:
         }
 
         assert _extract_product_data(result)["sale_price"] == ""
+
+
+class TestBrowserProductFallback:
+    def test_exact_rendered_jsonld_is_substantive_product_detail(self):
+        data = _extract_from_chrome_html(
+            """
+            <html><head>
+              <script type="application/ld+json">
+                {
+                  "@type": "Product",
+                  "name": "Braided USB C Cable - AliExpress",
+                  "brand": {"@type": "Brand", "name": "CableCo"},
+                  "offers": {
+                    "@type": "Offer",
+                    "priceCurrency": "USD",
+                    "price": "9.99",
+                    "seller": {"@type": "Organization", "name": "Cable Store"}
+                  }
+                }
+              </script>
+            </head><body></body></html>
+            """
+        )
+        data["product_id"] = "1005006367324382"
+
+        assert data["title"] == "Braided USB C Cable"
+        assert data["sale_price"] == "USD 9.99"
+        assert data["store_name"] == "Cable Store"
+        assert data["specs"] == "  Brand: CableCo"
+        assert _has_useful_product_data(
+            data,
+            expected_product_id="1005006367324382",
+        )
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.aliexpress.product.wafer.AsyncSession")
+    async def test_browser_fallback_rejects_redirected_product_identity(
+        self,
+        session_factory,
+    ):
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = None
+        session.render.return_value.status_code = 200
+        session.render.return_value.url = (
+            "https://www.aliexpress.com/item/1005006367324383.html"
+        )
+        session_factory.return_value = session
+
+        result = await _fetch_browser_product(
+            "1005006367324382",
+            browser_solver=object(),
+            deadline=asyncio.get_running_loop().time() + 10,
+        )
+
+        assert result is None
 
 
 class TestUsefulProductData:
@@ -758,7 +816,16 @@ class TestGetProductMTopFailure:
 
     @pytest.fixture(autouse=True)
     def _skip_rate_limit(self):
-        with patch("fetchaller.aliexpress.product.aliexpress_limiter.wait", new_callable=AsyncMock):
+        with (
+            patch(
+                "fetchaller.aliexpress.product.aliexpress_limiter.wait",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "fetchaller.aliexpress.product._get_recent_search_product",
+                return_value=None,
+            ),
+        ):
             yield
 
     @pytest.mark.asyncio
@@ -771,6 +838,68 @@ class TestGetProductMTopFailure:
 
         result = await get_product("1005006367324382")
         assert "error" in result
+
+    @pytest.mark.asyncio
+    @patch(
+        "fetchaller.aliexpress.product._fetch_browser_product",
+        new_callable=AsyncMock,
+    )
+    @patch("fetchaller.aliexpress.product.fetch_reviews", new_callable=AsyncMock)
+    @patch("fetchaller.aliexpress.product._fetch_mtop", new_callable=AsyncMock)
+    async def test_mtop_failure_uses_exact_browser_product(
+        self,
+        mock_mtop,
+        mock_reviews,
+        mock_browser_product,
+    ):
+        mock_mtop.return_value = None
+        mock_reviews.return_value = {"error": "no reviews"}
+        mock_browser_product.return_value = {
+            "product_id": "1005006367324382",
+            "title": "Braided USB C Cable",
+            "sale_price": "USD 9.99",
+            "specs": "  Brand: CableCo",
+        }
+
+        result = await get_product(
+            "1005006367324382",
+            browser_solver=object(),
+        )
+
+        assert result["content"].startswith("Braided USB C Cable")
+        assert "Price: USD 9.99" in result["content"]
+        assert "Brand: CableCo" in result["content"]
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.aliexpress.product._get_recent_search_product")
+    @patch("fetchaller.aliexpress.product.fetch_reviews", new_callable=AsyncMock)
+    @patch("fetchaller.aliexpress.product._fetch_mtop", new_callable=AsyncMock)
+    async def test_mtop_failure_uses_verified_search_snapshot_before_browser(
+        self,
+        mock_mtop,
+        mock_reviews,
+        recent_snapshot,
+    ):
+        mock_mtop.return_value = None
+        mock_reviews.return_value = {"error": "no reviews"}
+        recent_snapshot.return_value = {
+            "_source": "search_listing",
+            "product_id": "1005006367324382",
+            "title": "Braided USB C Cable",
+            "sale_price": "USD 9.99",
+            "rating": "4.8",
+            "orders": "5000+",
+        }
+
+        result = await get_product(
+            "1005006367324382",
+            browser_solver=object(),
+        )
+
+        assert result["content"].startswith("Braided USB C Cable")
+        assert "Price: USD 9.99" in result["content"]
+        assert "5000+ sold" in result["content"]
+        assert "verified AliExpress search listing snapshot" in result["content"]
 
     @pytest.mark.asyncio
     @patch("fetchaller.aliexpress.product.fetch_reviews", new_callable=AsyncMock)

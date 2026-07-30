@@ -136,7 +136,12 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
             if _session is None or needs_solver_upgrade:
                 _session = wafer.AsyncSession(
                     browser_solver=browser_solver,
-                    max_rotations=0,
+                    # A cold anonymous bootstrap can establish cookies but
+                    # still leave the transport identity that received the
+                    # gate unusable. wafer's Reddit contract preserves one
+                    # bounded transport rotation for exactly that recovery;
+                    # disabling rotations here prevented it from ever running.
+                    max_rotations=1,
                     cache_dir=get_wafer_cache_dir(),
                     follow_redirects=False,
                     max_response_size=50 * 1024 * 1024,

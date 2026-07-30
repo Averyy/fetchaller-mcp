@@ -353,7 +353,10 @@ budget.
 
 ### `get_aliexpress_product(product_id, timeout?)` - Product Details
 
-Accepts a numeric product ID (e.g., `1005006027485365`) or full URL. Returns price, specifications, ratings, and recent reviews via AliExpress's MTop API.
+Accepts a numeric product ID (e.g., `1005006027485365`) or full URL. Returns
+price, specifications, ratings, and recent reviews via AliExpress's MTop API.
+If MTop is unavailable after a live search, an exact matching validated search
+listing can supply a clearly labeled, narrower title/price/rating snapshot.
 The optional timeout is an end-to-end budget from 1 to 180 seconds (default 180).
 
 ### `search_aliexpress(query, page?, sort?, min_price?, max_price?, timeout?)` - Search Products

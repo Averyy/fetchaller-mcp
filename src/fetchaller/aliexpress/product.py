@@ -9,7 +9,11 @@ import re
 import sys
 import time
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
+import wafer
+
+from ..config import get_wafer_cache_dir
 from ..content._numeric import bounded_number_text
 from ..content._price import has_positive_price
 from ..ratelimit import aliexpress_limiter
@@ -517,10 +521,11 @@ def _has_useful_product_data(
 
     MTop may return a nominal SUCCESS response for a challenge or page shell.
     The product tool therefore requires the item ID echoed by the supported
-    payload, a positive displayed price, and one real product-detail module:
-    seller/store identity, SKU variants, or specifications.  This is an OR
-    gate, not an arbitrary field count, so sparse legitimate listings from any
-    supported endpoint remain usable.
+    payload or exact browser-rendered product document, a positive displayed
+    price, and one real product-detail attribute: seller/store identity, SKU
+    variants, or specifications. A separately validated live-search snapshot
+    may satisfy the narrower, explicitly labeled listing contract. These are
+    source-aware gates, not arbitrary field counts.
     """
 
     if not isinstance(product_data, dict):
@@ -546,16 +551,20 @@ def _has_useful_product_data(
     ):
         return False
 
-    # Each value below is extracted from a product-specific MTop module.  Do
-    # not let ratings, stock, or reviews alone substitute for product detail:
-    # those fields can be present on challenge shells as well.
+    # Each value below comes from a product-specific MTop module or from the
+    # exact canonical browser-rendered product document. Do not let ratings,
+    # stock, or reviews alone substitute for product detail: those fields can
+    # be present on challenge shells as well.
     for field in ("store_name", "variants", "specs"):
         value = product_data.get(field)
         if isinstance(value, str) and any(
             character.isalpha() for character in value
         ):
             return True
-    return False
+    # A live search offer is already validated against an exact canonical
+    # product ID, human title, and positive price. It is useful but narrower
+    # than full product modules, so the formatter labels it explicitly.
+    return product_data.get("_source") == "search_listing"
 
 
 def _extract_from_chrome_html(html: str) -> dict:
@@ -602,6 +611,10 @@ def _extract_from_chrome_html(html: str) -> dict:
                 brand = ld.get("brand", {})
                 if isinstance(brand, dict):
                     info["brand"] = _bounded_scalar(brand.get("name"), 256)
+                seller = _as_dict(offers.get("seller"))
+                seller_name = _bounded_scalar(seller.get("name"), _MAX_STORE_CHARS)
+                if _has_letters(seller_name):
+                    info["store_name"] = seller_name
                 break
         except (AttributeError, json.JSONDecodeError, TypeError):
             continue
@@ -647,6 +660,22 @@ def _extract_from_chrome_html(html: str) -> dict:
         if specs:
             info["specs"] = "\n".join(specs)
 
+    # JSON-LD commonly carries a genuine product brand even when the rendered
+    # specification accordion is collapsed. Preserve it as a specification so
+    # an exact canonical product document still satisfies the detail contract
+    # without inventing seller or variant data.
+    brand = _bounded_scalar(info.get("brand"), 256)
+    specs = _bounded_detail_block(
+        info.get("specs"),
+        maximum_lines=_MAX_SPECS,
+    )
+    if _has_letters(brand) and not re.search(
+        rf"(?mi)^\s*Brand:\s*{re.escape(brand)}\s*$",
+        specs,
+    ):
+        brand_line = f"  Brand: {brand}"
+        info["specs"] = f"{brand_line}\n{specs}" if specs else brand_line
+
     # Orders sold (from body text)
     body_text = soup.get_text()
     sold_match = re.search(r"([\d,]+\+?)\s+sold", body_text)
@@ -662,6 +691,87 @@ def _extract_from_chrome_html(html: str) -> dict:
         )
 
     return info
+
+
+def _is_exact_product_document(url: str, product_id: str) -> bool:
+    """Require the browser result to remain on the requested canonical item."""
+
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").rstrip(".").casefold()
+        == "www.aliexpress.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path == f"/item/{product_id}.html"
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _get_recent_search_product(product_id: str) -> dict | None:
+    """Read the exact bounded snapshot retained by a preceding live search."""
+
+    from .search import get_recent_product_snapshot
+
+    return get_recent_product_snapshot(product_id)
+
+
+async def _fetch_browser_product(
+    product_id: str,
+    *,
+    browser_solver,
+    deadline: float,
+) -> dict | None:
+    """Render the exact product page through wafer after MTop is unavailable."""
+
+    if browser_solver is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("AliExpress product deadline exhausted")
+    product_url = f"https://www.aliexpress.com/item/{product_id}.html"
+    try:
+        async with wafer.AsyncSession(
+            browser_solver=browser_solver,
+            cache_dir=get_wafer_cache_dir(),
+            max_response_size=10 * 1024 * 1024,
+        ) as session:
+            response = await session.render(
+                product_url,
+                timeout=remaining,
+                max_response_size=10 * 1024 * 1024,
+            )
+        if (
+            response.status_code >= 400
+            or not _is_exact_product_document(response.url, product_id)
+        ):
+            _log("browser fallback did not return the exact product document")
+            return None
+        html = response.text
+        if not isinstance(html, str):
+            return None
+        product_data = await asyncio.to_thread(_extract_from_chrome_html, html)
+        product_data["product_id"] = product_id
+        if _has_useful_product_data(
+            product_data,
+            expected_product_id=product_id,
+        ):
+            return product_data
+        _log("browser fallback returned no useful product detail")
+    except TimeoutError:
+        raise
+    except wafer.WaferError as exc:
+        _log(f"browser fallback failed ({type(exc).__name__})")
+    except Exception as exc:
+        _log(f"browser fallback failed ({type(exc).__name__})")
+    return None
 
 
 def _format_output(
@@ -744,6 +854,12 @@ def _format_output(
             if delivery_days:
                 ship += f" (est. {delivery_days} days)"
             lines.append(ship)
+
+        if product_data.get("_source") == "search_listing":
+            lines.append(
+                "Source: verified AliExpress search listing snapshot; "
+                "full product modules were unavailable."
+            )
 
         lines.append("")
 
@@ -1008,6 +1124,25 @@ async def get_product(
     if _has_useful_product_data(product_data, expected_product_id=pid):
         content = _format_output(pid, product_data, reviews_data)
         return {"content": content}
+
+    product_data = _get_recent_search_product(pid)
+    if _has_useful_product_data(product_data, expected_product_id=pid):
+        return {"content": _format_output(pid, product_data, reviews_data)}
+
+    # MTop is the preferred structured source, but wafer 0.4.3 also exposes a
+    # validated real-browser render contract. The Chrome extractor above was
+    # previously dead code, so a recoverable MTop/TMD failure became a hard
+    # product failure even when the canonical page itself was readable.
+    try:
+        product_data = await _fetch_browser_product(
+            pid,
+            browser_solver=browser_solver,
+            deadline=deadline,
+        )
+    except TimeoutError:
+        return {"error": "AliExpress product retrieval timed out."}
+    if _has_useful_product_data(product_data, expected_product_id=pid):
+        return {"content": _format_output(pid, product_data, reviews_data)}
 
     # Reviews do not identify a purchasable product or provide its price,
     # variants, or specifications.  Returning them as a successful product

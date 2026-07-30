@@ -7047,6 +7047,7 @@ class TestRedditTransportAndTools:
         assert initial is not upgraded
         assert upgraded is reused
         assert upgraded.kwargs["browser_solver"] is solver
+        assert upgraded.kwargs["max_rotations"] == 1
         assert all(
             session.cookies
             == [

@@ -11,7 +11,9 @@ import pytest
 import fetchaller.aliexpress.search as search_mod
 from fetchaller.aliexpress.search import (
     _build_search_url,
+    _clear_product_snapshots,
     _parse_search_html,
+    get_recent_product_snapshot,
     search_aliexpress,
 )
 from fetchaller.content.aliexpress import (
@@ -114,6 +116,77 @@ class TestExtractInitData:
 
         assert result is None
         assert time.monotonic() - started < 0.5
+
+
+class TestProductSearchSnapshots:
+    def setup_method(self):
+        _clear_product_snapshots()
+
+    def teardown_method(self):
+        _clear_product_snapshots()
+
+    def test_parse_retains_isolated_exact_product_snapshot(self):
+        product = {
+            "productId": "1005006367324382",
+            "title": {"displayTitle": "USB C Hub 8 in 1"},
+            "prices": {
+                "salePrice": {
+                    "formattedPrice": "US $12.99",
+                    "discount": "50",
+                },
+                "originalPrice": {"formattedPrice": "US $25.98"},
+            },
+            "evaluation": {"starRating": "4.8"},
+            "trade": {"tradeDesc": "5000+ sold"},
+        }
+
+        assert _parse_search_html(_search_html([product]), "usb hub") is not None
+        snapshot = get_recent_product_snapshot("1005006367324382")
+
+        assert snapshot == {
+            "_source": "search_listing",
+            "product_id": "1005006367324382",
+            "title": "USB C Hub 8 in 1",
+            "sale_price": "US $12.99",
+            "original_price": "US $25.98",
+            "discount": "50",
+            "rating": "4.8",
+            "orders": "5000+",
+        }
+        snapshot["title"] = "mutated"
+        assert (
+            get_recent_product_snapshot("1005006367324382")["title"]
+            == "USB C Hub 8 in 1"
+        )
+        assert get_recent_product_snapshot("1005006367324383") is None
+
+    def test_invalid_offer_is_not_retained(self):
+        invalid = {
+            "productId": "1005006367324382",
+            "title": {"displayTitle": "USB C Hub"},
+            "prices": {"salePrice": {"formattedPrice": "not a price"}},
+        }
+
+        assert _parse_search_html(_search_html([invalid]), "usb hub") is None
+        assert get_recent_product_snapshot("1005006367324382") is None
+
+    def test_snapshot_expires_after_bounded_window(self):
+        product = {
+            "productId": "1005006367324382",
+            "title": {"displayTitle": "USB C Hub"},
+            "prices": {"salePrice": {"formattedPrice": "US $12.99"}},
+        }
+        with patch.object(search_mod.time, "monotonic", return_value=100.0):
+            assert (
+                _parse_search_html(_search_html([product]), "usb hub")
+                is not None
+            )
+        with patch.object(
+            search_mod.time,
+            "monotonic",
+            return_value=100.0 + search_mod._PRODUCT_SNAPSHOT_TTL + 1,
+        ):
+            assert get_recent_product_snapshot("1005006367324382") is None
 
 
 class TestFormatProduct:
