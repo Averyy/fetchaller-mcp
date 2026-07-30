@@ -101,6 +101,11 @@ ENV RATE_LIMIT_REQUESTS=100
 ENV DISPLAY=:99
 ENV BROWSER_PREFLIGHT=1
 ENV BROWSER_EXECUTABLE_PATH=/opt/google/chrome/chrome
+# Chrome-for-Testing still initializes Crashpad and fontconfig when its
+# per-context profile is temporary. appuser intentionally has no writable home,
+# so give those process-level caches explicit ephemeral locations.
+ENV XDG_CONFIG_HOME=/tmp/fetchaller-xdg/config
+ENV XDG_CACHE_HOME=/tmp/fetchaller-xdg/cache
 ENV DATA_DIR=/app/data
 # Cookie cache must go in the mounted volume, not $HOME. appuser has no home
 # directory in this image, so wafer's home-directory default is not durable.

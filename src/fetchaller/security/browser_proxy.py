@@ -90,7 +90,7 @@ class _ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 class _SocksHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         owner: BrowserEgressProxy = self.server.owner  # type: ignore[attr-defined]
-        owner._handle_client(self.request)
+        owner._handle_client(self.request, self.client_address)
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -212,6 +212,8 @@ class BrowserEgressProxy:
         self._lifecycle_lock = threading.Lock()
         self._socket_lock = threading.Lock()
         self._active_sockets: set[socket.socket] = set()
+        self._handler_waiters_lock = threading.Lock()
+        self._handler_waiters: dict[tuple[str, int], threading.Event] = {}
         self._stats_lock = threading.Lock()
         self._allowed_connections = 0
         self._denied_connections = 0
@@ -279,23 +281,41 @@ class BrowserEgressProxy:
         logger.info("Guarded browser proxy listening at %s", self.url)
 
     def preflight(self) -> None:
-        """Exercise the listener and SOCKS no-auth negotiation."""
+        """Exercise negotiation and wait until its capacity slot is released."""
 
         if not self.ready:
             raise BrowserProxyError("browser proxy listener is not running")
         port = self._server.server_address[1]  # type: ignore[union-attr]
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(self._handshake_timeout)
+        probe.bind(("127.0.0.1", 0))
+        probe_address = probe.getsockname()
+        handler_finished = threading.Event()
+        negotiated = False
+        with self._handler_waiters_lock:
+            self._handler_waiters[probe_address] = handler_finished
         try:
-            with socket.create_connection(
-                ("127.0.0.1", port),
-                timeout=self._handshake_timeout,
-            ) as probe:
-                probe.sendall(bytes((_SOCKS_VERSION, 1, _AUTH_NONE)))
-                if _recv_exact(probe, 2) != bytes((_SOCKS_VERSION, _AUTH_NONE)):
-                    raise BrowserProxyError("browser proxy negotiation failed")
+            probe.connect(("127.0.0.1", port))
+            probe.sendall(bytes((_SOCKS_VERSION, 1, _AUTH_NONE)))
+            if _recv_exact(probe, 2) != bytes((_SOCKS_VERSION, _AUTH_NONE)):
+                raise BrowserProxyError("browser proxy negotiation failed")
+            negotiated = True
         except (OSError, _ProtocolError) as exc:
             raise BrowserProxyError(
                 f"browser proxy preflight failed: {type(exc).__name__}"
             ) from exc
+        finally:
+            probe.close()
+            try:
+                if negotiated and not handler_finished.wait(
+                    self._handshake_timeout
+                ):
+                    raise BrowserProxyError(
+                        "browser proxy preflight handler did not release capacity"
+                    )
+            finally:
+                with self._handler_waiters_lock:
+                    self._handler_waiters.pop(probe_address, None)
 
     def close(self) -> None:
         """Stop accepting and force-close every active browser tunnel."""
@@ -482,7 +502,11 @@ class BrowserEgressProxy:
         stop.set()
         reverse.join(timeout=2)
 
-    def _handle_client(self, client: socket.socket) -> None:
+    def _handle_client(
+        self,
+        client: socket.socket,
+        client_address: tuple[str, int],
+    ) -> None:
         upstream: socket.socket | None = None
         self._track(client)
         try:
@@ -525,6 +549,10 @@ class BrowserEgressProxy:
             except OSError:
                 pass
             self._slots.release()
+            with self._handler_waiters_lock:
+                waiter = self._handler_waiters.get(client_address)
+            if waiter is not None:
+                waiter.set()
 
     def __enter__(self) -> BrowserEgressProxy:
         self.start()

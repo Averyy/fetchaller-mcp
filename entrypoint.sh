@@ -53,6 +53,14 @@ if [ "$(id -u)" = "0" ]; then
     exec gosu appuser "$0" "$@"
 fi
 
+# Chrome-for-Testing initializes Crashpad and fontconfig outside its temporary
+# browser profile. Keep those writes ephemeral and available to custom runtime
+# UIDs instead of relying on appuser's deliberately absent home directory.
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/tmp/fetchaller-xdg/config}
+XDG_CACHE_HOME=${XDG_CACHE_HOME:-/tmp/fetchaller-xdg/cache}
+export XDG_CONFIG_HOME XDG_CACHE_HOME
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+
 # wafer's BrowserSolver launches headful Chrome, so create a fresh virtual
 # display. Container restarts can leave a stale socket/lock in /tmp; remove the
 # two exact files for our private display before launch.
