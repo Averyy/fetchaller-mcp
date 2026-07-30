@@ -360,9 +360,15 @@ async def _pace_domain(last_call: dict[str, float], domain: str) -> None:
     last_call[domain] = time.monotonic()
 
 
-async def run_live_tool_suite(session: ClientSession) -> list[Result]:
+async def run_live_tool_suite(
+    session: ClientSession,
+    *,
+    skip_reddit: bool | None = None,
+) -> list[Result]:
     """Exercise the exact public tool surface with semantic live assertions."""
 
+    if skip_reddit is None:
+        skip_reddit = os.environ.get("SMOKE_SKIP_REDDIT") == "1"
     results: list[Result] = []
     last_call: dict[str, float] = {}
     initialized = await session.initialize()
@@ -393,29 +399,30 @@ async def run_live_tool_suite(session: ClientSession) -> list[Result]:
             semantic_check=_validate_fetch,
         )
     )
-    results.append(
-        await _call(
-            session,
-            "browse_reddit",
-            {"subreddit": "Python", "limit": 3, "timeout": 30},
-            minimum_chars=100,
-            semantic_check=_validate_browse_reddit,
+    if not skip_reddit:
+        results.append(
+            await _call(
+                session,
+                "browse_reddit",
+                {"subreddit": "Python", "limit": 3, "timeout": 30},
+                minimum_chars=100,
+                semantic_check=_validate_browse_reddit,
+            )
         )
-    )
-    results.append(
-        await _call(
-            session,
-            "search_reddit",
-            {
-                "query": "asyncio",
-                "subreddit": "Python",
-                "limit": 3,
-                "timeout": 30,
-            },
-            minimum_chars=100,
-            semantic_check=_validate_search_reddit,
+        results.append(
+            await _call(
+                session,
+                "search_reddit",
+                {
+                    "query": "asyncio",
+                    "subreddit": "Python",
+                    "limit": 3,
+                    "timeout": 30,
+                },
+                minimum_chars=100,
+                semantic_check=_validate_search_reddit,
+            )
         )
-    )
     results.append(
         await _call(
             session,

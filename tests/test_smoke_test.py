@@ -435,3 +435,51 @@ async def test_shared_live_suite_does_not_guess_product_ids_after_failed_search(
     assert "not called" in by_name["get_aliexpress_product"].detail
     assert not by_name["get_alibaba_product"].passed
     assert "not called" in by_name["get_alibaba_product"].detail
+
+
+@pytest.mark.asyncio
+async def test_shared_live_suite_can_omit_credentialed_reddit_calls() -> None:
+    class FakeSession:
+        async def initialize(self):
+            return SimpleNamespace(
+                serverInfo=SimpleNamespace(
+                    name="fetchaller",
+                    version=smoke_test.__version__,
+                )
+            )
+
+        async def list_tools(self):
+            return SimpleNamespace(
+                tools=[
+                    SimpleNamespace(name=name)
+                    for name in EXPECTED_TOOLS
+                ]
+            )
+
+    calls: list[str] = []
+
+    async def fake_call(session, name, arguments, **kwargs):
+        del session, arguments, kwargs
+        calls.append(name)
+        if name == "search_aliexpress":
+            text = "https://www.aliexpress.com/item/1005001234567890.html"
+        elif name == "search_alibaba":
+            text = (
+                "https://www.alibaba.com/product-detail/"
+                "cable_1600123456789.html"
+            )
+        elif name == "search_linkedin_jobs":
+            text = "https://www.linkedin.com/jobs/view/4445926062"
+        else:
+            text = "semantic response"
+        return Result(name, True, "ok", text)
+
+    with (
+        patch("scripts.smoke_test._call", side_effect=fake_call),
+        patch("scripts.smoke_test._pace_domain", new_callable=AsyncMock),
+    ):
+        await run_live_tool_suite(FakeSession(), skip_reddit=True)
+
+    assert "browse_reddit" not in calls
+    assert "search_reddit" not in calls
+    assert "fetch" in calls

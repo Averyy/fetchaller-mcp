@@ -233,8 +233,8 @@ class Config:
     reddit_backoff_rate_limit: int = 60  # After 429
     reddit_backoff_blocked: int = 300  # After 403
 
-    # Reddit uses user-context OAuth only for exact reads that are no longer
-    # available anonymously: moderator rosters and some wiki page indexes.
+    # Reddit user-context OAuth carries validated public API reads on hosted
+    # networks, exact moderator rosters, and some wiki page indexes.
     reddit_client_id: str | None = field(default=None, repr=False)
     reddit_client_secret: str | None = field(default=None, repr=False)
     reddit_refresh_token: str | None = field(default=None, repr=False)

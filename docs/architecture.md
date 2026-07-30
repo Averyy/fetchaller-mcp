@@ -17,32 +17,42 @@ startup readiness preflight. All challenge behavior remains inside wafer.
 
 ### Reddit read path
 
-Mapped normal-URL `fetch` calls, `browse_reddit`, and `search_reddit` share a
-long-lived `wafer.AsyncSession`, persistent anonymous cookie jar, and the
-server's `RedditRequestQueue`. Wafer 0.4.3 establishes the logged-out New Reddit
-session; fetchaller never parses the verification challenge. Direct/library
+Mapped normal-URL `fetch` calls, `browse_reddit`, and `search_reddit` share the
+server's `RedditRequestQueue`. Logged-out reads use a long-lived
+`wafer.AsyncSession` and persistent anonymous cookie jar. When Reddit
+credentials are configured, public structured reads instead use a separate
+cookie-isolated DART-profile wafer session on the official OAuth API origin.
+Wafer 0.4.3 owns both transports; fetchaller never parses a verification
+challenge. Direct/library
 `fetch_url` calls without the injected queue use the process-wide Reddit domain
 limiter. Caller-selected `.json`, `raw=true`, and unmapped HTML fallbacks still
 use the generic fetch path and its Reddit domain limiter.
 
-Mapped routes are anonymous by default. User-context OAuth is restricted to two
-exact formerly public reads that New Reddit no longer exposes consistently:
+Mapped routes retain anonymous fallback behavior when no credentials are
+configured. With credentials, each validated public JSON route is transformed
+from its internal `www`/`api` identity to the equivalent path on
+`oauth.reddit.com`; the `.json` representation suffix is removed and no
+redirect is accepted. Account-private upvoted/downvoted activity and the
+moderator probe remain anonymous. Moderator data crosses to
 `oauth.reddit.com/r/{subreddit}/about/moderators` only after the anonymous
-moderator endpoint returns an unstructured 403, and
+endpoint returns an unstructured 403.
 `oauth.reddit.com/r/{subreddit}/wiki/pages/` only after strict parsing finds no
 canonical public New Reddit SSR tree. A configured direct token is held in
 memory; a complete client-ID, client-secret, and refresh-token set renews it
 under a deduplicating lock. OAuth requests share the Reddit queue and deadline.
-Bearer credentials cannot reach any other path or host, error messages never
-contain response bodies or secrets, and no roster or wiki page is inferred.
+Bearer credentials cannot reach any host other than the fixed OAuth API origin,
+error messages never contain response bodies or secrets, and no roster or wiki
+page is inferred.
 Roster pages are merged until Reddit removes its cursor; invalid/repeated
 cursors or the bounded page cap are explicit errors, never silent truncation.
 
 Anonymous JSON reads use the exact HTTPS `api.reddit.com` transport origin while
-canonical route identity and emitted links remain on `www.reddit.com`. Safe
-equivalent redirects from either Reddit origin are normalized back to the API
-origin, charge every hop to the shared queue, and share the original deadline.
-Missing locations, unrelated origins, loops, and excess hops fail closed.
+configured reads use `oauth.reddit.com`; canonical route identity and emitted
+links remain on `www.reddit.com`. Anonymous safe-equivalent redirects from
+either public Reddit origin are normalized back to the API origin, charge every
+hop to the shared queue, and share the original deadline. Authenticated reads
+reject every redirect. Missing locations, unrelated origins, loops, and excess
+hops fail closed.
 Reddit's exact nonexistent-subreddit redirect to its JSON community search is
 mapped directly to a not-found content state instead of returning search noise.
 

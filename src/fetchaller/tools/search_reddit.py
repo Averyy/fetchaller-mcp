@@ -2,6 +2,7 @@
 
 from urllib.parse import urlencode
 
+from ..config import Config
 from ..content.reddit import format_reddit_post
 from ..queue.reddit_queue import RedditRequestQueue
 from .browse_reddit import (
@@ -11,6 +12,7 @@ from .browse_reddit import (
     _validated_listing_data,
     fetch_reddit_json,
 )
+from .reddit_auth import get_reddit_moderator_oauth
 
 
 async def search_reddit(
@@ -23,6 +25,7 @@ async def search_reddit(
     timeout: int = 10,
     queue: RedditRequestQueue | None = None,
     browser_solver=None,
+    config: Config | None = None,
 ) -> dict:
     """
     Search Reddit posts.
@@ -81,7 +84,18 @@ async def search_reddit(
         url = f"https://www.reddit.com/search.json?{urlencode(params)}"
 
     session = await _get_session(browser_solver)
-    result = await fetch_reddit_json(url, session, queue, float(timeout))
+    oauth = (
+        get_reddit_moderator_oauth(config)
+        if config is not None and config.reddit_moderator_oauth_configured
+        else None
+    )
+    result = await fetch_reddit_json(
+        url,
+        session,
+        queue,
+        float(timeout),
+        oauth=oauth,
+    )
 
     if "error" in result:
         return result

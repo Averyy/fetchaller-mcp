@@ -1692,6 +1692,7 @@ def create_server(
                     timeout=max(1, min(300, arguments.get("timeout", 10))),
                     queue=reddit_queue,
                     browser_solver=browser_solver,
+                    config=config,
                 )
                 return _format_result(name, result, start_time)
 
@@ -1706,6 +1707,7 @@ def create_server(
                     timeout=max(1, min(300, arguments.get("timeout", 10))),
                     queue=reddit_queue,
                     browser_solver=browser_solver,
+                    config=config,
                 )
                 return _format_result(name, result, start_time)
 

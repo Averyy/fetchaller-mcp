@@ -32,6 +32,7 @@ from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..ratelimit import reddit_limiter
 from .browse_reddit import _get_session, fetch_reddit_json
 from .reddit_auth import (
+    RedditModeratorOAuth,
     get_reddit_moderator_oauth,
     valid_moderator_roster,
 )
@@ -479,6 +480,7 @@ async def _hydrate_user_directory(
     session: wafer.AsyncSession,
     queue: RedditRequestQueue | None,
     deadline: float,
+    oauth: RedditModeratorOAuth | None = None,
 ) -> dict:
     """Hydrate every bounded directory card with its exact public account."""
 
@@ -522,6 +524,7 @@ async def _hydrate_user_directory(
             session,
             queue,
             remaining,
+            oauth=oauth,
         )
         if "error" in result:
             detail = _bounded_related_detail(result["error"])
@@ -1318,6 +1321,7 @@ async def _paginate_anonymous_moderators(
     session: wafer.AsyncSession,
     queue: RedditRequestQueue | None,
     deadline: float,
+    oauth: RedditModeratorOAuth | None = None,
 ) -> dict:
     """Merge an anonymously readable roster without silently losing pages."""
 
@@ -1371,6 +1375,7 @@ async def _paginate_anonymous_moderators(
             queue,
             remaining,
             auth_required_on_403=True,
+            oauth=oauth,
         )
         if "data" not in result:
             return result
@@ -1664,6 +1669,7 @@ async def _enrich_related_listing(
     session: wafer.AsyncSession,
     queue: RedditRequestQueue | None,
     deadline: float,
+    oauth: RedditModeratorOAuth | None = None,
 ) -> dict:
     """Replace partial cards with authoritative post JSON without reordering."""
 
@@ -1704,6 +1710,7 @@ async def _enrich_related_listing(
             session,
             queue,
             remaining,
+            oauth=oauth,
         )
         if "error" in result:
             _add_related_notice(enriched, len(batch), result["error"])
@@ -2376,6 +2383,7 @@ async def _fetch_wayback_gilded(
     session: wafer.AsyncSession,
     queue: RedditRequestQueue | None,
     deadline: float,
+    oauth: RedditModeratorOAuth | None = None,
 ) -> dict:
     """Recover retired gilded ordering, then hydrate every ID from Reddit."""
 
@@ -2577,6 +2585,7 @@ async def _fetch_wayback_gilded(
                 session,
                 queue,
                 remaining,
+                oauth=oauth,
             )
             if "error" in result:
                 return {
@@ -2758,6 +2767,30 @@ async def fetch_mapped_reddit(
             )
         }
     session = await _get_session(browser_solver)
+    configured_oauth = (
+        get_reddit_moderator_oauth(config)
+        if (
+            config is not None
+            and config.reddit_moderator_oauth_configured
+            and route.kind != "wiki_pages"
+            and not (
+                route.kind == "subreddit_directory"
+                and route.label == "gold"
+            )
+        )
+        else None
+    )
+    public_oauth = (
+        None
+        if (
+            route.kind == "moderators"
+            or (
+                route.kind == "user_listing"
+                and route.label in {"upvoted", "downvoted"}
+            )
+        )
+        else configured_oauth
+    )
 
     if route.kind == "subreddit_directory" and route.label == "gold":
         archived = await _fetch_archived_gold_directory(
@@ -2792,6 +2825,7 @@ async def fetch_mapped_reddit(
             session,
             queue,
             remaining,
+            oauth=public_oauth,
         )
         if "error" in metadata:
             return metadata
@@ -2803,6 +2837,7 @@ async def fetch_mapped_reddit(
             session=session,
             queue=queue,
             deadline=deadline,
+            oauth=public_oauth,
         )
         if "error" in archived:
             return archived
@@ -2833,6 +2868,7 @@ async def fetch_mapped_reddit(
             session=session,
             queue=queue,
             deadline=deadline,
+            oauth=public_oauth,
         )
         if "error" in result:
             return result
@@ -2916,7 +2952,7 @@ async def fetch_mapped_reddit(
                 return {"error": f"Request timed out ({timeout:g}s limit)"}
             oauth_result = await manager.fetch_wiki_pages(
                 route.subreddit,
-                session,
+                None,
                 queue,
                 remaining,
             )
@@ -2957,7 +2993,7 @@ async def fetch_mapped_reddit(
             return {"error": f"Request timed out ({timeout:g}s limit)"}
         result = await manager.fetch_moderators(
             route.subreddit,
-            session,
+            None,
             queue,
             remaining,
         )
@@ -3010,6 +3046,7 @@ async def fetch_mapped_reddit(
                 route.kind == "user_listing"
                 and route.label in {"upvoted", "downvoted"}
             ),
+            oauth=public_oauth,
         )
         if result.get("auth_required"):
             result = await _moderator_oauth_fallback()
@@ -3123,6 +3160,7 @@ async def fetch_mapped_reddit(
                 session=session,
                 queue=queue,
                 deadline=deadline,
+                oauth=None,
             )
             if result.get("auth_required"):
                 result = await _moderator_oauth_fallback()
@@ -3291,6 +3329,7 @@ async def fetch_mapped_reddit(
                             session=session,
                             queue=queue,
                             deadline=deadline,
+                            oauth=public_oauth,
                         )
                     )
 
@@ -3320,7 +3359,13 @@ async def fetch_mapped_reddit(
                     "id": ",".join(batch),
                 }
             )
-            result = await fetch_reddit_json(info_url, session, queue, remaining)
+            result = await fetch_reddit_json(
+                info_url,
+                session,
+                queue,
+                remaining,
+                oauth=public_oauth,
+            )
             if "error" in result:
                 detail = _bounded_related_detail(result["error"])
                 return {
@@ -3381,6 +3426,7 @@ async def fetch_mapped_reddit(
             session=session,
             queue=queue,
             deadline=deadline,
+            oauth=public_oauth,
         )
         if "error" in hydrated:
             return hydrated

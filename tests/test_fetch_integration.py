@@ -565,6 +565,9 @@ class TestRedditUrlTransform:
         with patch(
             "fetchaller.tools.reddit_fetch._get_session",
             AsyncMock(return_value=session),
+        ), patch(
+            "fetchaller.tools.reddit_auth.RedditModeratorOAuth.get_session",
+            AsyncMock(return_value=session),
         ):
             result = await fetch_url(
                 url,

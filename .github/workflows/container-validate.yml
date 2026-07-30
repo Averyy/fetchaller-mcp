@@ -25,6 +25,11 @@ env:
 jobs:
   container:
     runs-on: ubuntu-latest
+    env:
+      # Untrusted pull requests cannot receive repository credentials. Their
+      # exact image still runs the offline Reddit contract above; publication
+      # runs exercise the real authenticated API paths below.
+      SMOKE_SKIP_REDDIT: ${{ inputs.publish && '0' || '1' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -127,7 +132,10 @@ jobs:
 
       - name: Verify exact image through real stdio MCP client
         env:
-          SMOKE_STDIO_COMMAND: '["docker","run","--rm","-i","--platform","linux/amd64","-v","fetchaller-mcp-ci-stdio-data:/app/data","fetchaller-mcp:test","python","-m","fetchaller.main"]'
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_REFRESH_TOKEN: ${{ secrets.REDDIT_REFRESH_TOKEN }}
+          SMOKE_STDIO_COMMAND: '["docker","run","--rm","-i","--platform","linux/amd64","-e","REDDIT_CLIENT_ID","-e","REDDIT_CLIENT_SECRET","-e","REDDIT_REFRESH_TOKEN","-v","fetchaller-mcp-ci-stdio-data:/app/data","fetchaller-mcp:test","python","-m","fetchaller.main"]'
         run: uv run python scripts/smoke_test.py
 
       - name: Verify every reachable and OAuth Reddit route before publish
@@ -148,6 +156,10 @@ jobs:
             --output /tmp/fetchaller-reddit-parity
 
       - name: Boot authenticated HTTP server
+        env:
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_REFRESH_TOKEN: ${{ secrets.REDDIT_REFRESH_TOKEN }}
         run: |
           docker volume create fetchaller-mcp-ci-data
           docker run -d --name fetchaller-mcp-test \
@@ -158,6 +170,9 @@ jobs:
             -e MCP_SERVER_URL=http://localhost:6000 \
             -e JWT_SECRET=ci-only-jwt-secret-at-least-32-bytes \
             -e BROWSER_PREFLIGHT=1 \
+            -e REDDIT_CLIENT_ID \
+            -e REDDIT_CLIENT_SECRET \
+            -e REDDIT_REFRESH_TOKEN \
             fetchaller-mcp:test
 
       - name: Verify health, MCP dispatch, and OAuth persistence seed

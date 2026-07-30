@@ -11,7 +11,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import wafer
 
@@ -24,6 +24,7 @@ _TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 _OAUTH_ORIGIN = "https://oauth.reddit.com"
 _SUBREDDIT_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_]{0,20}\Z")
 _MAX_TOKEN_RESPONSE = 64 * 1024
+_MAX_JSON_RESPONSE = 50 * 1024 * 1024
 _MAX_ROSTER_RESPONSE = 2 * 1024 * 1024
 _MAX_WIKI_PAGES_RESPONSE = 2 * 1024 * 1024
 _MAX_BEARER_LENGTH = 8192
@@ -108,6 +109,38 @@ def _response_matches_exact_url(response: object, expected_url: str) -> bool:
     return str(getattr(response, "url", expected_url)) == expected_url
 
 
+def _valid_oauth_read_url(url: str) -> bool:
+    """Accept only a bounded exact URL on Reddit's OAuth API origin."""
+
+    if (
+        not isinstance(url, str)
+        or len(url) > 8192
+        or not url.isascii()
+        or any(
+            ord(character) <= 0x20
+            or ord(character) == 0x7F
+            or character == "\\"
+            for character in url
+        )
+    ):
+        return False
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").rstrip(".").lower() == "oauth.reddit.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.params
+        and not parsed.fragment
+        and parsed.path.startswith("/")
+    )
+
+
 def valid_moderator_roster(value: object) -> bool:
     """Require the UserList shape before handing it to the renderer."""
     if (
@@ -130,6 +163,16 @@ class RedditModeratorOAuth:
     user_agent: str = "fetchaller-mcp/3 exact-reddit-reads"
     _expires_at: float = field(default=math.inf, init=False, repr=False)
     _refresh_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        init=False,
+        repr=False,
+    )
+    _session: wafer.AsyncSession | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _session_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock,
         init=False,
         repr=False,
@@ -157,6 +200,109 @@ class RedditModeratorOAuth:
         if self.access_token is not None and time.monotonic() < self._expires_at:
             return self.access_token
         return None
+
+    async def get_session(self) -> wafer.AsyncSession:
+        """Return the cookie-isolated application API session."""
+
+        if self._session is None:
+            async with self._session_lock:
+                if self._session is None:
+                    self._session = wafer.AsyncSession(
+                        profile=wafer.Profile.DART,
+                        headers={
+                            "Accept": "application/json",
+                            "User-Agent": self.user_agent,
+                        },
+                        max_rotations=0,
+                        follow_redirects=False,
+                        max_response_size=_MAX_JSON_RESPONSE,
+                    )
+        return self._session
+
+    async def fetch_json(
+        self,
+        url: str,
+        queue: RedditRequestQueue | None,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Fetch one prevalidated public read through Reddit's OAuth origin."""
+
+        if not _valid_oauth_read_url(url):
+            return {"error": "Invalid Reddit OAuth read URL."}
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        session = await self.get_session()
+        token_result = await self._get_access_token(session, queue, deadline)
+        if "error" in token_result:
+            return token_result
+
+        token = token_result["token"]
+        for attempt in range(2):
+
+            async def request_json():
+                try:
+                    return await session.get(
+                        url,
+                        headers={
+                            "Accept": "application/json",
+                            "Authorization": f"Bearer {token}",
+                            "User-Agent": self.user_agent,
+                        },
+                        timeout=_remaining(deadline),
+                        max_response_size=_MAX_JSON_RESPONSE,
+                    )
+                except (
+                    wafer.WaferTimeout,
+                    TimeoutError,
+                    _OAuthDeadlineExceededError,
+                ):
+                    return _RequestFailure(timed_out=True)
+                except Exception:
+                    return _RequestFailure()
+
+            try:
+                response = await _within_reddit_budget(
+                    request_json,
+                    queue=queue,
+                    deadline=deadline,
+                )
+            except _OAuthDeadlineExceededError:
+                return {"error": "Reddit API request timed out."}
+            except (wafer.WaferTimeout, TimeoutError):
+                return {"error": "Reddit API request timed out."}
+            except Exception:
+                return {"error": "Reddit API request failed."}
+
+            if isinstance(response, _RequestFailure):
+                return {
+                    "error": (
+                        "Reddit API request timed out."
+                        if response.timed_out
+                        else "Reddit API request failed."
+                    )
+                }
+            if not _response_matches_exact_url(response, url):
+                return {
+                    "error": "Reddit API request left its exact endpoint."
+                }
+            if (
+                response.status_code == 401
+                and attempt == 0
+                and self.can_refresh
+            ):
+                refreshed = await self._get_access_token(
+                    session,
+                    queue,
+                    deadline,
+                    rejected_token=token,
+                )
+                if "error" in refreshed:
+                    return refreshed
+                token = refreshed["token"]
+                continue
+            return {"response": response}
+
+        return {"error": "Reddit API access token was rejected or expired."}
 
     async def _refresh_access_token(
         self,
@@ -313,7 +459,7 @@ class RedditModeratorOAuth:
     async def fetch_moderators(
         self,
         subreddit: str,
-        session: wafer.AsyncSession,
+        session: wafer.AsyncSession | None,
         queue: RedditRequestQueue | None,
         timeout: float,
     ) -> dict[str, Any]:
@@ -321,6 +467,7 @@ class RedditModeratorOAuth:
         if not _SUBREDDIT_PATTERN.fullmatch(subreddit):
             return {"error": "Invalid subreddit name"}
 
+        session = session or await self.get_session()
         deadline = time.monotonic() + max(0.0, timeout)
         token_result = await self._get_access_token(session, queue, deadline)
         if "error" in token_result:
@@ -494,7 +641,7 @@ class RedditModeratorOAuth:
     async def fetch_wiki_pages(
         self,
         subreddit: str,
-        session: wafer.AsyncSession,
+        session: wafer.AsyncSession | None,
         queue: RedditRequestQueue | None,
         timeout: float,
     ) -> dict[str, Any]:
@@ -503,6 +650,7 @@ class RedditModeratorOAuth:
         if not _SUBREDDIT_PATTERN.fullmatch(subreddit):
             return {"error": "Invalid subreddit name"}
 
+        session = session or await self.get_session()
         deadline = time.monotonic() + max(0.0, timeout)
         token_result = await self._get_access_token(session, queue, deadline)
         if "error" in token_result:

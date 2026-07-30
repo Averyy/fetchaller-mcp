@@ -28,6 +28,7 @@ from fetchaller.tools.browse_reddit import (
     _get_session,
     _instrument_reddit_session,
     _reddit_json_transport_url,
+    _reddit_oauth_transport_url,
     _validated_reddit_json_url,
     browse_reddit,
     close_session,
@@ -37,6 +38,7 @@ from fetchaller.tools.browse_reddit import (
 )
 from fetchaller.tools.reddit_auth import (
     RedditModeratorOAuth,
+    _valid_oauth_read_url,
     reset_reddit_moderator_oauth,
 )
 from fetchaller.tools.reddit_fetch import (
@@ -2921,6 +2923,139 @@ class _JsonSession:
 
 
 class TestRedditTransportAndTools:
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            (
+                "https://www.reddit.com/r/Python/hot.json?"
+                "limit=10&raw_json=1",
+                "https://oauth.reddit.com/r/Python/hot?"
+                "limit=10&raw_json=1",
+            ),
+            (
+                "https://api.reddit.com/r/Python/comments/abc/title/.json?"
+                "raw_json=1",
+                "https://oauth.reddit.com/r/Python/comments/abc/title/?"
+                "raw_json=1",
+            ),
+            (
+                "https://www.reddit.com/api/v1/collections/collection?"
+                "collection_id=12345678-1234-1234-1234-123456789abc"
+                "&include_links=true&raw_json=1",
+                "https://oauth.reddit.com/api/v1/collections/collection?"
+                "collection_id=12345678-1234-1234-1234-123456789abc"
+                "&include_links=true&raw_json=1",
+            ),
+        ],
+    )
+    def test_public_json_route_maps_to_exact_oauth_origin(
+        self,
+        source,
+        expected,
+    ):
+        assert _reddit_oauth_transport_url(source) == expected
+        assert _valid_oauth_read_url(expected)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://oauth.reddit.com/r/Python/hot",
+            "https://oauth.reddit.com.evil.test/r/Python/hot",
+            "https://user@oauth.reddit.com/r/Python/hot",
+            "https://oauth.reddit.com:444/r/Python/hot",
+            "https://oauth.reddit.com/r/Python/hot#fragment",
+            "https://oauth.reddit.com/r/Python/\\hot",
+        ],
+    )
+    def test_oauth_read_origin_rejects_unsafe_urls(self, url):
+        assert not _valid_oauth_read_url(url)
+
+    async def test_oauth_manager_builds_isolated_application_session(self):
+        created = []
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                created.append(self)
+
+        manager = RedditModeratorOAuth(
+            access_token="direct-token",
+            user_agent="test-agent",
+        )
+        with patch(
+            "fetchaller.tools.reddit_auth.wafer.AsyncSession",
+            side_effect=FakeSession,
+        ):
+            session = await manager.get_session()
+            reused = await manager.get_session()
+
+        assert session is reused
+        assert created == [session]
+        assert session.kwargs == {
+            "profile": wafer.Profile.DART,
+            "headers": {
+                "Accept": "application/json",
+                "User-Agent": "test-agent",
+            },
+            "max_rotations": 0,
+            "follow_redirects": False,
+            "max_response_size": 50 * 1024 * 1024,
+        }
+
+    async def test_oauth_manager_fetches_exact_public_read(self):
+        url = "https://oauth.reddit.com/r/Python/hot?raw_json=1"
+        response = _JsonResponse(
+            {"kind": "Listing", "data": {"children": []}},
+            url=url,
+        )
+        session = _JsonSession([response])
+        manager = RedditModeratorOAuth(
+            access_token="direct-token",
+            user_agent="test-agent",
+        )
+        manager._session = session
+
+        result = await manager.fetch_json(url, None, 10)
+
+        assert result == {"response": response}
+        assert session.request_details == [
+            (
+                "GET",
+                url,
+                {
+                    "headers": {
+                        "Accept": "application/json",
+                        "Authorization": "Bearer direct-token",
+                        "User-Agent": "test-agent",
+                    },
+                    "timeout": session.request_details[0][2]["timeout"],
+                    "max_response_size": 50 * 1024 * 1024,
+                },
+            )
+        ]
+        assert 0 < session.request_details[0][2]["timeout"] <= 10
+
+    async def test_oauth_manager_rejects_redirect_response(self):
+        url = "https://oauth.reddit.com/r/Python/hot?raw_json=1"
+        session = _JsonSession(
+            [
+                _JsonResponse(
+                    {},
+                    status_code=302,
+                    url="https://oauth.reddit.com/login",
+                    history=[object()],
+                )
+            ]
+        )
+        manager = RedditModeratorOAuth(access_token="direct-token")
+        manager._session = session
+
+        result = await manager.fetch_json(url, None, 10)
+
+        assert result == {
+            "error": "Reddit API request left its exact endpoint."
+        }
+
     async def test_account_private_activity_403_does_not_poison_next_route(
         self,
     ):
@@ -4846,7 +4981,7 @@ class TestRedditTransportAndTools:
             manager.fetch_wiki_pages.await_args.args
         )
         assert subreddit == "Python"
-        assert used_session is session
+        assert used_session is None
         assert used_queue is queue
         assert 0 < remaining <= 10
         assert session.calls == [
@@ -6495,6 +6630,10 @@ class TestRedditTransportAndTools:
                 "fetchaller.tools.browse_reddit.reddit_limiter.wait",
                 AsyncMock(),
             ),
+            patch(
+                "fetchaller.tools.reddit_auth.RedditModeratorOAuth.get_session",
+                AsyncMock(return_value=session),
+            ),
         ):
             result = await fetch_mapped_reddit(
                 _moderator_route(),
@@ -6532,6 +6671,10 @@ class TestRedditTransportAndTools:
             patch(
                 "fetchaller.tools.browse_reddit.reddit_limiter.wait",
                 AsyncMock(),
+            ),
+            patch(
+                "fetchaller.tools.reddit_auth.RedditModeratorOAuth.get_session",
+                AsyncMock(return_value=session),
             ),
         ):
             result = await fetch_mapped_reddit(
@@ -7012,8 +7155,21 @@ class TestRedditTransportAndTools:
         assert "Retry after 17s" in result["error"]
         queue.set_backoff.assert_called_once_with(429, retry_after=17.0)
 
-    async def test_non_moderator_route_remains_anonymous_when_oauth_is_configured(self):
-        session = _JsonSession([_JsonResponse({}, status_code=403)])
+    async def test_public_route_uses_oauth_origin_when_configured(self):
+        session = _JsonSession([])
+        manager = Mock()
+        manager.fetch_json = AsyncMock(
+            return_value={
+                "response": _JsonResponse(
+                    {},
+                    status_code=403,
+                    url=(
+                        "https://oauth.reddit.com/r/Python/hot?"
+                        "raw_json=1"
+                    ),
+                )
+            }
+        )
         config = Config(reddit_access_token="must-not-leak")
         route = RedditRoute(
             "https://www.reddit.com/r/Python/",
@@ -7034,6 +7190,10 @@ class TestRedditTransportAndTools:
             patch(
                 "fetchaller.tools.browse_reddit.reddit_limiter.defer",
             ),
+            patch(
+                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
+                return_value=manager,
+            ),
         ):
             result = await fetch_mapped_reddit(
                 route,
@@ -7043,8 +7203,15 @@ class TestRedditTransportAndTools:
             )
 
         assert result == {"error": "Access forbidden by Reddit (HTTP 403)."}
-        assert len(session.request_details) == 1
-        assert "Authorization" not in session.request_details[0][2]["headers"]
+        assert session.request_details == []
+        manager.fetch_json.assert_awaited_once()
+        oauth_url, used_queue, remaining = manager.fetch_json.await_args.args
+        assert oauth_url == (
+            "https://oauth.reddit.com/r/Python/hot?raw_json=1"
+        )
+        assert used_queue is None
+        assert 0 < remaining <= 10
+        assert "must-not-leak" not in repr(manager.fetch_json.await_args)
 
     async def test_shared_session_upgrades_solver_and_seeds_over18_cookie(self):
         created = []

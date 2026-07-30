@@ -7,10 +7,11 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 import wafer
 
-from ..config import get_wafer_cache_dir
+from ..config import Config, get_wafer_cache_dir
 from ..content.reddit import format_reddit_post
 from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..ratelimit import reddit_limiter
+from .reddit_auth import get_reddit_moderator_oauth
 
 # Pre-compiled regex for subreddit name validation
 _SUBREDDIT_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_]{0,20}\Z")
@@ -172,6 +173,7 @@ _JSON_HEADERS = {
 _JSON_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_JSON_REDIRECTS = 5
 _REDDIT_JSON_TRANSPORT_HOST = "api.reddit.com"
+_REDDIT_OAUTH_TRANSPORT_HOST = "oauth.reddit.com"
 
 
 def _find_reddit_reason(value: object) -> str | None:
@@ -296,6 +298,19 @@ def _reddit_json_transport_url(url: str) -> str | None:
     return parsed._replace(netloc=_REDDIT_JSON_TRANSPORT_HOST).geturl()
 
 
+def _reddit_oauth_transport_url(url: str) -> str | None:
+    """Move a validated public JSON route onto Reddit's OAuth API origin."""
+
+    parsed = _validated_reddit_json_url(url, transport=True)
+    if parsed is None:
+        return None
+    path = parsed.path[:-5] if parsed.path.endswith(".json") else parsed.path
+    return parsed._replace(
+        netloc=_REDDIT_OAUTH_TRANSPORT_HOST,
+        path=path,
+    ).geturl()
+
+
 def _is_missing_subreddit_redirect(source_url: str, target_url: str) -> bool:
     """Recognize Reddit's exact nonexistent-community redirect contract."""
     source = _validated_reddit_json_url(source_url, transport=True)
@@ -394,6 +409,7 @@ async def fetch_reddit_json(
     *,
     auth_required_on_403: bool = False,
     account_private_on_403: bool = False,
+    oauth=None,
 ) -> dict:
     """
     Fetch Reddit JSON API with rate limiting.
@@ -408,6 +424,7 @@ async def fetch_reddit_json(
         account_private_on_403: Treat an exact unstructured 403 from a known
             private account-activity route as a scoped access state rather
             than a transport-wide block.
+        oauth: Optional configured Reddit OAuth manager for public API reads.
 
     Returns:
         Dict with either 'data' or 'error'
@@ -420,6 +437,14 @@ async def fetch_reddit_json(
         return {"error": "Invalid Reddit JSON URL."}
 
     async def _do_get(request_url: str) -> dict:
+        if oauth is not None:
+            oauth_url = _reddit_oauth_transport_url(request_url)
+            if oauth_url is None:
+                return {"error": "Invalid Reddit OAuth read URL."}
+            remaining = deadline - monotonic_time.monotonic()
+            if remaining <= 0:
+                return {"error": f"Request timed out ({timeout:g}s limit)"}
+            return await oauth.fetch_json(oauth_url, queue, remaining)
         try:
             remaining = deadline - monotonic_time.monotonic()
             if remaining <= 0:
@@ -450,6 +475,10 @@ async def fetch_reddit_json(
         remaining = deadline - monotonic_time.monotonic()
         if remaining <= 0:
             return {"error": f"Request timed out ({timeout:g}s limit)"}
+        if oauth is not None:
+            # Token refreshes and API reads are each charged by the OAuth
+            # manager, so no outer queue slot may wrap this call.
+            return await _do_get(request_url)
         if queue:
             async def queued_get():
                 return await _do_get(request_url)
@@ -655,6 +684,7 @@ async def browse_reddit(
     timeout: int = 10,
     queue: RedditRequestQueue | None = None,
     browser_solver=None,
+    config: Config | None = None,
 ) -> dict:
     """
     Browse a subreddit's posts.
@@ -698,7 +728,18 @@ async def browse_reddit(
     url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?{urlencode(params)}"
 
     session = await _get_session(browser_solver)
-    result = await fetch_reddit_json(url, session, queue, float(timeout))
+    oauth = (
+        get_reddit_moderator_oauth(config)
+        if config is not None and config.reddit_moderator_oauth_configured
+        else None
+    )
+    result = await fetch_reddit_json(
+        url,
+        session,
+        queue,
+        float(timeout),
+        oauth=oauth,
+    )
 
     if "error" in result:
         return result
