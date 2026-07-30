@@ -138,10 +138,11 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
                     browser_solver=browser_solver,
                     # A cold anonymous bootstrap can establish cookies but
                     # still leave the transport identity that received the
-                    # gate unusable. wafer's Reddit contract preserves one
-                    # bounded transport rotation for exactly that recovery;
-                    # disabling rotations here prevented it from ever running.
-                    max_rotations=1,
+                    # gate unusable. wafer's default two-rotation contract
+                    # first refreshes the same-family TLS session, then tries
+                    # a coherent cross-family identity. A budget of one never
+                    # reached that second recovery stage.
+                    max_rotations=2,
                     cache_dir=get_wafer_cache_dir(),
                     follow_redirects=False,
                     max_response_size=50 * 1024 * 1024,
@@ -419,6 +420,15 @@ async def fetch_reddit_json(
             return {"error": f"Request timed out ({timeout}s limit)"}
         except wafer.ResponseTooLarge:
             return {"error": "Reddit response too large (exceeds 50MB limit)."}
+        except wafer.ChallengeDetected as exc:
+            # In rotation mode wafer raises after exhausting its bounded
+            # identities, but preserves the final tagged response. Feed that
+            # response through the same gate handling below so fetchaller's
+            # one deadline-bound pause/retry remains reachable. Do not inspect
+            # or log the response body: it can contain verification material.
+            if exc.challenge_type == "reddit" and exc.response is not None:
+                return {"response": exc.response}
+            return {"error": f"Fetch failed: {exc}"}
         except Exception as e:
             return {"error": f"Fetch failed: {e}"}
 

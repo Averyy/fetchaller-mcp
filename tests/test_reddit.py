@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
+import wafer
 
 from fetchaller.config import Config
 from fetchaller.content.reddit import (
@@ -7047,7 +7048,7 @@ class TestRedditTransportAndTools:
         assert initial is not upgraded
         assert upgraded is reused
         assert upgraded.kwargs["browser_solver"] is solver
-        assert upgraded.kwargs["max_rotations"] == 1
+        assert upgraded.kwargs["max_rotations"] == 2
         assert all(
             session.cookies
             == [
@@ -8842,6 +8843,42 @@ class TestRedditSessionGateGetsAShortPause:
             "data": {"kind": "Listing", "data": {"children": []}}
         }
         assert len(session.calls) == 2
+
+    async def test_raised_gate_response_reaches_the_same_bounded_retry(self):
+        from fetchaller.tools.browse_reddit import _REDDIT_SESSION_GATE_BACKOFF
+
+        queue = self._queue()
+        gate = self._gate_response()
+        session = Mock()
+        session.get = AsyncMock(
+            side_effect=[
+                wafer.ChallengeDetected(
+                    "reddit",
+                    "https://www.reddit.com/r/Python/hot.json",
+                    403,
+                    response=gate,
+                ),
+                _JsonResponse(
+                    {"kind": "Listing", "data": {"children": []}}
+                ),
+            ]
+        )
+
+        result = await fetch_reddit_json(
+            "https://www.reddit.com/r/Python/hot.json",
+            session,
+            queue,
+        )
+
+        queue.set_backoff.assert_called_once_with(
+            403,
+            retry_after=None,
+            default_delay=_REDDIT_SESSION_GATE_BACKOFF,
+        )
+        assert result == {
+            "data": {"kind": "Listing", "data": {"children": []}}
+        }
+        assert session.get.await_count == 2
 
     async def test_repeated_recognised_gate_returns_an_error_without_looping(self):
         queue = self._queue()
