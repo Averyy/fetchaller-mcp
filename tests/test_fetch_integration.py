@@ -448,7 +448,14 @@ class TestRedditUrlTransform:
         from fetchaller.tools.fetch import fetch_url
 
         url = "https://www.reddit.com/r/homelab/"
-        expected_fetch_url = "https://www.reddit.com/r/homelab/hot.json?limit=250&raw_json=1"
+        canonical_fetch_url = (
+            "https://www.reddit.com/r/homelab/hot.json?"
+            "limit=250&raw_json=1"
+        )
+        transport_url = canonical_fetch_url.replace(
+            "www.reddit.com",
+            "api.reddit.com",
+        )
         payload = {
             "kind": "Listing",
             "data": {
@@ -472,11 +479,11 @@ class TestRedditUrlTransform:
         }
         session = MockWaferSession(
             responses={
-                expected_fetch_url: MockResponse(
+                transport_url: MockResponse(
                     json.dumps(payload).encode(),
                     "application/json",
                     200,
-                    expected_fetch_url,
+                    transport_url,
                 )
             },
         )
@@ -487,22 +494,29 @@ class TestRedditUrlTransform:
         assert "Homelab post" in result["content"]
         assert "https://www.reddit.com/r/homelab/comments/abc123/" in result["content"]
         assert "old.reddit.com" not in result["content"]
-        assert session.calls == [expected_fetch_url]
+        assert session.calls == [transport_url]
 
     @_PATCH_SSRF
     async def test_old_input_is_canonicalized_without_requesting_old(self, _mock_ssrf):
         from fetchaller.tools.fetch import fetch_url
 
         url = "https://old.reddit.com/r/homelab/"
-        expected_fetch_url = "https://www.reddit.com/r/homelab/hot.json?limit=250&raw_json=1"
+        canonical_fetch_url = (
+            "https://www.reddit.com/r/homelab/hot.json?"
+            "limit=250&raw_json=1"
+        )
+        transport_url = canonical_fetch_url.replace(
+            "www.reddit.com",
+            "api.reddit.com",
+        )
         payload = {"kind": "Listing", "data": {"children": []}}
         session = MockWaferSession(
             responses={
-                expected_fetch_url: MockResponse(
+                transport_url: MockResponse(
                     json.dumps(payload).encode(),
                     "application/json",
                     200,
-                    expected_fetch_url,
+                    transport_url,
                 )
             }
         )
@@ -510,7 +524,7 @@ class TestRedditUrlTransform:
             result = await fetch_url(url, reddit_queue=PassthroughRedditQueue())
 
         assert result.get("content_type") == "markdown"
-        assert session.calls == [expected_fetch_url]
+        assert session.calls == [transport_url]
         assert all("old.reddit.com" not in call for call in session.calls)
 
     @_PATCH_SSRF
@@ -522,6 +536,10 @@ class TestRedditUrlTransform:
 
         url = "https://www.reddit.com/r/Python/about/moderators/"
         anonymous_url = "https://www.reddit.com/r/Python/about/moderators.json?limit=500&raw_json=1"
+        anonymous_transport_url = anonymous_url.replace(
+            "www.reddit.com",
+            "api.reddit.com",
+        )
         oauth_url = "https://oauth.reddit.com/r/Python/about/moderators?limit=500&raw_json=1"
         payload = {
             "kind": "UserList",
@@ -529,11 +547,11 @@ class TestRedditUrlTransform:
         }
         session = MockWaferSession(
             responses={
-                anonymous_url: MockResponse(
+                anonymous_transport_url: MockResponse(
                     b"{}",
                     "application/json",
                     403,
-                    anonymous_url,
+                    anonymous_transport_url,
                 ),
                 oauth_url: MockResponse(
                     json.dumps(payload).encode(),
@@ -555,7 +573,7 @@ class TestRedditUrlTransform:
             )
 
         assert "u/exact_mod" in result["content"]
-        assert session.calls == [anonymous_url, oauth_url]
+        assert session.calls == [anonymous_transport_url, oauth_url]
 
     @_PATCH_SSRF
     async def test_raw_old_input_fetches_canonical_new_reddit_html(self, _mock_ssrf):
@@ -1054,6 +1072,14 @@ class TestRedditUrlTransform:
             f"https://www.reddit.com/r/python/search.json?q={secret}&sort=new&t=all&limit=1&raw_json=1&restrict_sr=1"
         )
         browse_url = "https://www.reddit.com/r/python/new.json?limit=1&raw_json=1"
+        search_transport_url = search_url.replace(
+            "www.reddit.com",
+            "api.reddit.com",
+        )
+        browse_transport_url = browse_url.replace(
+            "www.reddit.com",
+            "api.reddit.com",
+        )
         listing = json.dumps({"_reddit_content_state": "no results"}).encode()
         session = MockWaferSession(
             responses={
@@ -1063,8 +1089,18 @@ class TestRedditUrlTransform:
                     200,
                     explicit_url,
                 ),
-                search_url: MockResponse(listing, "application/json", 200, search_url),
-                browse_url: MockResponse(listing, "application/json", 200, browse_url),
+                search_transport_url: MockResponse(
+                    listing,
+                    "application/json",
+                    200,
+                    search_transport_url,
+                ),
+                browse_transport_url: MockResponse(
+                    listing,
+                    "application/json",
+                    200,
+                    browse_transport_url,
+                ),
                 raw_url: _html_response("<html><body>safe raw response</body></html>", raw_url),
             }
         )
@@ -1188,6 +1224,10 @@ class TestRedditUrlTransform:
         short = "https://redd.it/abc123"
         permalink = "https://www.reddit.com/r/Python/comments/abc123/title/"
         json_url = "https://www.reddit.com/r/Python/comments/abc123.json?sort=confidence&limit=250&depth=10&raw_json=1"
+        json_transport_url = json_url.replace(
+            "www.reddit.com",
+            "api.reddit.com",
+        )
         redirect = MockResponse(
             b"",
             "text/html",
@@ -1222,11 +1262,11 @@ class TestRedditUrlTransform:
         ]
         reddit_session = MockWaferSession(
             responses={
-                json_url: MockResponse(
+                json_transport_url: MockResponse(
                     json.dumps(payload).encode(),
                     "application/json",
                     200,
-                    json_url,
+                    json_transport_url,
                 )
             }
         )
@@ -1248,7 +1288,7 @@ class TestRedditUrlTransform:
         assert "Redirected Reddit thread" in result["content"]
         assert "Full body" in result["content"]
         assert redirect_session.calls == [short]
-        assert reddit_session.calls == [json_url]
+        assert reddit_session.calls == [json_transport_url]
 
     async def test_redirect_leaving_reddit_uses_generic_html_cleanup(self):
         from fetchaller.tools.fetch import fetch_url

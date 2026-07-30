@@ -13,6 +13,7 @@ from fetchaller.content.reddit import (
     render_reddit_route,
     route_reddit_url,
 )
+from fetchaller.tools.browse_reddit import _reddit_json_transport_url
 from fetchaller.tools.reddit_fetch import (
     _payload_schema_error,
     fetch_mapped_reddit,
@@ -283,4 +284,8 @@ async def test_missing_legacy_fixtures_cover_route_schema_renderer_and_mcp(
     assert result["content_type"] == "markdown"
     assert result["url"] == route.canonical_url
     assert result["content"] == rendered
-    assert session.calls == list(route.requests)
+    assert all(request.startswith("https://www.reddit.com/") for request in route.requests)
+    assert session.calls == [
+        _reddit_json_transport_url(request)
+        for request in route.requests
+    ]

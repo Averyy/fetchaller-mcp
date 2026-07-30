@@ -228,9 +228,11 @@ Returns matching posts with metadata. Use `fetch` to read full discussions.
 
 ### Compact New Reddit Fetching
 
-Normal Reddit URLs are canonicalized to `www.reddit.com`, fetched through
-Reddit's structured New Reddit flow, and rendered as compact Markdown. Routes
-use logged-out JSON except wiki-page indexes and removed Post Collections.
+Normal Reddit URLs and emitted links are canonicalized to `www.reddit.com`.
+Logged-out structured JSON reads use Reddit's official `api.reddit.com` origin
+and are rendered as compact Markdown; HTML-only legs remain on the fixed New
+Reddit `www` origin. Routes use logged-out JSON except wiki-page indexes and
+removed Post Collections.
 `/r/{subreddit}/wiki/pages/` first reads the canonical New Reddit SSR page tree,
 then falls back to New Reddit's own logged-out `WikiPageRevisionsV2` page tree on
 the fixed `/svc/shreddit/graphql` route when a community does not server-render

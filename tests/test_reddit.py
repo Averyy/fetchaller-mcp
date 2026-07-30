@@ -27,6 +27,7 @@ from fetchaller.content.reddit import (
 from fetchaller.tools.browse_reddit import (
     _get_session,
     _instrument_reddit_session,
+    _reddit_json_transport_url,
     _validated_reddit_json_url,
     browse_reddit,
     close_session,
@@ -75,6 +76,12 @@ def _post(**overrides) -> dict:
     }
     data.update(overrides)
     return {"kind": "t3", "data": data}
+
+
+def _transport_url(url: str) -> str:
+    transformed = _reddit_json_transport_url(url)
+    assert transformed is not None
+    return transformed
 
 
 def _comment(comment_id: str, body: str, *, replies: list[dict] | None = None, **overrides) -> dict:
@@ -4261,8 +4268,8 @@ class TestRedditTransportAndTools:
         ) in result["content"]
         assert "[Next page:" in result["content"]
         assert session.calls == [
-            route.requests[0],
-            (
+            _transport_url(route.requests[0]),
+            _transport_url(
                 "https://www.reddit.com/user/thisisinsider/"
                 "about.json?raw_json=1"
             ),
@@ -5694,7 +5701,7 @@ class TestRedditTransportAndTools:
         assert result == {
             "data": {"_reddit_content_state": "Reddit content not found."}
         }
-        assert session.calls == [source]
+        assert session.calls == [_transport_url(source)]
         assert queue.enqueue.await_count == 1
 
     async def test_nonexistent_subreddit_redirect_renders_readable_mapped_content(self):
@@ -5746,7 +5753,7 @@ class TestRedditTransportAndTools:
         result = await fetch_reddit_json(source, session)
 
         assert result == {"error": "Reddit returned an unsafe JSON redirect."}
-        assert session.calls == [source]
+        assert session.calls == [_transport_url(source)]
 
     async def test_missing_subreddit_redirect_matches_immediately_preceding_hop(
         self,
@@ -5766,7 +5773,7 @@ class TestRedditTransportAndTools:
         result = await fetch_reddit_json(source, session)
 
         assert result == {"error": "Reddit returned an unsafe JSON redirect."}
-        assert session.calls == [source]
+        assert session.calls == [_transport_url(source)]
 
     async def test_safe_same_origin_json_redirect_is_followed_under_one_deadline(self):
         source = "https://www.reddit.com/r/Python/hot.json?limit=250&raw_json=1"
@@ -5787,7 +5794,10 @@ class TestRedditTransportAndTools:
         result = await fetch_reddit_json(source, session, queue)
 
         assert result == {"data": payload}
-        assert session.calls == [source, target]
+        assert session.calls == [
+            _transport_url(source),
+            _transport_url(target),
+        ]
         assert queue.enqueue.await_count == 2
         timeouts = [
             details[2]["timeout"] for details in session.request_details
@@ -5821,7 +5831,10 @@ class TestRedditTransportAndTools:
         result = await fetch_reddit_json(source, session)
 
         assert result == {"data": payload}
-        assert session.calls == [source, expected_target]
+        assert session.calls == [
+            _transport_url(source),
+            _transport_url(expected_target),
+        ]
 
     async def test_sticky_redirect_cannot_cross_to_another_subreddit(self):
         source = (
@@ -5845,7 +5858,7 @@ class TestRedditTransportAndTools:
         result = await fetch_reddit_json(source, session)
 
         assert result == {"error": "Reddit returned an unsafe JSON redirect."}
-        assert session.calls == [source]
+        assert session.calls == [_transport_url(source)]
 
     async def test_same_origin_redirect_cannot_substitute_another_route(self):
         source = "https://www.reddit.com/r/Python/hot.json?raw_json=1"
@@ -5857,7 +5870,7 @@ class TestRedditTransportAndTools:
         result = await fetch_reddit_json(source, session)
 
         assert result == {"error": "Reddit returned an unsafe JSON redirect."}
-        assert session.calls == [source]
+        assert session.calls == [_transport_url(source)]
 
     async def test_redirected_moderator_403_cannot_trigger_oauth(self):
         source = (
@@ -5887,7 +5900,10 @@ class TestRedditTransportAndTools:
             )
 
         assert result == {"error": "Access forbidden by Reddit (HTTP 403)."}
-        assert session.calls == [source, equivalent_target]
+        assert session.calls == [
+            _transport_url(source),
+            _transport_url(equivalent_target),
+        ]
 
     @pytest.mark.parametrize(
         ("response", "message"),
@@ -5943,7 +5959,10 @@ class TestRedditTransportAndTools:
         result = await fetch_reddit_json(first, session)
 
         assert result == {"error": "Reddit JSON redirect loop detected."}
-        assert session.calls == [first, second]
+        assert session.calls == [
+            _transport_url(first),
+            _transport_url(second),
+        ]
 
     async def test_reddit_json_redirect_count_is_bounded(self):
         query_orders = [
@@ -6025,7 +6044,7 @@ class TestRedditTransportAndTools:
 
         assert "FETCHED BY-ID COMMENT" in result["content"]
         assert result["url"] == "https://www.reddit.com/by_id/t1_comment1/"
-        assert session.calls == [route.requests[0]]
+        assert session.calls == [_transport_url(route.requests[0])]
 
     async def test_fetch_mapped_related_uses_new_reddit_partial_and_lower_limit(self):
         route = route_reddit_url(
@@ -6127,13 +6146,13 @@ class TestRedditTransportAndTools:
         assert "u/real_author" in result["content"]
         assert "u/[unknown]" not in result["content"]
         assert "1 items returned" in result["content"]
-        assert session.calls[0] == route.requests[0]
+        assert session.calls[0] == _transport_url(route.requests[0])
         assert session.calls[1].startswith(
             "https://www.reddit.com/svc/shreddit/"
             "pdp-right-rail/related/Python/t3_post1?"
         )
         assert session.calls[2].startswith(
-            "https://www.reddit.com/api/info.json?"
+            "https://api.reddit.com/api/info.json?"
         )
         assert parse_qs(urlparse(session.calls[2]).query)["id"] == [
             "t3_related1"
@@ -6340,8 +6359,10 @@ class TestRedditTransportAndTools:
         assert "requires user-context OAuth" in result["error"]
         assert "No moderator names were guessed or reconstructed" in result["error"]
         assert session.calls == [
-            "https://www.reddit.com/r/Python/about/moderators.json?"
-            "limit=500&raw_json=1"
+            _transport_url(
+                "https://www.reddit.com/r/Python/about/moderators.json?"
+                "limit=500&raw_json=1"
+            )
         ]
         assert "Authorization" not in session.request_details[0][2]["headers"]
 
@@ -6409,8 +6430,8 @@ class TestRedditTransportAndTools:
         assert "u/exact_mod" in result["content"]
         assert "u/second_mod" in result["content"]
         assert session.calls == [
-            *_moderator_route().requests,
-            (
+            *map(_transport_url, _moderator_route().requests),
+            _transport_url(
                 "https://www.reddit.com/r/Python/about/moderators.json?"
                 "limit=500&raw_json=1&after=t2_next"
             ),
@@ -6447,7 +6468,10 @@ class TestRedditTransportAndTools:
                 "cursor."
             )
         }
-        assert session.calls == list(_moderator_route().requests)
+        assert session.calls == [
+            _transport_url(request)
+            for request in _moderator_route().requests
+        ]
 
     async def test_later_anonymous_moderator_403_can_cross_exact_oauth_boundary(
         self,
@@ -6520,7 +6544,7 @@ class TestRedditTransportAndTools:
         assert "u/exact_mod" in result["content"]
         assert "posts, wiki" in result["content"]
         anonymous, authenticated = session.request_details
-        assert anonymous[1].startswith("https://www.reddit.com/")
+        assert anonymous[1].startswith("https://api.reddit.com/")
         assert "Authorization" not in anonymous[2]["headers"]
         assert (
             authenticated[1]
@@ -7324,6 +7348,21 @@ class TestRedditTransportAndTools:
             is None
         )
 
+    def test_json_transport_uses_api_origin_without_expanding_public_input(self):
+        canonical = (
+            "https://www.reddit.com/r/Python/hot.json?"
+            "limit=25&raw_json=1"
+        )
+        transport = (
+            "https://api.reddit.com/r/Python/hot.json?"
+            "limit=25&raw_json=1"
+        )
+
+        assert _validated_reddit_json_url(canonical) is not None
+        assert _reddit_json_transport_url(canonical) == transport
+        assert _validated_reddit_json_url(transport) is None
+        assert _validated_reddit_json_url(transport, transport=True) is not None
+
     async def test_removed_collection_recovers_exact_archive_and_current_posts(
         self,
     ):
@@ -7584,7 +7623,7 @@ class TestRedditTransportAndTools:
         assert len(result["error"]) < 400
         assert "content" not in result
         assert "0 items returned" not in result["error"]
-        assert session.calls[0] == route.requests[0]
+        assert session.calls[0] == _transport_url(route.requests[0])
         assert len(session.calls) == 2
         archive_query = urlparse(session.calls[1])
         assert archive_query.scheme == "https"

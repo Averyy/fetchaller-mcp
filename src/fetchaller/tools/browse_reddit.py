@@ -171,6 +171,7 @@ _JSON_HEADERS = {
 }
 _JSON_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_JSON_REDIRECTS = 5
+_REDDIT_JSON_TRANSPORT_HOST = "api.reddit.com"
 
 
 def _find_reddit_reason(value: object) -> str | None:
@@ -237,7 +238,7 @@ def _is_unstructured_error(payload: object | None) -> bool:
     return payload is None or payload == {} or payload == []
 
 
-def _validated_reddit_json_url(url: str):
+def _validated_reddit_json_url(url: str, *, transport: bool = False):
     """Accept only fixed-origin Reddit read endpoints used by this module."""
     if (
         not isinstance(url, str)
@@ -269,9 +270,12 @@ def _validated_reddit_json_url(url: str):
         )
         is not None
     )
+    allowed_hosts = {"www.reddit.com"}
+    if transport:
+        allowed_hosts.add(_REDDIT_JSON_TRANSPORT_HOST)
     if (
         parsed.scheme != "https"
-        or (parsed.hostname or "").rstrip(".").lower() != "www.reddit.com"
+        or (parsed.hostname or "").rstrip(".").lower() not in allowed_hosts
         or port not in (None, 443)
         or parsed.username is not None
         or parsed.password is not None
@@ -283,10 +287,19 @@ def _validated_reddit_json_url(url: str):
     return parsed
 
 
+def _reddit_json_transport_url(url: str) -> str | None:
+    """Move a validated public JSON route onto Reddit's API read origin."""
+
+    parsed = _validated_reddit_json_url(url, transport=True)
+    if parsed is None:
+        return None
+    return parsed._replace(netloc=_REDDIT_JSON_TRANSPORT_HOST).geturl()
+
+
 def _is_missing_subreddit_redirect(source_url: str, target_url: str) -> bool:
     """Recognize Reddit's exact nonexistent-community redirect contract."""
-    source = _validated_reddit_json_url(source_url)
-    target = _validated_reddit_json_url(target_url)
+    source = _validated_reddit_json_url(source_url, transport=True)
+    target = _validated_reddit_json_url(target_url, transport=True)
     if source is None or target is None:
         return False
     source_match = re.match(
@@ -306,8 +319,8 @@ def _is_missing_subreddit_redirect(source_url: str, target_url: str) -> bool:
 
 def _is_same_moderator_route(source_url: str, current_url: str) -> bool:
     """Keep the account boundary pinned to the original moderator route."""
-    source = _validated_reddit_json_url(source_url)
-    current = _validated_reddit_json_url(current_url)
+    source = _validated_reddit_json_url(source_url, transport=True)
+    current = _validated_reddit_json_url(current_url, transport=True)
     if source is None or current is None:
         return False
     pattern = re.compile(
@@ -327,8 +340,8 @@ def _is_same_moderator_route(source_url: str, current_url: str) -> bool:
 def _is_route_preserving_json_redirect(source_url: str, target_url: str) -> bool:
     """Allow only an equivalent JSON route, never an endpoint substitution."""
 
-    source = _validated_reddit_json_url(source_url)
-    target = _validated_reddit_json_url(target_url)
+    source = _validated_reddit_json_url(source_url, transport=True)
+    target = _validated_reddit_json_url(target_url, transport=True)
     if source is None or target is None or source.path != target.path:
         return False
     return sorted(parse_qsl(source.query, keep_blank_values=True)) == sorted(
@@ -342,8 +355,8 @@ def _sticky_json_redirect_target(
 ) -> str | None:
     """Validate Reddit's sticky-to-thread redirect and retain bounded scope."""
 
-    source = _validated_reddit_json_url(source_url)
-    target = _validated_reddit_json_url(target_url)
+    source = _validated_reddit_json_url(source_url, transport=True)
+    target = _validated_reddit_json_url(target_url, transport=True)
     if source is None or target is None or target.query:
         return None
     source_match = re.fullmatch(
@@ -402,7 +415,8 @@ async def fetch_reddit_json(
 
     deadline = monotonic_time.monotonic() + timeout
 
-    if _validated_reddit_json_url(url) is None:
+    current_url = _reddit_json_transport_url(url)
+    if current_url is None or _validated_reddit_json_url(url) is None:
         return {"error": "Invalid Reddit JSON URL."}
 
     async def _do_get(request_url: str) -> dict:
@@ -453,7 +467,6 @@ async def fetch_reddit_json(
             return {"error": f"Request timed out ({timeout:g}s limit)"}
         return await _do_get(request_url)
 
-    current_url = url
     seen_urls: set[str] = set()
     redirect_count = 0
     gate_retry_attempted = False
@@ -489,6 +502,9 @@ async def fetch_reddit_json(
             if sticky_target is not None:
                 target_url = sticky_target
             elif not _is_route_preserving_json_redirect(current_url, target_url):
+                return {"error": "Reddit returned an unsafe JSON redirect."}
+            target_url = _reddit_json_transport_url(target_url)
+            if target_url is None:
                 return {"error": "Reddit returned an unsafe JSON redirect."}
             if redirect_count >= _MAX_JSON_REDIRECTS:
                 return {"error": "Too many Reddit JSON redirects."}
@@ -528,7 +544,7 @@ async def fetch_reddit_json(
             if (
                 resp.status_code == 403
                 and auth_required_on_403
-                and current_url == url
+                and redirect_count == 0
                 and _is_same_moderator_route(url, current_url)
                 and _is_unstructured_error(payload)
             ):
@@ -536,7 +552,8 @@ async def fetch_reddit_json(
             if (
                 resp.status_code == 403
                 and account_private_on_403
-                and current_url == url
+                and redirect_count == 0
+                and _is_route_preserving_json_redirect(url, current_url)
                 and (
                     _is_unstructured_error(payload)
                     or payload == {

@@ -19,7 +19,7 @@ startup readiness preflight. All challenge behavior remains inside wafer.
 
 Mapped normal-URL `fetch` calls, `browse_reddit`, and `search_reddit` share a
 long-lived `wafer.AsyncSession`, persistent anonymous cookie jar, and the
-server's `RedditRequestQueue`. Wafer 0.4.1 establishes the logged-out New Reddit
+server's `RedditRequestQueue`. Wafer 0.4.3 establishes the logged-out New Reddit
 session; fetchaller never parses the verification challenge. Direct/library
 `fetch_url` calls without the injected queue use the process-wide Reddit domain
 limiter. Caller-selected `.json`, `raw=true`, and unmapped HTML fallbacks still
@@ -38,9 +38,11 @@ contain response bodies or secrets, and no roster or wiki page is inferred.
 Roster pages are merged until Reddit removes its cursor; invalid/repeated
 cursors or the bounded page cap are explicit errors, never silent truncation.
 
-Anonymous JSON redirects remain on the exact HTTPS `www.reddit.com` JSON
+Anonymous JSON reads use the exact HTTPS `api.reddit.com` transport origin while
+canonical route identity and emitted links remain on `www.reddit.com`. Safe
+equivalent redirects from either Reddit origin are normalized back to the API
 origin, charge every hop to the shared queue, and share the original deadline.
-Missing locations, cross-origin targets, loops, and excess hops fail closed.
+Missing locations, unrelated origins, loops, and excess hops fail closed.
 Reddit's exact nonexistent-subreddit redirect to its JSON community search is
 mapped directly to a not-found content state instead of returning search noise.
 
