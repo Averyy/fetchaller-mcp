@@ -38,6 +38,18 @@ jobs:
           uv lock --check
           uv sync --frozen --extra dev
 
+      - name: Verify release tag matches project version
+        if: inputs.publish && startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          project_version="$(uv version --short)"
+          expected_tag="v${project_version}"
+          if [ "$RELEASE_TAG" != "$expected_tag" ]; then
+            echo "Release tag ${RELEASE_TAG} does not match project version ${project_version}" >&2
+            exit 1
+          fi
+
       - name: Verify offline Reddit legacy contract and fixtures
         run: |
           uv run pytest -q \

@@ -30,8 +30,8 @@ git clone https://github.com/Averyy/fetchaller-mcp.git
 cd fetchaller-mcp
 uv sync
 
-# Point this at an exact Chrome build whose major matches wafer's current
-# wreq emulation. The pinned Linux reference build is in Dockerfile.
+# Point this at branded Google Chrome. The pinned Linux reference build in
+# Dockerfile gives the closest browser/transport identity match.
 export BROWSER_EXECUTABLE_PATH=/path/to/Chrome-for-Testing
 
 # Add to Claude Code
@@ -473,16 +473,19 @@ the challenge is reported as unresolved.
 **Docker**: The browser-complete image is `linux/amd64` because Google does not
 publish Chrome for Testing for Linux arm64. The build downloads one immutable
 Chrome-for-Testing archive, verifies its SHA-256 digest and exact version, and
-sets `BROWSER_EXECUTABLE_PATH` to that binary. BrowserSolver independently
-rejects a Chrome major that differs from wafer/wreq's TLS emulation. The local
-Compose file requests amd64 automatically on Apple Silicon, and the
+sets `BROWSER_EXECUTABLE_PATH` to that binary. BrowserSolver validates that the
+configured executable is branded Chrome and warns if its version differs from
+wafer/wreq's default emulation; browser-bound HTTP identity is aligned to the
+installed browser, while the pinned image also keeps the TLS shape matched. The
+local Compose file requests amd64 automatically on Apple Silicon, and the
 `cookie-data` volume persists solved cookies across restarts.
 
 **Local (stdio)**: Browser support is included by default, but protected-site
-solves require an installed Chrome build whose major exactly matches wafer's
-current emulation. Set `BROWSER_EXECUTABLE_PATH` to that executable. The
-current Linux reference version and archive checksum are the `CHROME_VERSION`
-and `CHROME_SHA256` arguments in `Dockerfile`.
+solves require installed branded Google Chrome. Set `BROWSER_EXECUTABLE_PATH`
+to that executable. Matching wafer's current emulation is recommended so the
+browser and TLS identities stay aligned; the current Linux reference version
+and archive checksum are the `CHROME_VERSION` and `CHROME_SHA256` arguments in
+`Dockerfile`.
 
 ## Architecture
 

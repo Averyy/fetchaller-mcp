@@ -203,17 +203,14 @@ _FORBIDDEN_REQUEST_HEADERS = frozenset(
     }
 )
 
-# Dropped when a redirect crosses to another host: the caller aimed these at the
-# origin they named, and following a 3xx must not hand them to whoever the first
-# server points at.
-_CREDENTIAL_HEADERS = frozenset(
+# A redirect target is selected by the origin server, not by the caller. On an
+# origin change, retain only headers that describe the response representation;
+# an arbitrary caller header may carry a credential even when its name is not
+# one of the usual Authorization/X-API-Key spellings.
+_CROSS_ORIGIN_REDIRECT_SAFE_HEADERS = frozenset(
     {
-        "authorization",
-        "cookie",
-        "x-api-key",
-        "api-key",
-        "x-auth-token",
-        "x-csrf-token",
+        "accept",
+        "accept-language",
     }
 )
 
@@ -2091,9 +2088,16 @@ async def _fetch_url_impl(
                             browser_solver=browser_solver,
                         )
                 next_host = _canon_host(next_parsed.hostname or "")
+                origin_changed = _origin_of(next_parsed) != _origin_of(urlparse(current_url))
                 if current_method != "GET":
                     if resp.status_code in (307, 308):
-                        pass  # method and body replay unchanged
+                        if origin_changed:
+                            return {
+                                "error": (
+                                    "Cross-origin 307/308 redirect refused because "
+                                    "replaying the request could expose its body or headers."
+                                )
+                            }
                     else:
                         # 301/302/303 -> the follow-up is a plain GET. Drop the
                         # body and the headers that only described it, or the
@@ -2101,15 +2105,16 @@ async def _fetch_url_impl(
                         current_method = "GET"
                         current_body = None
                         current_headers.pop("content-type", None)
-                # Credentials were aimed at the ORIGIN the caller named, and the
-                # redirect target is chosen by that server, not the caller. The
-                # comparison is scheme+host+port, not host alone: an
-                # https -> http redirect on the same name would otherwise put a
-                # bearer token on the wire in cleartext, and a port change hands
-                # it to a different service on the same machine.
-                if _origin_of(next_parsed) != _origin_of(urlparse(current_url)):
-                    for credential_header in _CREDENTIAL_HEADERS:
-                        current_headers.pop(credential_header, None)
+                # Caller headers were aimed at the ORIGIN they named. Use a
+                # positive allowlist on an origin change: custom names can carry
+                # secrets too, and scheme/port changes may cross a trust
+                # boundary even when the hostname is unchanged.
+                if origin_changed:
+                    current_headers = {
+                        name: value
+                        for name, value in current_headers.items()
+                        if name in _CROSS_ORIGIN_REDIRECT_SAFE_HEADERS
+                    }
                 if next_host != current_host:
                     # New host: rebuild so the pin covers it. Cookies persist
                     # via the shared cache_dir.

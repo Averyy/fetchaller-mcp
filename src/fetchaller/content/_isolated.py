@@ -87,11 +87,19 @@ def _defer_cleanup(
         finally:
             handle.release_from_thread()
 
-    threading.Thread(
+    cleanup_thread = threading.Thread(
         target=_close_stop_and_release,
         name="fetchaller-isolated-parser-cleanup",
         daemon=True,
-    ).start()
+    )
+    try:
+        cleanup_thread.start()
+    except RuntimeError:
+        # The owning task has not left its finally block yet. Take ownership
+        # back before falling back to synchronous cleanup so its release()
+        # returns the slot even when no cleanup thread could be created.
+        handle.untransfer()
+        _close_and_stop(process, *connections)
 
 
 def _start_process(
@@ -99,20 +107,35 @@ def _start_process(
     connections: tuple[Connection, ...],
     state: dict[str, bool],
     state_lock: threading.Lock,
+    handle: SlotHandle,
 ) -> bool:
     try:
         process.start()
     except BaseException:
-        _close_and_stop(process, *connections)
+        release_slot = False
+        try:
+            _close_and_stop(process, *connections)
+        finally:
+            with state_lock:
+                state["finished"] = True
+                if state["cancelled"] and not state["cleanup_claimed"]:
+                    state["cleanup_claimed"] = True
+                    release_slot = True
+            if release_slot:
+                handle.release_from_thread()
         raise
     cleanup = False
     with state_lock:
         state["started"] = True
+        state["finished"] = True
         if state["cancelled"] and not state["cleanup_claimed"]:
             state["cleanup_claimed"] = True
             cleanup = True
     if cleanup:
-        _close_and_stop(process, *connections)
+        try:
+            _close_and_stop(process, *connections)
+        finally:
+            handle.release_from_thread()
         return False
     return True
 
@@ -138,6 +161,7 @@ async def _run_started_process[T](
 
     state = {
         "started": False,
+        "finished": False,
         "cancelled": False,
         "cleanup_claimed": False,
     }
@@ -155,17 +179,30 @@ async def _run_started_process[T](
             connections,
             state,
             state_lock,
+            handle,
         )
     except asyncio.CancelledError:
         cleanup = False
+        release_slot = False
+        # asyncio cancellation does not stop the thread running process.start().
+        # Transfer the slot before publishing cancellation so either that worker
+        # or the cleanup thread retains capacity until the child is reaped.
+        handle.transfer()
         with state_lock:
             state["cancelled"] = True
-            if state["started"] and not state["cleanup_claimed"]:
-                state["cleanup_claimed"] = True
-                cleanup = True
+            if not state["cleanup_claimed"]:
+                if state["started"]:
+                    state["cleanup_claimed"] = True
+                    cleanup = True
+                elif state["finished"]:
+                    # process.start() failed and already cleaned up before the
+                    # cancellation was delivered; only the slot remains.
+                    state["cleanup_claimed"] = True
+                    release_slot = True
         if cleanup:
-            handle.transfer()
             _defer_cleanup(process, handle, *connections)
+        elif release_slot:
+            handle.release_from_thread()
         raise
     except (AssertionError, OSError, RuntimeError):
         for connection in connections:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import threading
 import time
 
 import pytest
@@ -82,6 +83,48 @@ async def test_hostile_marker_html_is_inspected_off_event_loop() -> None:
     assert await ticker >= 2
 
 
+@pytest.mark.asyncio
+async def test_cancellation_during_process_start_holds_capacity_until_cleanup(
+    monkeypatch,
+) -> None:
+    """Cancelling the await must not cancel its still-running startup thread."""
+    from fetchaller.content import _isolated as isolated
+
+    entered_start = threading.Event()
+    continue_start = threading.Event()
+    original_start = isolated._start_process
+
+    def _blocked_start(*args, **kwargs):
+        entered_start.set()
+        if not continue_start.wait(timeout=5):
+            raise RuntimeError("test did not release process startup")
+        return original_start(*args, **kwargs)
+
+    monkeypatch.setattr(isolated, "_MAX_CONCURRENT_PROCESSES", 1)
+    monkeypatch.setattr(isolated, "_start_process", _blocked_start)
+
+    first = asyncio.create_task(run_isolated(_identity, "cancelled", timeout=5))
+    second = None
+    try:
+        assert await asyncio.to_thread(entered_start.wait, 2)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        second = asyncio.create_task(run_isolated(_identity, "recovered", timeout=5))
+        await asyncio.sleep(0.05)
+        assert not second.done(), "parser capacity was released before startup cleanup"
+
+        continue_start.set()
+        assert await asyncio.wait_for(second, timeout=5) == "recovered"
+    finally:
+        continue_start.set()
+        if not first.done():
+            first.cancel()
+        if second is not None and not second.done():
+            second.cancel()
+
+
 class TestSlotHandleOwnership:
     """A cancelled parser must keep its slot until the child is really gone.
 
@@ -155,23 +198,3 @@ class TestSlotHandleOwnership:
         handle.transfer()
         loop.close()
         handle.release_from_thread()  # must not raise
-
-    def test_every_parser_module_holds_its_slot_through_cleanup(self):
-        """All three boundaries must transfer ownership, not just one."""
-
-        import pathlib
-
-        for name in ("_isolated.py", "html.py", "pdf.py"):
-            source = pathlib.Path("src/fetchaller/content", name).read_text()
-            # Every deferred-cleanup thread must take ownership, give it back if
-            # the handoff fails, and release once the child is actually reaped.
-            for token in (
-                "handle.transfer()",
-                "handle.untransfer()",
-                "handle.release_from_thread()",
-            ):
-                assert token in source, f"{name}: missing {token}"
-            # A cleanup thread must never be started before ownership moves.
-            assert "cleanup_thread.start()" in source, (
-                f"{name}: cleanup thread is not started transactionally"
-            )

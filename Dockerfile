@@ -40,10 +40,10 @@ ENV HF_HOME=/app/model-cache
 # Using Patchright's moving ``chrome`` channel would silently upgrade the
 # browser ahead of wreq and split one protected session across different
 # browser/TLS identities. Chrome-for-Testing is an official Google build with
-# immutable versioned archives. BrowserSolver validates the exact four-part
-# version before and after launch. Google publishes no Linux arm64 build, so
-# fail that architecture explicitly; docker-compose.local.yml requests amd64
-# for Apple Silicon hosts.
+# immutable versioned archives. This build verifies the exact four-part version;
+# BrowserSolver validates branded Chrome and warns on a version mismatch. Google
+# publishes no Linux arm64 build, so fail that architecture explicitly;
+# docker-compose.local.yml requests amd64 for Apple Silicon hosts.
 RUN if [ "$TARGETARCH" != "amd64" ]; then \
       echo "fetchaller's browser-complete image requires linux/amd64" >&2; \
       exit 1; \

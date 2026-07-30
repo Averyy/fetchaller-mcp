@@ -9,7 +9,6 @@ import pytest
 
 from fetchaller.tools.browse_reddit import close_session as close_reddit_session
 from fetchaller.tools.fetch import (
-    _CREDENTIAL_HEADERS,
     ALLOWED_METHODS,
     _fetch_url_impl,
     default_content_type,
@@ -348,7 +347,51 @@ class TestRedirectSemantics:
 
         assert calls == [("POST", '{"q":1}'), ("POST", '{"q":1}')]
 
-    async def test_credentials_are_dropped_when_the_redirect_changes_host(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "location",
+        [
+            "https://elsewhere.example/result",
+            "http://api.example.com/result",
+            "https://api.example.com:8443/result",
+        ],
+    )
+    async def test_cross_origin_307_refuses_to_replay_post(self, monkeypatch, location):
+        calls = []
+
+        async def _fake_request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs.get("body"), kwargs.get("headers") or {}))
+            return _Redirect(location, 307)
+
+        monkeypatch.setattr("wafer.AsyncSession.request", _fake_request)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+
+        result = await _fetch_url_impl(
+            "https://api.example.com/search",
+            method="POST",
+            headers={"X-Client-Secret": "secret"},
+            body='{"password":"secret"}',
+            timeout=10,
+        )
+
+        assert result == {
+            "error": (
+                "Cross-origin 307/308 redirect refused because "
+                "replaying the request could expose its body or headers."
+            )
+        }
+        assert calls == [
+            (
+                "POST",
+                "https://api.example.com/search",
+                '{"password":"secret"}',
+                {
+                    "x-client-secret": "secret",
+                    "content-type": "application/json",
+                },
+            )
+        ]
+
+    async def test_unsafe_headers_are_dropped_when_redirect_changes_origin(self, monkeypatch):
         seen = []
 
         async def _fake_get(self, url, **kwargs):
@@ -362,17 +405,21 @@ class TestRedirectSemantics:
 
         await _fetch_url_impl(
             "https://api.example.com/x",
-            headers={"Authorization": "Bearer secret", "Accept": "application/json"},
+            headers={
+                "Authorization": "Bearer secret",
+                "X-Client-Secret": "custom secret",
+                "Referer": "https://private.example/path",
+                "Accept": "application/json",
+                "Accept-Language": "en-CA",
+            },
             timeout=10,
         )
 
         assert seen[0]["authorization"] == "Bearer secret"
-        assert "authorization" not in seen[1]
-        # Non-credential headers still describe what the caller wants back.
-        assert seen[1]["accept"] == "application/json"
-
-    def test_credential_list_covers_the_usual_bearers(self):
-        assert {"authorization", "cookie"} <= _CREDENTIAL_HEADERS
+        assert seen[1] == {
+            "accept": "application/json",
+            "accept-language": "en-CA",
+        }
 
 
 # --------------------------------------------------------------------------

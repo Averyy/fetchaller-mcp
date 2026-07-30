@@ -407,11 +407,12 @@ def _browser_solver_ready(
 ) -> tuple[bool, str]:
     """Check that the browser wafer actually launches exists and is usable here.
 
-    BrowserSolver launches one exact executable whose Chrome major must match
-    wafer's wreq emulation. Checking Patchright's support-asset registry proves
-    nothing about that executable, so verify the caller-pinned path or wafer's
-    branded-Chrome discovery path here. BrowserSolver's launch preflight then
-    enforces the exact major and runtime behavior.
+    Checking Patchright's support-asset registry proves nothing about the
+    executable BrowserSolver launches, so verify the caller-pinned path or
+    wafer's branded-Chrome discovery path here. BrowserSolver's launch preflight
+    validates branded Chrome and aligns browser-bound HTTP identity to it. A
+    version mismatch is warned rather than treated as a readiness failure;
+    container builds separately pin Chrome to wafer/wreq's emulation.
 
     Returns (ready, detail).
     """
@@ -908,8 +909,8 @@ def create_server(
                 _log(
                     f"WARNING: BrowserSolver imported but NOT usable - {detail}. "
                     "Bot challenge solving WILL fail. Configure "
-                    "BROWSER_EXECUTABLE_PATH with an executable Chrome build "
-                    "whose major exactly matches wafer's default emulation."
+                    "BROWSER_EXECUTABLE_PATH with executable branded Google "
+                    "Chrome and ensure its headful display is available."
                 )
                 browser_solver.close()
                 browser_solver = None
