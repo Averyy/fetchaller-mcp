@@ -100,10 +100,11 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
                 )
                 _session_solver = browser_solver
                 _instrument_reddit_session(_session)
-                _session.add_cookie(
-                    "over18=1; Domain=.reddit.com; Path=/; Secure; SameSite=Lax",
-                    "https://www.reddit.com/",
-                )
+                # No cookie is pre-seeded. A browser's first request to Reddit
+                # carries none, so arriving with exactly one (`over18=1`) is a
+                # scripted-client signature on the very request the anonymous
+                # bootstrap depends on. Measured A/B showed no difference in
+                # what it returned, so the signature risk buys nothing.
     return _session
 
 

@@ -5901,7 +5901,7 @@ class TestRedditTransportAndTools:
         assert "u/outer_mod" not in rendered
         assert "u/nested_mod" not in rendered
 
-    async def test_shared_session_upgrades_solver_and_seeds_over18_cookie(self):
+    async def test_shared_session_upgrades_solver_and_seeds_no_cookie(self):
         created = []
 
         class FakeSession:
@@ -5928,16 +5928,10 @@ class TestRedditTransportAndTools:
         assert upgraded is reused
         assert upgraded.kwargs["browser_solver"] is solver
         assert upgraded.kwargs["max_rotations"] == 2
-        assert all(
-            session.cookies
-            == [
-                (
-                    "over18=1; Domain=.reddit.com; Path=/; Secure; SameSite=Lax",
-                    "https://www.reddit.com/",
-                )
-            ]
-            for session in created
-        )
+        # Nothing is pre-seeded: a browser's first Reddit request carries no
+        # cookies, so arriving with exactly one is a scripted-client signature
+        # on the request the anonymous bootstrap depends on.
+        assert all(session.cookies == [] for session in created)
 
     async def test_reddit_session_audit_reports_wafer_bootstrap_state(self):
         class WaferSession:

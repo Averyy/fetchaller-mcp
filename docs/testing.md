@@ -85,9 +85,13 @@ missing posts. `--include-unstable` dynamically discovers current real
 post/comment, revision, multireddit, live, and collection IDs, records the
 discovery bodies, and requires every such entry. Strict mode requires stable
 live targets and any live class explicitly selected by `--include-unstable`.
-Every corpus route is an anonymous public read, so the live Reddit gates always
-run (`SMOKE_SKIP_REDDIT: '0'`) and need no configuration. The runner injects a
-fresh host-directory bind beneath `/app/data`,
+Every corpus route is an anonymous public read and needs no configuration, but
+the live Reddit gates are waived on GitHub's hosted runners
+(`SMOKE_SKIP_REDDIT: '1'`), where Reddit answers the anonymous solve origin with
+403 to both the HTTP client and a real headful Chrome. That one flag gates both
+the smoke gates and the parity gate, every waived run is annotated, and the
+offline contract still runs. Run the command above locally to exercise Reddit
+for real. The runner injects a fresh host-directory bind beneath `/app/data`,
 aligns the container UID/GID to its host owner, verifies an unexpired
 owner-only Reddit cookie file after warm and recreated stages, requires
 successful anonymous-cookie hydration with zero pure-HTTP Reddit verification

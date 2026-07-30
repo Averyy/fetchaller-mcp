@@ -326,9 +326,15 @@ Fixture-only targets always remain offline and can never become live evidence;
 they are limited to inherently non-public access states such as private,
 quarantined, banned, gated, forbidden, and not-found. A removed feature is not
 a fixture-only waiver: its real public-read capability must still pass live.
-Every route in the corpus is an anonymous public read, so the live Reddit
-gates always run in CI and require no configuration. Every offline entry must
-carry a mandatory reason and complete fixture evidence.
+Every route in the corpus is an anonymous public read and needs no
+configuration. The live Reddit gates are currently **waived on GitHub's hosted
+runners only**: Reddit answers the anonymous solve origin with 403 there, to a
+real headful Chrome as well as to the HTTP client, which is consistent with
+datacenter-IP blocking rather than anything request-side. Those runs carry an
+explicit warning annotation so a green build is never mistaken for validated
+Reddit, and the offline Reddit contract and fixture gate still runs on every
+build. Every offline entry must carry a mandatory reason and complete fixture
+evidence.
 
 ### Rate Limits
 
