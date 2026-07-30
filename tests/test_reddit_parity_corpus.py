@@ -13,8 +13,8 @@ from fetchaller.content.reddit import (
     render_reddit_route,
     route_reddit_url,
 )
+from fetchaller.tools.reddit_fetch import _MODERATOR_AUTH_REQUIRED
 from scripts.reddit_parity import (
-    _REDDIT_CREDENTIAL_ENV,
     _REQUIRED_DISCOVERY_STAGES,
     _REQUIRED_INFRASTRUCTURE_STAGES,
     DEFAULT_CORPUS,
@@ -34,13 +34,11 @@ from scripts.reddit_parity import (
     _discovery_call,
     _exit_code,
     _materialize_entry,
-    _oauth_forwarding,
     _prepare_empty_evidence_directory,
     _semantic_contract_error,
     _valid_raw_new_reddit_html,
     _validated_fetch_next_page,
     _validated_fetch_previous_page,
-    eligible,
     load_corpus,
     main_async,
 )
@@ -534,41 +532,6 @@ def test_gallery_gate_matches_renderer_and_requires_exact_media_inventory():
     )
 
 
-def test_oauth_and_fixture_routes_are_explicitly_not_live_passes_without_authority(monkeypatch):
-    monkeypatch.delenv("REDDIT_ACCESS_TOKEN", raising=False)
-    monkeypatch.delenv("REDDIT_CLIENT_ID", raising=False)
-    monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
-    monkeypatch.delenv("REDDIT_REFRESH_TOKEN", raising=False)
-    entries = {entry.id: entry for entry in load_corpus(DEFAULT_CORPUS)}
-
-    assert eligible(entries["moderators"], include_unstable=False)[0] is False
-    # The wiki page index is served by New Reddit's own anonymous page tree,
-    # so it must stay a required public route with no credentials at all.
-    assert eligible(entries["wiki_pages"], include_unstable=False) == (True, "")
-    assert entries["wiki_pages"].live == "stable"
-    assert entries["wiki_pages"].oauth_scopes == ()
-    assert eligible(entries["live"], include_unstable=False)[0] is False
-    assert eligible(entries["access_private"], include_unstable=False)[0] is False
-    assert eligible(entries["live"], include_unstable=True) == (True, "")
-    assert eligible(entries["access_private"], include_unstable=True)[0] is False
-    assert eligible(entries["listing"], include_unstable=False) == (True, "")
-
-
-def test_partial_oauth_configuration_never_unlocks_oauth_entries(monkeypatch):
-    monkeypatch.delenv("REDDIT_ACCESS_TOKEN", raising=False)
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "only-one-value")
-    monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
-    monkeypatch.delenv("REDDIT_REFRESH_TOKEN", raising=False)
-    entries = {entry.id: entry for entry in load_corpus(DEFAULT_CORPUS)}
-
-    assert eligible(entries["moderators"], include_unstable=False)[0] is False
-    assert entries["moderators"].live == "fixture_only"
-    assert eligible(entries["wiki_pages"], include_unstable=False) == (True, "")
-    # A partial (or absent) OAuth configuration must never be required, because
-    # no corpus entry is OAuth-gated any more.
-    assert all(entry.oauth_scopes == () for entry in entries.values())
-
-
 def test_strict_release_mode_rejects_unrun_required_targets():
     skipped = [SimpleNamespace(status="not_run")]
     passed = [SimpleNamespace(status="passed")]
@@ -597,14 +560,6 @@ def test_strict_policy_ignores_only_inherently_nonpublic_fixture_evidence():
             url="https://www.reddit.com/live/abc123/about/",
             required_any=("Live",),
         ),
-        CorpusEntry(
-            id="oauth",
-            live="oauth_required",
-            kind="moderators",
-            url="https://www.reddit.com/r/Python/about/moderators/",
-            required_any=("Source: exact Reddit OAuth",),
-            oauth_scopes=("read",),
-        ),
     ]
     records = [
         *[
@@ -613,10 +568,6 @@ def test_strict_policy_ignores_only_inherently_nonpublic_fixture_evidence():
         ],
         *[
             SimpleNamespace(id="fixture", stage=stage, status="not_run")
-            for stage in ("cold", "warm", "recreated")
-        ],
-        *[
-            SimpleNamespace(id="oauth", stage=stage, status="passed")
             for stage in ("cold", "warm", "recreated")
         ],
         *_passed_release_infrastructure(),
@@ -640,40 +591,6 @@ def test_strict_policy_ignores_only_inherently_nonpublic_fixture_evidence():
             inconsistent_optional,
             strict=True,
             entries=entries,
-        )
-        == 1
-    )
-    oauth_not_run = [
-        SimpleNamespace(
-            id=record.id,
-            stage=record.stage,
-            status="not_run" if record.id == "oauth" else record.status,
-        )
-        for record in records
-    ]
-    assert (
-        _exit_code(
-            oauth_not_run,
-            strict=True,
-            entries=entries,
-        )
-        == 1
-    )
-    assert (
-        _exit_code(
-            records,
-            strict=False,
-            entries=entries,
-            require_oauth=True,
-        )
-        == 0
-    )
-    assert (
-        _exit_code(
-            oauth_not_run,
-            strict=False,
-            entries=entries,
-            require_oauth=True,
         )
         == 1
     )
@@ -905,7 +822,6 @@ def test_strict_release_accepts_only_complete_94_route_stage_matrix():
                 if entry.live in {
                     "stable",
                     "unstable",
-                    "oauth_required",
                 }
                 else "not_run"
             ),
@@ -974,7 +890,7 @@ def test_docker_parity_runner_injects_a_verified_fresh_cache_bind(tmp_path):
     ]
 
 
-def test_docker_parity_runner_rejects_ambient_cache_or_credential_configuration(tmp_path):
+def test_docker_parity_runner_rejects_ambient_cache_or_ownership_configuration(tmp_path):
     parameters = SimpleNamespace(
         command="docker",
         args=["run", "--env", "WAFER_CACHE_DIR=/cookies", "image"],
@@ -987,29 +903,6 @@ def test_docker_parity_runner_rejects_ambient_cache_or_credential_configuration(
         assert "must not set parity-managed" in str(exc)
     else:
         raise AssertionError("ambient Docker cache configuration was accepted")
-
-    no_host_oauth = SimpleNamespace(
-        command="docker",
-        args=["run", "--env=REDDIT_ACCESS_TOKEN=leak", "image"],
-        env={},
-    )
-    partial_oauth = SimpleNamespace(
-        command="docker",
-        args=["run", "-eREDDIT_CLIENT_SECRET=leak", "image"],
-        env={},
-    )
-    unused_oauth = SimpleNamespace(
-        command="docker",
-        args=["run", "--env", "REDDIT_REFRESH_TOKEN=leak", "image"],
-        env={},
-    )
-    for parameters in (no_host_oauth, partial_oauth, unused_oauth):
-        try:
-            _configure_fresh_cache(parameters, tmp_path, None)
-        except ValueError as exc:
-            assert "must not set parity-managed" in str(exc)
-        else:
-            raise AssertionError("Docker credential value was accepted into evidence argv")
 
     unmanaged_ownership = SimpleNamespace(
         command="docker",
@@ -1161,54 +1054,6 @@ def test_recreated_reddit_audit_requires_hydration_without_http_verification(
     )
     assert evidence.status == "failed"
     assert "counter was not instrumented" in evidence.detail
-
-
-def test_docker_parity_runner_forwards_oauth_by_name_not_secret_value(monkeypatch, tmp_path):
-    monkeypatch.setenv("REDDIT_ACCESS_TOKEN", "secret-must-never-appear")
-    # The production corpus has no OAuth-gated route any more, but the
-    # forwarding rule must still hold for any corpus that does: the credential
-    # travels to the container by variable name, never by value.
-    entries = [
-        CorpusEntry(
-            id="oauth_route",
-            live="oauth_required",
-            kind="moderators",
-            url="https://www.reddit.com/r/Python/about/moderators/",
-            required_any=("Source: exact Reddit OAuth",),
-            oauth_scopes=("read",),
-        )
-    ]
-    mode, names = _oauth_forwarding(entries)
-    parameters = SimpleNamespace(command="docker", args=["run", "image"], env={})
-
-    _configure_fresh_cache(parameters, tmp_path, None, names)
-
-    assert mode == "direct_token"
-    assert names == ("REDDIT_ACCESS_TOKEN",)
-    assert "REDDIT_ACCESS_TOKEN" in parameters.args
-    assert all("secret-must-never-appear" not in argument for argument in parameters.args)
-
-
-def test_direct_parity_runner_strips_partial_or_unused_oauth(monkeypatch, tmp_path):
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "partial-client")
-    monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
-    monkeypatch.delenv("REDDIT_REFRESH_TOKEN", raising=False)
-    parameters = SimpleNamespace(
-        command="/usr/bin/python3",
-        args=["-m", "fetchaller.main"],
-        env={
-            "PATH": "/usr/bin",
-            "REDDIT_CLIENT_ID": "partial-client",
-            "REDDIT_ACCESS_TOKEN": "unused-token",
-        },
-    )
-
-    mapping = _configure_fresh_cache(parameters, tmp_path, None)
-
-    assert mapping["mode"] == "direct_env"
-    assert parameters.env["PATH"] == "/usr/bin"
-    assert parameters.env["WAFER_CACHE_DIR"] == str(tmp_path)
-    assert not set(_REDDIT_CREDENTIAL_ENV).intersection(parameters.env)
 
 
 class _Session:
@@ -1658,11 +1503,6 @@ def test_every_counted_output_family_rejects_inflated_counts_and_missing_cards()
         "   https://www.reddit.com/user/alice/\n"
         "   Public activity: https://www.reddit.com/user/alice/overview/"
     )
-    moderator = (
-        "1 moderators returned\n\n"
-        "1. **u/alice** · all\n"
-        "   https://www.reddit.com/user/alice/"
-    )
     wiki_page = (
         "1 pages returned\n\n"
         "1. [index](https://www.reddit.com/r/Python/wiki/index)"
@@ -1731,13 +1571,6 @@ def test_every_counted_output_family_rejects_inflated_counts_and_missing_cards()
             user,
             "1 users returned",
             "2 users returned",
-            "/user/alice/",
-        ),
-        (
-            "moderators",
-            moderator,
-            "1 moderators returned",
-            "2 moderators returned",
             "/user/alice/",
         ),
         (
@@ -2051,27 +1884,6 @@ async def test_parity_runner_uses_large_bounded_raw_budget_and_rejects_truncatio
             },
         )
     ]
-
-
-async def test_parity_runner_does_not_count_anonymous_wiki_ssr_as_oauth_evidence(tmp_path):
-    entry = CorpusEntry(
-        id="wiki_pages",
-        live="oauth_required",
-        kind="wiki_pages",
-        url="https://www.reddit.com/r/Python/wiki/pages/",
-        required_any=("Source: exact Reddit OAuth",),
-        oauth_scopes=("wikiread",),
-    )
-
-    evidence = await _call(
-        _Session("# Wiki pages for r/Python\n\n2 pages returned"),
-        entry,
-        tmp_path,
-        "cold",
-    )
-
-    assert evidence.status == "failed"
-    assert "semantic marker" in evidence.detail
 
 
 async def test_parity_runner_records_and_rejects_a_blocked_response(tmp_path):
@@ -2674,3 +2486,27 @@ def test_velocity_ranked_exemption_is_narrow_and_justified():
     # The exemption stays a small minority of paged routes.
     paged = sum(1 for e in by_id.values() if e.pagination)
     assert len(_VELOCITY_RANKED_FEEDS) < paged // 4, "exemption grew too broad"
+
+
+def test_moderator_route_requires_the_gated_error_and_rejects_any_roster():
+    """Anonymous callers get an explicit gated error, never invented names.
+
+    fetchaller has no Reddit credential path, so a rendered roster on this route
+    could only come from fabrication. The corpus marker, the semantic contract,
+    and the real error text must therefore agree, and any roster must fail.
+    """
+
+    entries = {entry.id: entry for entry in load_corpus(DEFAULT_CORPUS)}
+    moderators = entries["moderators"]
+    actual = f"Error: {_MODERATOR_AUTH_REQUIRED}"
+
+    assert moderators.live == "fixture_only"
+    assert all(marker in actual for marker in moderators.required_any)
+    assert _counted_output_error(moderators, actual) is None
+    assert _semantic_contract_error(moderators, actual) is None
+
+    fabricated = (
+        "# Moderators of r/Python\n\n3 moderators returned\n\n"
+        "1. **u/alice** · all\n   https://www.reddit.com/user/alice/\n"
+    )
+    assert _semantic_contract_error(moderators, fabricated) is not None

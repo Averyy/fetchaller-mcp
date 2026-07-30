@@ -34,7 +34,7 @@ For each new site module:
 4. Only commit after manual verification passes
 
 For a deployed HTTP server, run the protocol/readiness/OAuth smoke after every
-restart and use `--all-tools` for the release gate so all ten tools must return
+restart and use `--all-tools` for the release gate so all twelve tools must return
 semantically useful live data:
 
 ```bash
@@ -84,12 +84,9 @@ post IDs against current Reddit `/api/info`, and rejects shells, empty data, or
 missing posts. `--include-unstable` dynamically discovers current real
 post/comment, revision, multireddit, live, and collection IDs, records the
 discovery bodies, and requires every such entry. Strict mode requires stable
-live targets and any live class explicitly selected by `--include-unstable` or
-`--require-oauth`. OAuth entries without
-actual credentials remain `not_run`, never a pass; `--require-oauth` makes that
-fatal. The publication workflow runs this credentialed live gate only when its
-complete Reddit refresh set is configured; otherwise the exact image retains
-the offline Reddit contract and omits hosted Reddit calls. The runner injects a
+live targets and any live class explicitly selected by `--include-unstable`.
+Every corpus route is an anonymous public read, so the live Reddit gates always
+run (`SMOKE_SKIP_REDDIT: '0'`) and need no configuration. The runner injects a
 fresh host-directory bind beneath `/app/data`,
 aligns the container UID/GID to its host owner, verifies an unexpired
 owner-only Reddit cookie file after warm and recreated stages, requires
@@ -97,9 +94,8 @@ successful anonymous-cookie hydration with zero pure-HTTP Reddit verification
 attempts after recreation, and separately requires zero guarded-browser
 connections. It rejects a
 conflicting cache/ownership environment or `--env-file`, so evidence cannot use
-ambient cookies or silently re-solve. Eligible Reddit OAuth credentials are forwarded to Docker only by
-environment variable name; the evidence records the credential mode and scopes,
-never credential values. `report.json` derives its publication denominator from
+ambient cookies or silently re-solve. No Reddit credential is ever forwarded,
+because none exists. `report.json` derives its publication denominator from
 the corpus and lists every offline entry and reason separately.
 
 ## Test Organization
@@ -113,16 +109,15 @@ the corpus and lists every offline entry and reason separately.
   thread/listing/profile/rules/wiki renderers; score/upvote-ratio semantics;
   nested/deleted/rich-media comments; gallery/video/crosspost/poll/status
   metadata; access-state mapping; comment-boundary budgets; browse/search link
-  parity; shared session/limiter behavior; exact-read OAuth host/header
-  isolation, refresh/retry/reuse, pagination, timeouts, backoff, and secret
-  redaction; strict same-origin JSON redirects and nonexistent-community
+  parity; shared session/limiter behavior; pagination, timeouts, and backoff;
+  strict same-origin JSON redirects and nonexistent-community
   state; canonical New Reddit wiki-tree SSR parsing plus the anonymous
   `WikiPageRevisionsV2` page tree (CSRF, fixed route, identity, node/path
-  agreement, uniqueness) and the optional `wikiread` fallback; strict
+  agreement, uniqueness); strict
   archived-collection identity/Redux parsing plus current-post
   hydration; failure truth, queue, deadline, and backoff behavior
 - `test_reddit_parity_corpus.py` — Checked-in zero-gap corpus coverage for every
-  routed representation, access-state contract, and credential/fixture gating
+  routed representation, access-state contract, and fixture gating
 - `test_reddit_legacy_contract.py` — Independent versioned Old Reddit surface
   inventory; detects omissions from both corpus and production routing; missing
   route/schema/renderer/MCP fixture coverage

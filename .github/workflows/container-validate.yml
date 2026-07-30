@@ -7,16 +7,6 @@ on:
         description: Publish the exact tested image to GHCR
         required: true
         type: boolean
-    secrets:
-      REDDIT_CLIENT_ID:
-        description: Reddit installed-app client ID for the exact OAuth parity reads
-        required: false
-      REDDIT_CLIENT_SECRET:
-        description: Reddit installed-app client secret for the exact OAuth parity reads
-        required: false
-      REDDIT_REFRESH_TOKEN:
-        description: Reddit refresh token restricted to read and wikiread
-        required: false
 
 env:
   REGISTRY: ghcr.io
@@ -26,18 +16,18 @@ jobs:
   container:
     runs-on: ubuntu-latest
     env:
-      # Hosted Reddit reads require an application identity. The exact image
-      # always runs the offline Reddit contract above; live Reddit gates run
-      # only when the complete credential set is actually configured.
-      REDDIT_LIVE_CONFIGURED: ${{ secrets.REDDIT_CLIENT_ID != '' && secrets.REDDIT_CLIENT_SECRET != '' && secrets.REDDIT_REFRESH_TOKEN != '' && '1' || '0' }}
-      SMOKE_SKIP_REDDIT: ${{ secrets.REDDIT_CLIENT_ID != '' && secrets.REDDIT_CLIENT_SECRET != '' && secrets.REDDIT_REFRESH_TOKEN != '' && '0' || '1' }}
+      # fetchaller reads Reddit anonymously and has no credential path, so the
+      # live Reddit gates always run. They were previously tied to a Reddit
+      # credential check, which let a repository with no secrets publish a green
+      # image while silently skipping every Reddit gate.
+      SMOKE_SKIP_REDDIT: '0'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Install dependencies
         run: |
@@ -66,7 +56,7 @@ jobs:
       - name: Extract image metadata
         if: inputs.publish
         id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           flavor: |
@@ -133,34 +123,20 @@ jobs:
 
       - name: Verify exact image through real stdio MCP client
         env:
-          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
-          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
-          REDDIT_REFRESH_TOKEN: ${{ secrets.REDDIT_REFRESH_TOKEN }}
-          SMOKE_STDIO_COMMAND: '["docker","run","--rm","-i","--platform","linux/amd64","-e","REDDIT_CLIENT_ID","-e","REDDIT_CLIENT_SECRET","-e","REDDIT_REFRESH_TOKEN","-v","fetchaller-mcp-ci-stdio-data:/app/data","fetchaller-mcp:test","python","-m","fetchaller.main"]'
+          SMOKE_STDIO_COMMAND: '["docker","run","--rm","-i","--platform","linux/amd64","-v","fetchaller-mcp-ci-stdio-data:/app/data","fetchaller-mcp:test","python","-m","fetchaller.main"]'
         run: uv run python scripts/smoke_test.py
 
-      - name: Verify every reachable and OAuth Reddit route before publish
-        if: inputs.publish && env.REDDIT_LIVE_CONFIGURED == '1'
+      - name: Verify every reachable anonymous Reddit route before publish
+        if: inputs.publish
         env:
-          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
-          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
-          REDDIT_REFRESH_TOKEN: ${{ secrets.REDDIT_REFRESH_TOKEN }}
           SMOKE_STDIO_COMMAND: '["docker","run","--rm","-i","--platform","linux/amd64","fetchaller-mcp:test","python","-m","fetchaller.main"]'
         run: |
-          test -n "$REDDIT_CLIENT_ID"
-          test -n "$REDDIT_CLIENT_SECRET"
-          test -n "$REDDIT_REFRESH_TOKEN"
           uv run python scripts/reddit_parity.py \
             --strict \
             --include-unstable \
-            --require-oauth \
             --output /tmp/fetchaller-reddit-parity
 
-      - name: Boot authenticated HTTP server
-        env:
-          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
-          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
-          REDDIT_REFRESH_TOKEN: ${{ secrets.REDDIT_REFRESH_TOKEN }}
+      - name: Boot HTTP server
         run: |
           docker volume create fetchaller-mcp-ci-data
           docker run -d --name fetchaller-mcp-test \
@@ -171,9 +147,6 @@ jobs:
             -e MCP_SERVER_URL=http://localhost:6000 \
             -e JWT_SECRET=ci-only-jwt-secret-at-least-32-bytes \
             -e BROWSER_PREFLIGHT=1 \
-            -e REDDIT_CLIENT_ID \
-            -e REDDIT_CLIENT_SECRET \
-            -e REDDIT_REFRESH_TOKEN \
             fetchaller-mcp:test
 
       - name: Verify health, MCP dispatch, and OAuth persistence seed
@@ -245,7 +218,7 @@ jobs:
 
       - name: Log in to GHCR
         if: inputs.publish
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}

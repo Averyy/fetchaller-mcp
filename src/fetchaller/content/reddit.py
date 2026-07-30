@@ -2098,7 +2098,7 @@ def parse_reddit_wiki_pages_html(
 ) -> list[str] | None:
     """Return the canonical New Reddit SSR wiki tree, or reject the document.
 
-    The anonymous ``/wiki/pages.json`` API now requires ``wikiread`` OAuth.
+    Reddit no longer serves ``/wiki/pages.json`` to anonymous callers.
     New Reddit still server-renders a complete page tree for communities that
     expose one, inside the wiki right rail.  Parsing only that named tree avoids
     confusing authored page links, community bookmarks, or navigation chrome
@@ -3521,15 +3521,9 @@ def _render_moderators(payload: object, route: RedditRoute, max_chars: int) -> s
                 1,
             )
         )
-    provenance = (
-        "\n\nSource: exact Reddit OAuth"
-        if isinstance(payload, dict)
-        and payload.get("_fetchaller_reddit_provenance") == "oauth"
-        else ""
-    )
     prefix = (
         f"# Moderators of r/{route.subreddit or '?'}\n\n"
-        f"{len(sections)} moderators returned{provenance}"
+        f"{len(sections)} moderators returned"
     )
     return _fit_sections(prefix, sections, max_chars, omission_label="moderators")
 
@@ -4007,7 +4001,6 @@ def _render_wiki_pages(payload: object, route: RedditRoute, max_chars: int) -> s
         for index, page in enumerate(pages, 1)
     ]
     sources = {
-        "oauth": "\n\nSource: exact Reddit OAuth",
         "graphql": "\n\nSource: anonymous Reddit wiki page tree",
     }
     provenance = (

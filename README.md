@@ -229,10 +229,9 @@ Returns matching posts with metadata. Use `fetch` to read full discussions.
 ### Compact New Reddit Fetching
 
 Normal Reddit URLs and emitted links are canonicalized to `www.reddit.com`.
-Structured JSON reads use Reddit's official `oauth.reddit.com` API when
-credentials are configured, with `api.reddit.com` retained as the logged-out
-fallback. Both are rendered as compact Markdown; HTML-only legs remain on the
-fixed New Reddit `www` origin.
+Structured JSON reads use the logged-out `api.reddit.com` origin and are
+rendered as compact Markdown; HTML-only legs remain on the fixed New Reddit
+`www` origin.
 `/r/{subreddit}/wiki/pages/` first reads the canonical New Reddit SSR page tree,
 then falls back to New Reddit's own logged-out `WikiPageRevisionsV2` page tree on
 the fixed `/svc/shreddit/graphql` route when a community does not server-render
@@ -261,20 +260,13 @@ top-level array). It never slices a string, substitutes a value, or reports
 invalid JSON as success; a budget too small for both useful content and the
 marker returns an explicit error.
 
-Reddit requires API clients to authenticate reliably, particularly from hosted
-networks. When configured, fetchaller sends public structured reads only to
-their validated `oauth.reddit.com` equivalents through a cookie-isolated
-application session. Account-private upvoted/downvoted routes remain outside
-that path. Exact moderator rosters cross the user-context boundary only after
-the anonymous endpoint returns an unstructured 403. The wiki page index is
-still served anonymously by the SSR tree or New Reddit's logged-out page-tree
-route, with `wikiread` kept only as an optional last-resort fallback.
-Configure either a short-lived `REDDIT_ACCESS_TOKEN`, or the complete
-`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`/`REDDIT_REFRESH_TOKEN` set for
-automatic renewal. Grant only Reddit's `read` scope, plus `wikiread` if you want
-that optional wiki fallback. Credentials stay in memory, are never included in
-output, and are never sent to normal `www.reddit.com` or `api.reddit.com`
-content routes.
+fetchaller reads Reddit **anonymously only** and has no credential path: there
+is no OAuth flow, no client ID/secret, and no refresh or access token. Every
+Reddit read uses New Reddit's logged-out path. The wiki page index is served by
+the SSR tree or New Reddit's logged-out page-tree route. Routes Reddit serves
+only to a logged-in account — exact moderator rosters, and account-private
+upvoted/downvoted activity — return an explicit error saying so; no names or
+counts are ever guessed or reconstructed.
 
 Vote data is not reconstructed: `score` is Reddit's public, fuzzed vote score,
 and `upvote_ratio` is displayed only when Reddit returns it. Separate true
@@ -334,16 +326,9 @@ Fixture-only targets always remain offline and can never become live evidence;
 they are limited to inherently non-public access states such as private,
 quarantined, banned, gated, forbidden, and not-found. A removed feature is not
 a fixture-only waiver: its real public-read capability must still pass live.
-OAuth routes run only with a real direct token or the complete
-client-ID/client-secret/refresh-token set; otherwise they remain `not_run`,
-never a pass. Add `--require-oauth` to make missing or failed OAuth evidence
-fatal. When the repository has the complete refresh credential set, CI derives
-and requires every live target from the versioned contract before publication
-and forwards only those three environment variable names into the container.
-Without that set, CI still requires the complete offline
-route/schema/renderer/MCP contract and omits hosted Reddit calls that cannot
-carry an application identity. Every offline entry must carry a mandatory
-reason and complete fixture evidence.
+Every route in the corpus is an anonymous public read, so the live Reddit
+gates always run in CI and require no configuration. Every offline entry must
+carry a mandatory reason and complete fixture evidence.
 
 ### Rate Limits
 
@@ -637,11 +622,6 @@ For Claude.ai web/mobile with cross-platform sync:
 | `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
 | `DNS_DOH_FALLBACK` | `0` | Set to `1` to re-resolve against public DoH resolvers (1.1.1.1, 8.8.8.8) when the system resolver answers `0.0.0.0`/`::`. **Off by default:** that answer is usually a blocklist doing its job, and resolving past it overrides local DNS policy and discloses the hostname to a third party. Either way such hosts are reported as a DNS failure, not as a private-host block, so the resolver can be fixed instead. Fallback addresses still face the same private-range checks. |
 | `TRUSTED_PROXY_IPS` | — | Comma-separated addresses/CIDRs of reverse proxies whose rightmost `X-Forwarded-For` value is trusted |
-| `REDDIT_ACCESS_TOKEN` | — | Optional short-lived user-context token for validated public API reads, exact moderator rosters, and the optional wiki-index fallback |
-| `REDDIT_CLIENT_ID` | — | Reddit OAuth app client ID; requires the secret and refresh token below |
-| `REDDIT_CLIENT_SECRET` | — | Reddit OAuth app secret; configured only as part of the complete refresh set |
-| `REDDIT_REFRESH_TOKEN` | — | User-context refresh token; grant only Reddit's required `read` scope, plus `wikiread` for the optional wiki-index fallback |
-| `REDDIT_USER_AGENT` | `fetchaller-mcp/3 exact-reddit-reads` | Truthful application User-Agent for Reddit OAuth API reads |
 | `MOUSER_API_KEY` | — | Mouser Search API key ([free registration](https://www.mouser.com/MyMouser/MouserSearchApplication.aspx)) |
 | `DIGIKEY_CLIENT_ID` | — | DigiKey API client ID ([free registration](https://developer.digikey.com)) |
 | `DIGIKEY_CLIENT_SECRET` | — | DigiKey API client secret |

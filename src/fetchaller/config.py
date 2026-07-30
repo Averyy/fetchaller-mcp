@@ -4,7 +4,7 @@ import ipaddress
 import math
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -97,79 +97,6 @@ def _canonical_server_origin(value: str) -> str:
     return f"{parsed.scheme.casefold()}://{authority}"
 
 
-def _validate_reddit_oauth_value(
-    name: str,
-    value: str | None,
-    *,
-    max_length: int,
-    allow_spaces: bool = False,
-) -> None:
-    """Keep OAuth credentials bounded and safe for their eventual HTTP header."""
-    if value is None:
-        return
-    valid_character = (
-        (lambda character: 0x20 <= ord(character) <= 0x7E)
-        if allow_spaces
-        else (lambda character: 0x21 <= ord(character) <= 0x7E)
-    )
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > max_length
-        or not value.isascii()
-        or any(not valid_character(character) for character in value)
-    ):
-        raise ValueError(
-            f"{name} must be non-empty printable ASCII of at most "
-            f"{max_length} characters"
-        )
-
-
-def _validate_reddit_oauth_config(config: "Config") -> None:
-    """Require either one direct token or one complete refresh credential set."""
-    refresh_values = (
-        config.reddit_client_id,
-        config.reddit_client_secret,
-        config.reddit_refresh_token,
-    )
-    if any(value is not None for value in refresh_values) and not all(
-        value is not None for value in refresh_values
-    ):
-        raise ValueError(
-            "REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, and REDDIT_REFRESH_TOKEN "
-            "must be configured together"
-        )
-
-    _validate_reddit_oauth_value(
-        "REDDIT_CLIENT_ID",
-        config.reddit_client_id,
-        max_length=128,
-    )
-    if config.reddit_client_id is not None and ":" in config.reddit_client_id:
-        raise ValueError("REDDIT_CLIENT_ID must not contain ':'")
-    _validate_reddit_oauth_value(
-        "REDDIT_CLIENT_SECRET",
-        config.reddit_client_secret,
-        max_length=4096,
-    )
-    _validate_reddit_oauth_value(
-        "REDDIT_REFRESH_TOKEN",
-        config.reddit_refresh_token,
-        max_length=4096,
-    )
-    _validate_reddit_oauth_value(
-        "REDDIT_ACCESS_TOKEN",
-        config.reddit_access_token,
-        max_length=8192,
-    )
-    _validate_reddit_oauth_value(
-        "REDDIT_USER_AGENT",
-        config.reddit_user_agent,
-        max_length=256,
-        allow_spaces=True,
-    )
-
-
 def _validate_browser_executable_path(value: str | None) -> None:
     """Keep an optional caller-pinned browser path bounded and unambiguous."""
 
@@ -233,14 +160,6 @@ class Config:
     reddit_backoff_rate_limit: int = 60  # After 429
     reddit_backoff_blocked: int = 300  # After 403
 
-    # Reddit user-context OAuth carries validated public API reads on hosted
-    # networks, exact moderator rosters, and some wiki page indexes.
-    reddit_client_id: str | None = field(default=None, repr=False)
-    reddit_client_secret: str | None = field(default=None, repr=False)
-    reddit_refresh_token: str | None = field(default=None, repr=False)
-    reddit_access_token: str | None = field(default=None, repr=False)
-    reddit_user_agent: str = "fetchaller-mcp/3 exact-reddit-reads"
-
     # Wafer cookie cache directory (persists cookies across restarts).
     # Set to "" to disable. By default this lives under DATA_DIR.
     wafer_cache_dir: str | None = None
@@ -256,7 +175,6 @@ class Config:
     def __post_init__(self) -> None:
         """Validate invariants required by every Config construction path."""
         _validate_server_origin(self.server_url)
-        _validate_reddit_oauth_config(self)
         _validate_browser_executable_path(self.browser_executable_path)
         if (
             self.api_key
@@ -271,11 +189,6 @@ class Config:
         if self.server_url:
             return _canonical_server_origin(self.server_url)
         return f"http://localhost:{self.http_port}"
-
-    @property
-    def reddit_moderator_oauth_configured(self) -> bool:
-        """Whether an access token or complete refresh flow is available."""
-        return self.reddit_access_token is not None or self.reddit_refresh_token is not None
 
 
 def _load_dotenv() -> None:
@@ -374,14 +287,6 @@ def load_config() -> Config:
         reddit_proactive_threshold=_int("REDDIT_PROACTIVE_THRESHOLD", 8),
         reddit_backoff_rate_limit=_int("REDDIT_BACKOFF_RATE_LIMIT", 60),
         reddit_backoff_blocked=_int("REDDIT_BACKOFF_BLOCKED", 300),
-        reddit_client_id=_optional("REDDIT_CLIENT_ID"),
-        reddit_client_secret=_optional("REDDIT_CLIENT_SECRET"),
-        reddit_refresh_token=_optional("REDDIT_REFRESH_TOKEN"),
-        reddit_access_token=_optional("REDDIT_ACCESS_TOKEN"),
-        reddit_user_agent=os.environ.get(
-            "REDDIT_USER_AGENT",
-            "fetchaller-mcp/3 exact-reddit-reads",
-        ),
         # Retry
         retry_max_attempts=_int("RETRY_MAX_ATTEMPTS", 1),
         retry_initial_delay=_float("RETRY_INITIAL_DELAY", 0.5),

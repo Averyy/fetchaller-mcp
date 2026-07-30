@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 import re
 import time
@@ -28,18 +26,12 @@ from fetchaller.tools.browse_reddit import (
     _get_session,
     _instrument_reddit_session,
     _reddit_json_transport_url,
-    _reddit_oauth_transport_url,
     _validated_reddit_json_url,
     browse_reddit,
     close_session,
     fetch_reddit_json,
     format_reddit_http_error,
     reddit_session_audit,
-)
-from fetchaller.tools.reddit_auth import (
-    RedditModeratorOAuth,
-    _valid_oauth_read_url,
-    reset_reddit_moderator_oauth,
 )
 from fetchaller.tools.reddit_fetch import (
     _hydrate_user_directory,
@@ -51,13 +43,6 @@ from fetchaller.tools.reddit_fetch import (
     fetch_mapped_reddit,
 )
 from fetchaller.tools.search_reddit import search_reddit
-
-
-@pytest.fixture(autouse=True)
-def _reset_moderator_oauth_state():
-    reset_reddit_moderator_oauth()
-    yield
-    reset_reddit_moderator_oauth()
 
 
 def _post(**overrides) -> dict:
@@ -2923,139 +2908,6 @@ class _JsonSession:
 
 
 class TestRedditTransportAndTools:
-    @pytest.mark.parametrize(
-        ("source", "expected"),
-        [
-            (
-                "https://www.reddit.com/r/Python/hot.json?"
-                "limit=10&raw_json=1",
-                "https://oauth.reddit.com/r/Python/hot?"
-                "limit=10&raw_json=1",
-            ),
-            (
-                "https://api.reddit.com/r/Python/comments/abc/title/.json?"
-                "raw_json=1",
-                "https://oauth.reddit.com/r/Python/comments/abc/title/?"
-                "raw_json=1",
-            ),
-            (
-                "https://www.reddit.com/api/v1/collections/collection?"
-                "collection_id=12345678-1234-1234-1234-123456789abc"
-                "&include_links=true&raw_json=1",
-                "https://oauth.reddit.com/api/v1/collections/collection?"
-                "collection_id=12345678-1234-1234-1234-123456789abc"
-                "&include_links=true&raw_json=1",
-            ),
-        ],
-    )
-    def test_public_json_route_maps_to_exact_oauth_origin(
-        self,
-        source,
-        expected,
-    ):
-        assert _reddit_oauth_transport_url(source) == expected
-        assert _valid_oauth_read_url(expected)
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "http://oauth.reddit.com/r/Python/hot",
-            "https://oauth.reddit.com.evil.test/r/Python/hot",
-            "https://user@oauth.reddit.com/r/Python/hot",
-            "https://oauth.reddit.com:444/r/Python/hot",
-            "https://oauth.reddit.com/r/Python/hot#fragment",
-            "https://oauth.reddit.com/r/Python/\\hot",
-        ],
-    )
-    def test_oauth_read_origin_rejects_unsafe_urls(self, url):
-        assert not _valid_oauth_read_url(url)
-
-    async def test_oauth_manager_builds_isolated_application_session(self):
-        created = []
-
-        class FakeSession:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-                created.append(self)
-
-        manager = RedditModeratorOAuth(
-            access_token="direct-token",
-            user_agent="test-agent",
-        )
-        with patch(
-            "fetchaller.tools.reddit_auth.wafer.AsyncSession",
-            side_effect=FakeSession,
-        ):
-            session = await manager.get_session()
-            reused = await manager.get_session()
-
-        assert session is reused
-        assert created == [session]
-        assert session.kwargs == {
-            "profile": wafer.Profile.DART,
-            "headers": {
-                "Accept": "application/json",
-                "User-Agent": "test-agent",
-            },
-            "max_rotations": 0,
-            "follow_redirects": False,
-            "max_response_size": 50 * 1024 * 1024,
-        }
-
-    async def test_oauth_manager_fetches_exact_public_read(self):
-        url = "https://oauth.reddit.com/r/Python/hot?raw_json=1"
-        response = _JsonResponse(
-            {"kind": "Listing", "data": {"children": []}},
-            url=url,
-        )
-        session = _JsonSession([response])
-        manager = RedditModeratorOAuth(
-            access_token="direct-token",
-            user_agent="test-agent",
-        )
-        manager._session = session
-
-        result = await manager.fetch_json(url, None, 10)
-
-        assert result == {"response": response}
-        assert session.request_details == [
-            (
-                "GET",
-                url,
-                {
-                    "headers": {
-                        "Accept": "application/json",
-                        "Authorization": "Bearer direct-token",
-                        "User-Agent": "test-agent",
-                    },
-                    "timeout": session.request_details[0][2]["timeout"],
-                    "max_response_size": 50 * 1024 * 1024,
-                },
-            )
-        ]
-        assert 0 < session.request_details[0][2]["timeout"] <= 10
-
-    async def test_oauth_manager_rejects_redirect_response(self):
-        url = "https://oauth.reddit.com/r/Python/hot?raw_json=1"
-        session = _JsonSession(
-            [
-                _JsonResponse(
-                    {},
-                    status_code=302,
-                    url="https://oauth.reddit.com/login",
-                    history=[object()],
-                )
-            ]
-        )
-        manager = RedditModeratorOAuth(access_token="direct-token")
-        manager._session = session
-
-        result = await manager.fetch_json(url, None, 10)
-
-        assert result == {
-            "error": "Reddit API request left its exact endpoint."
-        }
-
     async def test_account_private_activity_403_does_not_poison_next_route(
         self,
     ):
@@ -4692,67 +4544,6 @@ class TestRedditTransportAndTools:
         queue.enqueue.assert_awaited_once()
         queue.set_backoff.assert_called_once_with(429, retry_after=13.0)
 
-    async def test_wiki_pages_exact_anonymous_403_uses_oauth_without_backoff(
-        self,
-    ):
-        route = route_reddit_url(
-            "https://www.reddit.com/r/Python/wiki/pages/"
-        )
-        assert route is not None
-        session = _JsonSession(
-            [
-                _HtmlResponse(
-                    "",
-                    status_code=403,
-                    url=route.requests[0],
-                ),
-                _JsonResponse(
-                    {"errors": [{"message": "unauthorized"}]},
-                    status_code=500,
-                    headers={"content-type": "application/json"},
-                    url=_GRAPHQL_URL,
-                ),
-            ]
-        )
-        manager = Mock()
-        manager.fetch_wiki_pages = AsyncMock(
-            return_value={
-                "data": {
-                    "kind": "wikipagelisting",
-                    "data": ["index", "faq"],
-                }
-            }
-        )
-        queue = Mock()
-
-        async def enqueue(callback, *_args, **_kwargs):
-            return await callback()
-
-        queue.enqueue = AsyncMock(side_effect=enqueue)
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
-                return_value=manager,
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=1000,
-                timeout=10,
-                config=Config(reddit_access_token="direct-token"),
-                queue=queue,
-            )
-
-        assert result["content_type"] == "markdown"
-        assert "Source: exact Reddit OAuth" in result["content"]
-        manager.fetch_wiki_pages.assert_awaited_once()
-        queue.set_backoff.assert_not_called()
-
     @pytest.mark.parametrize(
         "response",
         [
@@ -4792,16 +4583,12 @@ class TestRedditTransportAndTools:
                 "fetchaller.tools.reddit_fetch._get_session",
                 AsyncMock(return_value=session),
             ),
-            patch(
-                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
-                return_value=manager,
-            ),
         ):
             result = await fetch_mapped_reddit(
                 route,
                 max_tokens=1000,
                 timeout=10,
-                config=Config(reddit_access_token="direct-token"),
+                config=Config(),
                 queue=queue,
             )
 
@@ -4907,226 +4694,6 @@ class TestRedditTransportAndTools:
         }
         queue.set_backoff.assert_not_called()
 
-    async def test_wiki_pages_uses_exact_oauth_fallback_after_new_ssr_gap(
-        self,
-    ):
-        session = _JsonSession(
-            [
-                _HtmlResponse(
-                    """
-                    <shreddit-app pagetype="community_wiki"
-                                  routename="subreddit_wiki">
-                      <div id="canonical-url-updater"
-                           value="https://www.reddit.com/r/Python/wiki/pages/">
-                      </div>
-                      <main>An unknown error occurred</main>
-                    </shreddit-app>
-                    """
-                ),
-                _JsonResponse(
-                    {"data": {"subreddit": {"__typename": "Subreddit"}}},
-                    headers={"content-type": "application/json"},
-                    url=_GRAPHQL_URL,
-                ),
-            ]
-        )
-        manager = Mock()
-        manager.fetch_wiki_pages = AsyncMock(
-            return_value={
-                "data": {
-                    "kind": "wikipagelisting",
-                    "data": ["index", "faq", "config/sidebar"],
-                }
-            }
-        )
-        queue = Mock()
-
-        async def enqueue(callback, *_args, **_kwargs):
-            return await callback()
-
-        queue.enqueue = AsyncMock(side_effect=enqueue)
-        route = route_reddit_url(
-            "https://www.reddit.com/r/Python/wiki/pages/"
-        )
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
-                return_value=manager,
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=1000,
-                timeout=10,
-                config=Config(reddit_access_token="direct-token"),
-                queue=queue,
-            )
-
-        assert result["content_type"] == "markdown"
-        assert "3 pages returned" in result["content"]
-        assert "/wiki/faq/" in result["content"]
-        assert "/wiki/config/sidebar/" in result["content"]
-        manager.fetch_wiki_pages.assert_awaited_once()
-        subreddit, used_session, used_queue, remaining = (
-            manager.fetch_wiki_pages.await_args.args
-        )
-        assert subreddit == "Python"
-        assert used_session is None
-        assert used_queue is queue
-        assert 0 < remaining <= 10
-        assert session.calls == [
-            "https://www.reddit.com/r/Python/wiki/pages/",
-            _GRAPHQL_URL,
-        ]
-
-    async def test_wiki_pages_rejects_malformed_oauth_index_not_empty_success(
-        self,
-    ):
-        session = _JsonSession(
-            [
-                _HtmlResponse("<html></html>"),
-                _JsonResponse(
-                    {"data": {"subreddit": None}},
-                    headers={"content-type": "application/json"},
-                    url=_GRAPHQL_URL,
-                ),
-            ]
-        )
-        manager = Mock()
-        manager.fetch_wiki_pages = AsyncMock(
-            return_value={
-                "data": {
-                    "kind": "wikipagelisting",
-                    "data": ["index", "../private"],
-                }
-            }
-        )
-        route = route_reddit_url(
-            "https://www.reddit.com/r/Python/wiki/pages/"
-        )
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
-                return_value=manager,
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=1000,
-                timeout=10,
-                config=Config(reddit_access_token="direct-token"),
-            )
-
-        assert result == {
-            "error": "Reddit returned an invalid wiki pages response."
-        }
-        assert "content" not in result
-
-    async def test_wiki_pages_does_not_start_oauth_after_ssr_uses_deadline(
-        self,
-    ):
-        session = _JsonSession([_HtmlResponse("<html></html>")])
-        manager = Mock()
-        manager.fetch_wiki_pages = AsyncMock()
-        clock = Mock()
-        # deadline, anonymous page-tree budget check, OAuth budget check.
-        clock.monotonic.side_effect = [100.0, 111.0, 111.0]
-        route = route_reddit_url(
-            "https://www.reddit.com/r/Python/wiki/pages/"
-        )
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch._fetch_reddit_html",
-                AsyncMock(return_value={"html": "<html></html>"}),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
-                return_value=manager,
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.time",
-                clock,
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=1000,
-                timeout=10,
-                config=Config(reddit_access_token="direct-token"),
-            )
-
-        assert result == {"error": "Request timed out (10s limit)"}
-        manager.fetch_wiki_pages.assert_not_awaited()
-
-    async def test_wiki_pages_does_not_send_oauth_when_new_ssr_is_complete(
-        self,
-    ):
-        html = """
-        <shreddit-app pagetype="community_wiki" routename="subreddit_wiki">
-          <div id="canonical-url-updater"
-               value="https://www.reddit.com/r/Python/wiki/pages/"></div>
-          <div id="wikis-right-rail-container">
-            <div class="page-tree">
-              <a href="/r/Python/wiki/index">index</a>
-            </div>
-          </div>
-        </shreddit-app>
-        """
-        session = _JsonSession([_HtmlResponse(html)])
-        route = route_reddit_url(
-            "https://www.reddit.com/r/Python/wiki/pages/"
-        )
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
-            ) as get_oauth,
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=1000,
-                timeout=10,
-                config=Config(reddit_access_token="direct-token"),
-            )
-
-        assert "1 pages returned" in result["content"]
-        get_oauth.assert_not_called()
-
     async def _anonymous_wiki_pages(
         self,
         graphql_response,
@@ -5134,7 +4701,6 @@ class TestRedditTransportAndTools:
         csrf_token: str | None = _CSRF_TOKEN,
         queue=None,
         config=None,
-        oauth=False,
     ):
         """Drive the wiki index past an SSR gap onto the anonymous page tree."""
 
@@ -5156,9 +4722,6 @@ class TestRedditTransportAndTools:
                 "fetchaller.tools.reddit_fetch.reddit_limiter.wait",
                 AsyncMock(),
             ),
-            patch(
-                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
-            ) as get_oauth,
         ):
             result = await fetch_mapped_reddit(
                 route,
@@ -5167,10 +4730,10 @@ class TestRedditTransportAndTools:
                 config=config,
                 queue=queue,
             )
-        return result, session, get_oauth
+        return result, session
 
     async def test_wiki_pages_uses_anonymous_page_tree_without_oauth(self):
-        result, session, get_oauth = await self._anonymous_wiki_pages(
+        result, session = await self._anonymous_wiki_pages(
             _wiki_tree_response(
                 [
                     _wiki_tree_node("config", present=False),
@@ -5179,7 +4742,7 @@ class TestRedditTransportAndTools:
                     _wiki_tree_node("index"),
                 ]
             ),
-            config=Config(reddit_access_token="direct-token"),
+            config=Config(),
         )
 
         assert result["content_type"] == "markdown"
@@ -5188,7 +4751,6 @@ class TestRedditTransportAndTools:
         assert "3 pages returned" in result["content"]
         assert "/wiki/config/sidebar/" in result["content"]
         assert "/wiki/config/)" not in result["content"]
-        get_oauth.assert_not_called()
 
         method, url, kwargs = session.request_details[1]
         assert (method, url) == ("POST", _GRAPHQL_URL)
@@ -5207,7 +4769,7 @@ class TestRedditTransportAndTools:
         ]
 
     async def test_wiki_pages_anonymous_tree_allows_genuinely_empty_wiki(self):
-        result, _session, _get_oauth = await self._anonymous_wiki_pages(
+        result, _session = await self._anonymous_wiki_pages(
             _wiki_tree_response([_wiki_tree_node("config", present=False)])
         )
 
@@ -5248,7 +4810,7 @@ class TestRedditTransportAndTools:
         ],
     )
     async def test_wiki_pages_rejects_malformed_anonymous_tree(self, nodes):
-        result, _session, _get_oauth = await self._anonymous_wiki_pages(
+        result, _session = await self._anonymous_wiki_pages(
             _wiki_tree_response(nodes)
         )
 
@@ -5271,7 +4833,7 @@ class TestRedditTransportAndTools:
         self,
         overrides,
     ):
-        result, _session, _get_oauth = await self._anonymous_wiki_pages(
+        result, _session = await self._anonymous_wiki_pages(
             _wiki_tree_response([_wiki_tree_node("index")], **overrides)
         )
 
@@ -5281,13 +4843,13 @@ class TestRedditTransportAndTools:
     async def test_wiki_pages_rejects_anonymous_graphql_errors(self):
         response = _wiki_tree_response([_wiki_tree_node("index")])
         response.payload["errors"] = [{"message": "forbidden"}]
-        result, _session, _get_oauth = await self._anonymous_wiki_pages(response)
+        result, _session = await self._anonymous_wiki_pages(response)
 
         assert "content" not in result
         assert "invalid anonymous wiki page tree" in result["error"]
 
     async def test_wiki_pages_rejects_non_json_anonymous_response(self):
-        result, _session, _get_oauth = await self._anonymous_wiki_pages(
+        result, _session = await self._anonymous_wiki_pages(
             _HtmlResponse("<html></html>", url=_GRAPHQL_URL)
         )
 
@@ -5299,7 +4861,7 @@ class TestRedditTransportAndTools:
         }
 
     async def test_wiki_pages_rejects_anonymous_response_off_fixed_route(self):
-        result, _session, _get_oauth = await self._anonymous_wiki_pages(
+        result, _session = await self._anonymous_wiki_pages(
             _wiki_tree_response(
                 [_wiki_tree_node("index")],
             ),
@@ -5308,7 +4870,7 @@ class TestRedditTransportAndTools:
 
         redirected = _wiki_tree_response([_wiki_tree_node("index")])
         redirected.url = "https://www.reddit.com/login/"
-        result, _session, _get_oauth = await self._anonymous_wiki_pages(
+        result, _session = await self._anonymous_wiki_pages(
             redirected
         )
 
@@ -5320,7 +4882,7 @@ class TestRedditTransportAndTools:
         }
 
     async def test_wiki_pages_reports_missing_csrf_without_sending_post(self):
-        result, session, _get_oauth = await self._anonymous_wiki_pages(
+        result, session = await self._anonymous_wiki_pages(
             None,
             csrf_token=None,
         )
@@ -5337,7 +4899,7 @@ class TestRedditTransportAndTools:
         ]
 
     async def test_wiki_pages_rejects_non_hex_csrf_without_sending_post(self):
-        result, session, _get_oauth = await self._anonymous_wiki_pages(
+        result, session = await self._anonymous_wiki_pages(
             None,
             csrf_token="not-a-real-token",
         )
@@ -5354,7 +4916,7 @@ class TestRedditTransportAndTools:
             return await callback()
 
         queue.enqueue = AsyncMock(side_effect=enqueue)
-        result, _session, _get_oauth = await self._anonymous_wiki_pages(
+        result, _session = await self._anonymous_wiki_pages(
             _wiki_tree_response(
                 [_wiki_tree_node("index")],
                 status_code=429,
@@ -5366,278 +4928,6 @@ class TestRedditTransportAndTools:
         assert "content" not in result
         assert "HTTP 429" in result["error"]
         queue.set_backoff.assert_called_once_with(429, retry_after=11.0)
-
-    async def test_wiki_page_index_oauth_uses_only_fixed_host_and_bearer_header(
-        self,
-    ):
-        session = _JsonSession(
-            [
-                _JsonResponse(
-                    {
-                        "kind": "wikipagelisting",
-                        "data": ["index", "faq"],
-                    }
-                )
-            ]
-        )
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_wiki_pages(
-            "Python",
-            session,
-            None,
-            10,
-        )
-
-        assert result == {
-            "data": {
-                "kind": "wikipagelisting",
-                "data": ["index", "faq"],
-            }
-        }
-        assert session.calls == [
-            "https://oauth.reddit.com/r/Python/wiki/pages/?raw_json=1"
-        ]
-        request = session.request_details[0][2]
-        assert request["headers"]["Authorization"] == "Bearer direct-token"
-        assert request["headers"]["Accept"] == "application/json"
-        assert request["max_response_size"] == 2 * 1024 * 1024
-        assert "direct-token" not in repr(result)
-
-    async def test_wiki_page_index_oauth_names_missing_wikiread_scope(self):
-        session = _JsonSession(
-            [_JsonResponse({}, status_code=403)]
-        )
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_wiki_pages(
-            "Python",
-            session,
-            None,
-            10,
-        )
-
-        assert result == {
-            "error": (
-                "Reddit wiki page index access was forbidden; verify the "
-                "account and OAuth wikiread scope."
-            )
-        }
-
-    async def test_wiki_page_index_oauth_refreshes_rejected_token_once(self):
-        session = _JsonSession(
-            [
-                _JsonResponse({}, status_code=401),
-                _JsonResponse(
-                    {"access_token": "replacement", "expires_in": 3600}
-                ),
-                _JsonResponse(
-                    {
-                        "kind": "wikipagelisting",
-                        "data": ["index", "faq"],
-                    }
-                ),
-            ]
-        )
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-            access_token="rejected-token",
-        )
-
-        result = await manager.fetch_wiki_pages(
-            "Python",
-            session,
-            None,
-            10,
-        )
-
-        assert result == {
-            "data": {
-                "kind": "wikipagelisting",
-                "data": ["index", "faq"],
-            }
-        }
-        assert [
-            (method, url)
-            for method, url, _kwargs in session.request_details
-        ] == [
-            (
-                "GET",
-                "https://oauth.reddit.com/r/Python/wiki/pages/?raw_json=1",
-            ),
-            ("POST", "https://www.reddit.com/api/v1/access_token"),
-            (
-                "GET",
-                "https://oauth.reddit.com/r/Python/wiki/pages/?raw_json=1",
-            ),
-        ]
-        assert (
-            session.request_details[0][2]["headers"]["Authorization"]
-            == "Bearer rejected-token"
-        )
-        assert (
-            session.request_details[2][2]["headers"]["Authorization"]
-            == "Bearer replacement"
-        )
-
-    async def test_wiki_page_index_oauth_queue_timeout_is_bounded(self):
-        queue = AsyncMock()
-        queue.enqueue.side_effect = TimeoutError
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_wiki_pages(
-            "Python",
-            _JsonSession([]),
-            queue,
-            3,
-        )
-
-        assert result == {
-            "error": "Reddit wiki page index request timed out."
-        }
-
-    async def test_wiki_page_index_oauth_429_applies_shared_backoff(self):
-        session = _JsonSession(
-            [_JsonResponse({}, status_code=429, headers={"retry-after": "19"})]
-        )
-        queue = Mock()
-
-        async def enqueue(callback, *_args, **_kwargs):
-            return await callback()
-
-        queue.enqueue = AsyncMock(side_effect=enqueue)
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_wiki_pages(
-            "Python",
-            session,
-            queue,
-            10,
-        )
-
-        assert result == {
-            "error": (
-                "Reddit wiki page index was rate limited. Retry after 19s."
-            )
-        }
-        queue.set_backoff.assert_called_once_with(429, retry_after=19.0)
-
-    async def test_wiki_page_index_oauth_rejects_invalid_subreddit_before_send(
-        self,
-    ):
-        session = _JsonSession([])
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_wiki_pages(
-            "../secrets",
-            session,
-            None,
-            10,
-        )
-
-        assert result == {"error": "Invalid subreddit name"}
-        assert session.calls == []
-
-    async def test_wiki_page_index_transport_cannot_leak_oauth_secrets(
-        self,
-        caplog,
-        capsys,
-    ):
-        class ExplodingSession:
-            async def get(self, *_args, **_kwargs):
-                raise RuntimeError(
-                    "direct-token client-secret refresh-token must stay private"
-                )
-
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_wiki_pages(
-            "Python",
-            ExplodingSession(),
-            None,
-            10,
-        )
-        captured = capsys.readouterr()
-        combined = (
-            repr(result)
-            + caplog.text
-            + captured.out
-            + captured.err
-            + repr(manager)
-        )
-
-        assert result == {
-            "error": "Reddit wiki page index request failed."
-        }
-        assert "direct-token" not in combined
-        assert "client-secret" not in combined
-        assert "refresh-token" not in combined
-
-    async def test_wiki_page_index_oauth_rejects_non_json_response(self):
-        session = _JsonSession([_NonJsonResponse(None)])
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_wiki_pages(
-            "Python",
-            session,
-            None,
-            10,
-        )
-
-        assert result == {
-            "error": "Reddit wiki page index returned an invalid response."
-        }
-
-    @pytest.mark.parametrize(
-        ("url", "history"),
-        [
-            (
-                "https://oauth.reddit.com/r/Other/wiki/pages/?raw_json=1",
-                [],
-            ),
-            (
-                "https://evil.example/r/Python/wiki/pages/?raw_json=1",
-                [],
-            ),
-            (
-                "https://oauth.reddit.com/r/Python/wiki/pages/?raw_json=1",
-                [object()],
-            ),
-        ],
-    )
-    async def test_wiki_page_index_oauth_rejects_every_redirect(
-        self,
-        url,
-        history,
-    ):
-        session = _JsonSession(
-            [
-                _JsonResponse(
-                    {
-                        "kind": "wikipagelisting",
-                        "data": ["index"],
-                    },
-                    url=url,
-                    history=history,
-                )
-            ]
-        )
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_wiki_pages(
-            "Python",
-            session,
-            None,
-            10,
-        )
-
-        assert result == {
-            "error": (
-                "Reddit wiki page index request left its exact endpoint."
-            )
-        }
 
     def test_structured_access_states_do_not_request_backoff(self):
         cases = [
@@ -6491,7 +5781,8 @@ class TestRedditTransportAndTools:
                 timeout=10,
             )
 
-        assert "requires user-context OAuth" in result["error"]
+        assert "requires a logged-in account" in result["error"]
+        assert "reads Reddit anonymously only" in result["error"]
         assert "No moderator names were guessed or reconstructed" in result["error"]
         assert session.calls == [
             _transport_url(
@@ -6499,31 +5790,6 @@ class TestRedditTransportAndTools:
                 "limit=500&raw_json=1"
             )
         ]
-        assert "Authorization" not in session.request_details[0][2]["headers"]
-
-    async def test_anonymous_moderator_success_never_uses_configured_token(self):
-        session = _JsonSession([_JsonResponse(_moderators_payload())])
-        config = Config(reddit_access_token="direct-token")
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                _moderator_route(),
-                max_tokens=1000,
-                timeout=10,
-                config=config,
-            )
-
-        assert "u/exact_mod" in result["content"]
-        assert len(session.request_details) == 1
         assert "Authorization" not in session.request_details[0][2]["headers"]
 
     async def test_anonymous_moderator_roster_merges_every_public_page(self):
@@ -6608,460 +5874,6 @@ class TestRedditTransportAndTools:
             for request in _moderator_route().requests
         ]
 
-    async def test_later_anonymous_moderator_403_can_cross_exact_oauth_boundary(
-        self,
-    ):
-        first = _moderators_payload()
-        first["data"]["after"] = "t2_next"
-        session = _JsonSession(
-            [
-                _JsonResponse(first),
-                _JsonResponse({}, status_code=403),
-                _JsonResponse(_moderators_payload()),
-            ]
-        )
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-            patch(
-                "fetchaller.tools.reddit_auth.RedditModeratorOAuth.get_session",
-                AsyncMock(return_value=session),
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                _moderator_route(),
-                max_tokens=1000,
-                timeout=10,
-                config=Config(reddit_access_token="direct-token"),
-            )
-
-        assert "u/exact_mod" in result["content"]
-        assert len(session.calls) == 3
-        assert "Authorization" not in session.request_details[0][2]["headers"]
-        assert "Authorization" not in session.request_details[1][2]["headers"]
-        assert (
-            session.request_details[2][2]["headers"]["Authorization"]
-            == "Bearer direct-token"
-        )
-
-    async def test_direct_token_is_sent_only_to_exact_oauth_moderator_route(self):
-        session = _JsonSession(
-            [
-                _JsonResponse({}, status_code=403),
-                _JsonResponse(_moderators_payload()),
-            ]
-        )
-        config = Config(
-            reddit_access_token="direct-token",
-            reddit_user_agent="test-agent",
-        )
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-            patch(
-                "fetchaller.tools.reddit_auth.RedditModeratorOAuth.get_session",
-                AsyncMock(return_value=session),
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                _moderator_route(),
-                max_tokens=1000,
-                timeout=10,
-                config=config,
-            )
-
-        assert "u/exact_mod" in result["content"]
-        assert "posts, wiki" in result["content"]
-        anonymous, authenticated = session.request_details
-        assert anonymous[1].startswith("https://api.reddit.com/")
-        assert "Authorization" not in anonymous[2]["headers"]
-        assert (
-            authenticated[1]
-            == "https://oauth.reddit.com/r/Python/about/moderators"
-            "?limit=500&raw_json=1"
-        )
-        assert authenticated[2]["headers"] == {
-            "Accept": "application/json",
-            "Authorization": "Bearer direct-token",
-            "User-Agent": "test-agent",
-        }
-        assert authenticated[2]["max_response_size"] == 2 * 1024 * 1024
-
-    async def test_refresh_flow_uses_exact_form_basic_auth_and_reuses_token(self):
-        session = _JsonSession(
-            [
-                _JsonResponse({"access_token": "refreshed-token", "expires_in": 3600}),
-                _JsonResponse(_moderators_payload()),
-                _JsonResponse(_moderators_payload()),
-            ]
-        )
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-            user_agent="test-agent",
-        )
-
-        first = await manager.fetch_moderators("Python", session, None, 10)
-        second = await manager.fetch_moderators("Python", session, None, 10)
-
-        assert first == second == {"data": _moderators_payload()}
-        assert [method for method, _url, _kwargs in session.request_details] == [
-            "POST",
-            "GET",
-            "GET",
-        ]
-        token_request = session.request_details[0]
-        expected_basic = base64.b64encode(b"client-id:client-secret").decode()
-        assert token_request[1] == "https://www.reddit.com/api/v1/access_token"
-        assert token_request[2]["headers"]["Authorization"] == f"Basic {expected_basic}"
-        assert token_request[2]["form"] == {
-            "grant_type": "refresh_token",
-            "refresh_token": "refresh-token",
-        }
-        assert token_request[2]["max_response_size"] == 64 * 1024
-        assert all(
-            details[2]["headers"]["Authorization"] == "Bearer refreshed-token"
-            for details in session.request_details[1:]
-        )
-        timeouts = [
-            details[2]["timeout"] for details in session.request_details
-        ]
-        assert all(0 < timeout <= 10 for timeout in timeouts)
-        assert timeouts[1] <= timeouts[0]
-
-    async def test_moderator_pagination_merges_every_exact_roster_page(self):
-        first_page = _moderators_payload()
-        first_page["data"]["after"] = "t2_next"
-        second_page = {
-            "kind": "UserList",
-            "data": {
-                "children": [
-                    {
-                        "name": "second_mod",
-                        "mod_permissions": ["all"],
-                    }
-                ],
-                "after": None,
-            },
-        }
-        session = _JsonSession(
-            [_JsonResponse(first_page), _JsonResponse(second_page)]
-        )
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_moderators("Python", session, None, 10)
-
-        assert [
-            child["name"] for child in result["data"]["data"]["children"]
-        ] == ["exact_mod", "second_mod"]
-        assert result["data"]["data"]["after"] is None
-        assert session.calls == [
-            "https://oauth.reddit.com/r/Python/about/moderators"
-            "?limit=500&raw_json=1",
-            "https://oauth.reddit.com/r/Python/about/moderators"
-            "?limit=500&raw_json=1&after=t2_next",
-        ]
-
-    async def test_moderator_pagination_rejects_repeated_cursor(self):
-        page = _moderators_payload()
-        page["data"]["after"] = "t2_repeat"
-        session = _JsonSession(
-            [_JsonResponse(page), _JsonResponse(page)]
-        )
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_moderators("Python", session, None, 10)
-
-        assert result == {
-            "error": (
-                "Reddit moderator roster returned an invalid pagination cursor."
-            )
-        }
-
-    async def test_moderator_pagination_has_explicit_page_cap(self):
-        first = _moderators_payload()
-        first["data"]["after"] = "t2_first"
-        second = _moderators_payload()
-        second["data"]["after"] = "t2_second"
-        session = _JsonSession(
-            [_JsonResponse(first), _JsonResponse(second)]
-        )
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        with patch(
-            "fetchaller.tools.reddit_auth._MAX_ROSTER_PAGES",
-            2,
-        ):
-            result = await manager.fetch_moderators(
-                "Python",
-                session,
-                None,
-                10,
-            )
-
-        assert result == {
-            "error": (
-                "Reddit moderator roster exceeded the bounded pagination limit."
-            )
-        }
-
-    async def test_short_lived_refresh_token_is_never_cached_past_expiry(self):
-        session = _JsonSession(
-            [
-                _JsonResponse({"access_token": "first-token", "expires_in": 0.5}),
-                _JsonResponse(_moderators_payload()),
-                _JsonResponse({"access_token": "second-token", "expires_in": 0.5}),
-                _JsonResponse(_moderators_payload()),
-            ]
-        )
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-        )
-
-        with patch(
-            "fetchaller.tools.reddit_auth.time.monotonic",
-            return_value=100.0,
-        ):
-            first = await manager.fetch_moderators("Python", session, None, 10)
-            assert manager._expires_at <= 100.5
-        with patch(
-            "fetchaller.tools.reddit_auth.time.monotonic",
-            return_value=100.6,
-        ):
-            second = await manager.fetch_moderators("Python", session, None, 10)
-
-        assert first == second == {"data": _moderators_payload()}
-        assert [
-            method for method, _url, _kwargs in session.request_details
-        ] == ["POST", "GET", "POST", "GET"]
-
-    async def test_refresh_lock_wait_is_bounded_by_each_callers_deadline(self):
-        class BlockingSession:
-            def __init__(self):
-                self.refresh_started = asyncio.Event()
-                self.release_refresh = asyncio.Event()
-
-            async def post(self, *_args, **_kwargs):
-                self.refresh_started.set()
-                await self.release_refresh.wait()
-                return _JsonResponse(
-                    {"access_token": "shared-token", "expires_in": 3600}
-                )
-
-            async def get(self, *_args, **_kwargs):
-                return _JsonResponse(_moderators_payload())
-
-        session = BlockingSession()
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-        )
-        first = asyncio.create_task(
-            manager.fetch_moderators("Python", session, None, 10)
-        )
-        await session.refresh_started.wait()
-
-        started = asyncio.get_running_loop().time()
-        second = await manager.fetch_moderators("Python", session, None, 0.01)
-        elapsed = asyncio.get_running_loop().time() - started
-        session.release_refresh.set()
-        first_result = await first
-
-        assert second == {
-            "error": "Reddit OAuth authentication timed out."
-        }
-        assert elapsed < 0.2
-        assert first_result == {"data": _moderators_payload()}
-
-    async def test_rejected_direct_token_refreshes_and_retries_exactly_once(self):
-        session = _JsonSession(
-            [
-                _JsonResponse({}, status_code=401),
-                _JsonResponse({"access_token": "replacement", "expires_in": 3600}),
-                _JsonResponse(_moderators_payload()),
-            ]
-        )
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-            access_token="expired-direct-token",
-        )
-
-        result = await manager.fetch_moderators("Python", session, None, 10)
-
-        assert result == {"data": _moderators_payload()}
-        assert [method for method, _url, _kwargs in session.request_details] == [
-            "GET",
-            "POST",
-            "GET",
-        ]
-        assert (
-            session.request_details[0][2]["headers"]["Authorization"]
-            == "Bearer expired-direct-token"
-        )
-        assert (
-            session.request_details[2][2]["headers"]["Authorization"]
-            == "Bearer replacement"
-        )
-
-    async def test_concurrent_moderator_calls_deduplicate_refresh(self):
-        class BlockingRefreshSession(_JsonSession):
-            def __init__(self):
-                super().__init__(
-                    [
-                        _JsonResponse(_moderators_payload()),
-                        _JsonResponse(_moderators_payload()),
-                    ]
-                )
-                self.refresh_started = asyncio.Event()
-                self.release_refresh = asyncio.Event()
-                self.post_calls = 0
-
-            async def post(self, url: str, **kwargs):
-                self.post_calls += 1
-                self.calls.append(url)
-                self.request_details.append(("POST", url, kwargs))
-                self.refresh_started.set()
-                await self.release_refresh.wait()
-                return _JsonResponse(
-                    {"access_token": "shared-token", "expires_in": 3600}
-                )
-
-        session = BlockingRefreshSession()
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-        )
-
-        first = asyncio.create_task(
-            manager.fetch_moderators("Python", session, None, 10)
-        )
-        await session.refresh_started.wait()
-        second = asyncio.create_task(
-            manager.fetch_moderators("Python", session, None, 10)
-        )
-        await asyncio.sleep(0)
-        session.release_refresh.set()
-        results = await asyncio.gather(first, second)
-
-        assert results == [
-            {"data": _moderators_payload()},
-            {"data": _moderators_payload()},
-        ]
-        assert session.post_calls == 1
-
-    @pytest.mark.parametrize(
-        ("response", "message"),
-        [
-            (_JsonResponse({}, status_code=400), "credentials were rejected"),
-            (_JsonResponse({"access_token": "bad token", "expires_in": 3600}), "invalid response"),
-            (_JsonResponse({"access_token": "token", "expires_in": 0}), "invalid response"),
-            (_JsonResponse([], status_code=200), "invalid response"),
-            (_JsonResponse({"error": "invalid_grant"}), "credentials were rejected"),
-        ],
-    )
-    async def test_refresh_failures_are_bounded_and_sanitized(self, response, message):
-        session = _JsonSession([response])
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-        )
-
-        result = await manager.fetch_moderators("Python", session, None, 10)
-
-        assert message in result["error"]
-        assert "client-secret" not in result["error"]
-        assert "refresh-token" not in result["error"]
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {},
-            {"error": "forbidden"},
-            {"data": []},
-            {"data": {"children": []}},
-            {"kind": "Listing", "data": {"children": []}},
-            {"data": {"children": "not-a-list"}},
-            {"data": {"children": [None]}},
-            {
-                "kind": "UserList",
-                "data": {
-                    "children": [
-                        {
-                            "kind": "t2",
-                            "data": {
-                                "name": "wrapped_mod",
-                                "mod_permissions": ["all"],
-                            },
-                        }
-                    ]
-                },
-            },
-            {
-                "kind": "UserList",
-                "data": {
-                    "children": [
-                        {
-                            "name": "outer_mod",
-                            "mod_permissions": ["posts"],
-                            "data": {
-                                "name": "nested_mod",
-                                "mod_permissions": ["all"],
-                            },
-                        }
-                    ]
-                },
-            },
-            {"data": {"children": [{"name": "", "mod_permissions": []}]}},
-            {"data": {"children": [{"name": "bad name", "mod_permissions": []}]}},
-            {"data": {"children": [{"name": "mod", "mod_permissions": "all"}]}},
-            {
-                "data": {
-                    "children": [
-                        {
-                            "name": "mod",
-                            "mod_permissions": [],
-                            "date": "not-a-timestamp",
-                        }
-                    ]
-                }
-            },
-        ],
-    )
-    async def test_malformed_roster_can_never_be_rendered_as_an_empty_success(
-        self,
-        payload,
-    ):
-        session = _JsonSession([_JsonResponse(payload)])
-        manager = RedditModeratorOAuth(access_token="direct-token")
-
-        result = await manager.fetch_moderators("Python", session, None, 10)
-
-        assert result == {
-            "error": "Reddit moderator roster returned an invalid response."
-        }
-
     def test_renderer_rejects_hybrid_moderator_child_without_dropping_it(self):
         rendered = render_reddit_route(
             _moderator_route(),
@@ -7088,130 +5900,6 @@ class TestRedditTransportAndTools:
         assert "invalid response" in rendered
         assert "u/outer_mod" not in rendered
         assert "u/nested_mod" not in rendered
-
-    async def test_transport_exception_cannot_leak_oauth_secrets(
-        self,
-        caplog,
-        capsys,
-    ):
-        class ExplodingSession:
-            async def post(self, *_args, **_kwargs):
-                raise RuntimeError(
-                    "client-secret refresh-token direct-token should never escape"
-                )
-
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-            access_token=None,
-        )
-
-        result = await manager.fetch_moderators(
-            "Python",
-            ExplodingSession(),
-            None,
-            10,
-        )
-        captured = capsys.readouterr()
-        combined = result["error"] + caplog.text + captured.out + captured.err + repr(manager)
-
-        assert result == {"error": "Reddit OAuth authentication failed."}
-        assert "client-secret" not in combined
-        assert "refresh-token" not in combined
-        assert "direct-token" not in combined
-
-    async def test_oauth_queue_timeout_is_a_clean_bounded_error(self):
-        queue = AsyncMock()
-        queue.enqueue.side_effect = TimeoutError
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-        )
-
-        result = await manager.fetch_moderators("Python", _JsonSession([]), queue, 3)
-
-        assert result == {"error": "Reddit OAuth authentication timed out."}
-
-    async def test_oauth_429_applies_shared_queue_backoff(self):
-        session = _JsonSession(
-            [_JsonResponse({}, status_code=429, headers={"retry-after": "17"})]
-        )
-        queue = Mock()
-
-        async def enqueue(callback, *_args, **_kwargs):
-            return await callback(*_args)
-
-        queue.enqueue = AsyncMock(side_effect=enqueue)
-        manager = RedditModeratorOAuth(
-            client_id="client-id",
-            client_secret="client-secret",
-            refresh_token="refresh-token",
-        )
-
-        result = await manager.fetch_moderators("Python", session, queue, 10)
-
-        assert "Retry after 17s" in result["error"]
-        queue.set_backoff.assert_called_once_with(429, retry_after=17.0)
-
-    async def test_public_route_uses_oauth_origin_when_configured(self):
-        session = _JsonSession([])
-        manager = Mock()
-        manager.fetch_json = AsyncMock(
-            return_value={
-                "response": _JsonResponse(
-                    {},
-                    status_code=403,
-                    url=(
-                        "https://oauth.reddit.com/r/Python/hot?"
-                        "raw_json=1"
-                    ),
-                )
-            }
-        )
-        config = Config(reddit_access_token="must-not-leak")
-        route = RedditRoute(
-            "https://www.reddit.com/r/Python/",
-            "listing",
-            ("https://www.reddit.com/r/Python/hot.json?raw_json=1",),
-            subreddit="Python",
-        )
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.defer",
-            ),
-            patch(
-                "fetchaller.tools.reddit_fetch.get_reddit_moderator_oauth",
-                return_value=manager,
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=1000,
-                timeout=10,
-                config=config,
-            )
-
-        assert result == {"error": "Access forbidden by Reddit (HTTP 403)."}
-        assert session.request_details == []
-        manager.fetch_json.assert_awaited_once()
-        oauth_url, used_queue, remaining = manager.fetch_json.await_args.args
-        assert oauth_url == (
-            "https://oauth.reddit.com/r/Python/hot?raw_json=1"
-        )
-        assert used_queue is None
-        assert 0 < remaining <= 10
-        assert "must-not-leak" not in repr(manager.fetch_json.await_args)
 
     async def test_shared_session_upgrades_solver_and_seeds_over18_cookie(self):
         created = []
@@ -7251,84 +5939,70 @@ class TestRedditTransportAndTools:
             for session in created
         )
 
-    async def test_reddit_session_audit_counts_hydration_and_network_bootstrap(
-        self,
-    ):
-        class FakeSession:
-            _cookie_scopes = {
-                ("loid", "reddit.com", "/"): False,
-                ("token_v2", "reddit.com", "/"): False,
-                ("unrelated", "example.com", "/"): False,
-            }
+    async def test_reddit_session_audit_reports_wafer_bootstrap_state(self):
+        class WaferSession:
+            def reddit_bootstrap_state(self):
+                return {
+                    "attempts": 4,
+                    "successes": 0,
+                    "last_outcome": "verification_status",
+                    "last_status": 302,
+                    "last_cookie_names": ["csv", "edgebucket"],
+                    "browser_attempts": 1,
+                    "last_browser_outcome": "no_time_budget",
+                    "last_browser_budget": 0.4,
+                    "cookie_names": ["csv", "edgebucket"],
+                    "has_cookie_evidence": False,
+                }
 
-            async def _reddit_bootstrap_on_client(self, *_args, **_kwargs):
-                return True
+        _instrument_reddit_session(WaferSession())
+        audit = reddit_session_audit()
 
-        session = FakeSession()
-        _instrument_reddit_session(session)
-
-        assert reddit_session_audit() == {
-            "hydrated_cookie_count": 2,
-            "hydrated_anonymous": 1,
-            "bootstrap_instrumented": 1,
-            "bootstrap_network_attempts": 0,
-        }
-        assert await session._reddit_bootstrap_on_client() is True
-        assert reddit_session_audit()["bootstrap_network_attempts"] == 1
+        # The named branch is the whole point: an attempt count alone cannot
+        # distinguish a redirecting root from an unparseable verification page.
+        assert audit["last_outcome"] == "verification_status"
+        assert audit["last_status"] == 302
+        assert audit["last_browser_outcome"] == "no_time_budget"
+        assert audit["last_browser_budget"] == 0.4
+        # Historical evidence-log keys stay stable across the wafer upgrade.
+        assert audit["bootstrap_network_attempts"] == 4
+        assert audit["hydrated_cookie_count"] == 2
+        assert audit["hydrated_anonymous"] == 0
         await close_session()
 
-    async def test_reddit_session_audit_reads_locked_wafer_cookie_jar(self):
-        class Cookie:
-            def __init__(self, name: str, domain: str):
-                self.name = name
-                self.domain = domain
+    async def test_reddit_session_audit_reports_established_hydration(self):
+        class WarmWaferSession:
+            def reddit_bootstrap_state(self):
+                return {
+                    "attempts": 0,
+                    "successes": 0,
+                    "last_outcome": None,
+                    "last_status": None,
+                    "last_cookie_names": [],
+                    "browser_attempts": 0,
+                    "last_browser_outcome": None,
+                    "last_browser_budget": None,
+                    "cookie_names": ["csv", "loid", "token_v2"],
+                    "has_cookie_evidence": True,
+                }
 
-        class Jar:
-            def get_all(self):
-                return [
-                    Cookie("loid", "reddit.com"),
-                    Cookie("csv", ".reddit.com"),
-                    Cookie("unrelated", "reddit.com"),
-                    Cookie("token_v2", "example.com"),
-                ]
+        _instrument_reddit_session(WarmWaferSession())
+        audit = reddit_session_audit()
 
-        class Client:
-            cookie_jar = Jar()
-
-        class LockedWaferSession:
-            _client = Client()
-
-            async def _reddit_bootstrap_on_client(self, *_args, **_kwargs):
-                return True
-
-        session = LockedWaferSession()
-        _instrument_reddit_session(session)
-
-        assert reddit_session_audit() == {
-            "hydrated_cookie_count": 2,
-            "hydrated_anonymous": 1,
-            "bootstrap_instrumented": 1,
-            "bootstrap_network_attempts": 0,
-        }
+        # A warm cache is hydrated before any request, which the old
+        # observed-cookies metric reported as zero.
+        assert audit["hydrated_anonymous"] == 1
+        assert audit["hydrated_cookie_count"] == 3
+        assert audit["bootstrap_network_attempts"] == 0
         await close_session()
 
-    async def test_reddit_session_audit_fails_closed_without_bootstrap_hook(
-        self,
-    ):
+    async def test_reddit_session_audit_fails_closed_without_wafer_state(self):
         class IncompatibleSession:
-            _cookie_scopes = {
-                ("loid", "reddit.com", "/"): False,
-                ("token_v2", "reddit.com", "/"): False,
-            }
+            pass
 
         _instrument_reddit_session(IncompatibleSession())
 
-        assert reddit_session_audit() == {
-            "hydrated_cookie_count": 2,
-            "hydrated_anonymous": 1,
-            "bootstrap_instrumented": 0,
-            "bootstrap_network_attempts": 0,
-        }
+        assert reddit_session_audit() is None
         await close_session()
 
     def test_archived_collection_parser_requires_exact_redux_identity(self):

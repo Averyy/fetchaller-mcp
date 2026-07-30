@@ -28,27 +28,16 @@ challenge. Direct/library
 limiter. Caller-selected `.json`, `raw=true`, and unmapped HTML fallbacks still
 use the generic fetch path and its Reddit domain limiter.
 
-Mapped routes retain anonymous fallback behavior when no credentials are
-configured. With credentials, each validated public JSON route is transformed
-from its internal `www`/`api` identity to the equivalent path on
-`oauth.reddit.com`; the `.json` representation suffix is removed and no
-redirect is accepted. Account-private upvoted/downvoted activity and the
-moderator probe remain anonymous. Moderator data crosses to
-`oauth.reddit.com/r/{subreddit}/about/moderators` only after the anonymous
-endpoint returns an unstructured 403.
-`oauth.reddit.com/r/{subreddit}/wiki/pages/` only after strict parsing finds no
-canonical public New Reddit SSR tree. A configured direct token is held in
-memory; a complete client-ID, client-secret, and refresh-token set renews it
-under a deduplicating lock. OAuth requests share the Reddit queue and deadline.
-Bearer credentials cannot reach any host other than the fixed OAuth API origin,
-error messages never contain response bodies or secrets, and no roster or wiki
-page is inferred.
-Roster pages are merged until Reddit removes its cursor; invalid/repeated
-cursors or the bounded page cap are explicit errors, never silent truncation.
+Every mapped route is an anonymous read; fetchaller has no Reddit credential
+path of any kind. Routes Reddit serves only to a logged-in account -- exact
+moderator rosters and account-private upvoted/downvoted activity -- return an
+explicit account-gated error. No roster, vote count, or wiki page is ever
+inferred or reconstructed. Anonymous roster pages are merged until Reddit
+removes its cursor; invalid/repeated cursors or the bounded page cap are
+explicit errors, never silent truncation.
 
-Anonymous JSON reads use the exact HTTPS `api.reddit.com` transport origin while
-configured reads use `oauth.reddit.com`; canonical route identity and emitted
-links remain on `www.reddit.com`. Anonymous safe-equivalent redirects from
+JSON reads use the exact HTTPS `api.reddit.com` transport origin; canonical
+route identity and emitted links remain on `www.reddit.com`. Anonymous safe-equivalent redirects from
 either public Reddit origin are normalized back to the API origin, charge every
 hop to the shared queue, and share the original deadline. Authenticated reads
 reject every redirect. Missing locations, unrelated origins, loops, and excess
@@ -75,7 +64,7 @@ roots use five independent public sources under one deadline: metadata,
 overview, trophies, public multireddits, and moderated communities.
 
 The wiki page index is the one structured HTML-first route:
-`/r/{subreddit}/wiki/pages.json` now requires `wikiread` OAuth, while canonical
+`/r/{subreddit}/wiki/pages.json` is no longer readable anonymously, while canonical
 New Reddit server-renders the public tree under
 `/r/{subreddit}/wiki/pages/`. Fetchaller reads that exact same-origin document
 through the durable Reddit session and queue, accepts only the named
@@ -99,10 +88,9 @@ and paths are unique. Namespace parents (`isPagePresent` false) are excluded
 exactly as Reddit's own index excludes them; a valid tree with no present pages
 renders zero pages, while any structural disagreement is an explicit error.
 
-The `wikiread` OAuth endpoint remains only as an optional last-resort fallback
-for a configured deployment, never as a requirement for public parity; its
-response must be a validated `wikipagelisting`, otherwise the call fails
-explicitly.
+There is no credentialed fallback for the wiki index: the SSR tree and the
+anonymous `WikiPageRevisionsV2` route are the entire contract, and an
+unavailable tree is an explicit error.
 
 The renderer reports Reddit's returned `score` as the public fuzzed score and
 `upvote_ratio` only when present. It never derives separate upvote/downvote

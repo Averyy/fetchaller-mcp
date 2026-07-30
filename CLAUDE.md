@@ -13,9 +13,12 @@ wiki page index, which first reads New Reddit's canonical SSR page tree and,
 when that exact tree is unavailable or its exact anonymous route returns an
 unstructured 403, posts `WikiPageRevisionsV2` to the fixed
 `www.reddit.com/svc/shreddit/graphql` route using the same anonymous session's
-`csrf_token` cookie. Public wiki parity must pass anonymously; the OAuth
-`wikiread` endpoint is an optional fallback only and must never become a
-requirement. Wafer >=0.4.1 owns verification/cookie persistence;
+`csrf_token` cookie. Public wiki parity must pass anonymously. fetchaller has
+NO Reddit credential path at all -- no OAuth, no client ID/secret, no refresh
+or access token -- and must never gain one. Routes Reddit serves only to a
+logged-in account (exact moderator rosters, account-private vote activity)
+return an explicit account-gated error and are covered offline as
+`fixture_only`. Wafer >=0.4.1 owns verification/cookie persistence;
 fetchaller owns strict URL mapping, SSR/API schema validation, and compact
 rendering. Never add an Old Reddit fallback or copy wafer's
 verification parser into this repo. Explicit `.json` stays raw JSON and

@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from fetchaller.config import Config
 from fetchaller.security.ssrf import BLOCK_PRIVATE, HostVerdict
 
 # ---------------------------------------------------------------------------
@@ -526,57 +525,6 @@ class TestRedditUrlTransform:
         assert result.get("content_type") == "markdown"
         assert session.calls == [transport_url]
         assert all("old.reddit.com" not in call for call in session.calls)
-
-    @_PATCH_SSRF
-    async def test_moderator_config_reaches_mapped_fetch_oauth_fallback(
-        self,
-        _mock_ssrf,
-    ):
-        from fetchaller.tools.fetch import fetch_url
-
-        url = "https://www.reddit.com/r/Python/about/moderators/"
-        anonymous_url = "https://www.reddit.com/r/Python/about/moderators.json?limit=500&raw_json=1"
-        anonymous_transport_url = anonymous_url.replace(
-            "www.reddit.com",
-            "api.reddit.com",
-        )
-        oauth_url = "https://oauth.reddit.com/r/Python/about/moderators?limit=500&raw_json=1"
-        payload = {
-            "kind": "UserList",
-            "data": {"children": [{"name": "exact_mod", "mod_permissions": ["posts"]}]},
-        }
-        session = MockWaferSession(
-            responses={
-                anonymous_transport_url: MockResponse(
-                    b"{}",
-                    "application/json",
-                    403,
-                    anonymous_transport_url,
-                ),
-                oauth_url: MockResponse(
-                    json.dumps(payload).encode(),
-                    "application/json",
-                    200,
-                    oauth_url,
-                ),
-            }
-        )
-
-        with patch(
-            "fetchaller.tools.reddit_fetch._get_session",
-            AsyncMock(return_value=session),
-        ), patch(
-            "fetchaller.tools.reddit_auth.RedditModeratorOAuth.get_session",
-            AsyncMock(return_value=session),
-        ):
-            result = await fetch_url(
-                url,
-                config=Config(reddit_access_token="direct-token"),
-                reddit_queue=PassthroughRedditQueue(),
-            )
-
-        assert "u/exact_mod" in result["content"]
-        assert session.calls == [anonymous_transport_url, oauth_url]
 
     @_PATCH_SSRF
     async def test_raw_old_input_fetches_canonical_new_reddit_html(self, _mock_ssrf):

@@ -7,11 +7,10 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 import wafer
 
-from ..config import Config, get_wafer_cache_dir
+from ..config import get_wafer_cache_dir
 from ..content.reddit import format_reddit_post
 from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..ratelimit import reddit_limiter
-from .reddit_auth import get_reddit_moderator_oauth
 
 # Pre-compiled regex for subreddit name validation
 _SUBREDDIT_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_]{0,20}\Z")
@@ -29,87 +28,38 @@ _OPAQUE_403_BACKOFF = 300.0
 _session: wafer.AsyncSession | None = None
 _session_solver: object | None = None
 _session_lock = asyncio.Lock()
-_session_audit: dict[str, int] | None = None
-_REDDIT_ANONYMOUS_COOKIE_NAMES = frozenset(
-    {"csv", "edgebucket", "loid", "token_v2"}
-)
+_audited_session: wafer.AsyncSession | None = None
 
 
 def _instrument_reddit_session(session: wafer.AsyncSession) -> None:
-    """Record non-secret cache hydration and inline verification counts."""
+    """Record the session whose bootstrap state the audit reports.
 
-    global _session_audit
-    # NOTE: reads two wafer private attributes. CLAUDE.md assigns cookie
-    # management to wafer, and the public `cookie_scope_summary()` is the right
-    # long-term home for this -- but it reflects cookies observed so far, and
-    # this runs at construction time, before any request. Switching to it made
-    # the audit report hydrated_anonymous=0/count=0 on a warm cache, i.e. a
-    # silently broken release metric. Kept deliberately until wafer exposes
-    # cache-hydration state; both reads are getattr-guarded and value-free.
-    hydrated_identities: set[tuple[str, str]] = set()
-    scopes = getattr(session, "_cookie_scopes", {})
-    hydrated_identities.update(
-        (identity[0], identity[1])
-        for identity in scopes
-        if (
-            isinstance(identity, tuple)
-            and len(identity) == 3
-            and isinstance(identity[0], str)
-            and isinstance(identity[1], str)
-            and (
-                identity[1] == "reddit.com"
-                or identity[1].endswith(".reddit.com")
-            )
-            and identity[0] in _REDDIT_ANONYMOUS_COOKIE_NAMES
-        )
-    )
-    jar = getattr(getattr(session, "_client", None), "cookie_jar", None)
-    get_all = getattr(jar, "get_all", None)
-    if callable(get_all):
-        try:
-            for cookie in get_all():
-                name = getattr(cookie, "name", None)
-                domain = str(getattr(cookie, "domain", "")).lstrip(".").lower()
-                if (
-                    isinstance(name, str)
-                    and name in _REDDIT_ANONYMOUS_COOKIE_NAMES
-                    and (
-                        domain == "reddit.com"
-                        or domain.endswith(".reddit.com")
-                    )
-                ):
-                    hydrated_identities.add((name, domain))
-        except Exception:
-            # Telemetry fails closed below; cookie values are never inspected.
-            pass
-    hydrated_names = {identity[0] for identity in hydrated_identities}
-    _session_audit = {
-        "hydrated_cookie_count": len(hydrated_names),
-        "hydrated_anonymous": int(
-            "loid" in hydrated_names
-            and bool({"csv", "token_v2"}.intersection(hydrated_names))
-        ),
-        "bootstrap_instrumented": 0,
-        "bootstrap_network_attempts": 0,
-    }
+    wafer >=0.4.4 exposes `reddit_bootstrap_state()`, which is hydration-aware
+    and value-free, so fetchaller no longer monkeypatches the bootstrap or reads
+    any wafer private attribute to produce this evidence.
+    """
 
-    original = getattr(session, "_reddit_bootstrap_on_client", None)
-    if not callable(original):
-        return
-    _session_audit["bootstrap_instrumented"] = 1
-
-    async def audited_bootstrap(*args, **kwargs):
-        assert _session_audit is not None
-        _session_audit["bootstrap_network_attempts"] += 1
-        return await original(*args, **kwargs)
-
-    session._reddit_bootstrap_on_client = audited_bootstrap
+    global _audited_session
+    _audited_session = session
 
 
-def reddit_session_audit() -> dict[str, int] | None:
+def reddit_session_audit() -> dict[str, object] | None:
     """Return a value-free snapshot for the server shutdown evidence log."""
 
-    return dict(_session_audit) if _session_audit is not None else None
+    session = _audited_session
+    if session is None:
+        return None
+    state = getattr(session, "reddit_bootstrap_state", None)
+    if not callable(state):
+        return None
+    snapshot = dict(state())
+    # Preserve the historical evidence-log key names so the release report and
+    # its consumers keep one stable shape across the wafer upgrade.
+    cookie_names = snapshot.get("cookie_names") or []
+    snapshot["hydrated_cookie_count"] = len(cookie_names)
+    snapshot["hydrated_anonymous"] = int(bool(snapshot.get("has_cookie_evidence")))
+    snapshot["bootstrap_network_attempts"] = snapshot.get("attempts", 0)
+    return snapshot
 
 
 async def _get_session(browser_solver=None) -> wafer.AsyncSession:
@@ -158,10 +108,10 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
 
 
 async def close_session() -> None:
-    global _session, _session_solver, _session_audit
+    global _session, _session_solver, _audited_session
     _session = None
     _session_solver = None
-    _session_audit = None
+    _audited_session = None
 
 _JSON_HEADERS = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -173,7 +123,6 @@ _JSON_HEADERS = {
 _JSON_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_JSON_REDIRECTS = 5
 _REDDIT_JSON_TRANSPORT_HOST = "api.reddit.com"
-_REDDIT_OAUTH_TRANSPORT_HOST = "oauth.reddit.com"
 
 
 def _find_reddit_reason(value: object) -> str | None:
@@ -298,19 +247,6 @@ def _reddit_json_transport_url(url: str) -> str | None:
     return parsed._replace(netloc=_REDDIT_JSON_TRANSPORT_HOST).geturl()
 
 
-def _reddit_oauth_transport_url(url: str) -> str | None:
-    """Move a validated public JSON route onto Reddit's OAuth API origin."""
-
-    parsed = _validated_reddit_json_url(url, transport=True)
-    if parsed is None:
-        return None
-    path = parsed.path[:-5] if parsed.path.endswith(".json") else parsed.path
-    return parsed._replace(
-        netloc=_REDDIT_OAUTH_TRANSPORT_HOST,
-        path=path,
-    ).geturl()
-
-
 def _is_missing_subreddit_redirect(source_url: str, target_url: str) -> bool:
     """Recognize Reddit's exact nonexistent-community redirect contract."""
     source = _validated_reddit_json_url(source_url, transport=True)
@@ -409,7 +345,6 @@ async def fetch_reddit_json(
     *,
     auth_required_on_403: bool = False,
     account_private_on_403: bool = False,
-    oauth=None,
 ) -> dict:
     """
     Fetch Reddit JSON API with rate limiting.
@@ -420,11 +355,10 @@ async def fetch_reddit_json(
         queue: Optional RedditRequestQueue for rate limiting
         timeout: Request timeout
         auth_required_on_403: Return a non-backoff marker for the one route
-            whose anonymous 403 is a known user-context OAuth boundary.
+            whose anonymous 403 is a known account-gated boundary.
         account_private_on_403: Treat an exact unstructured 403 from a known
             private account-activity route as a scoped access state rather
             than a transport-wide block.
-        oauth: Optional configured Reddit OAuth manager for public API reads.
 
     Returns:
         Dict with either 'data' or 'error'
@@ -437,14 +371,6 @@ async def fetch_reddit_json(
         return {"error": "Invalid Reddit JSON URL."}
 
     async def _do_get(request_url: str) -> dict:
-        if oauth is not None:
-            oauth_url = _reddit_oauth_transport_url(request_url)
-            if oauth_url is None:
-                return {"error": "Invalid Reddit OAuth read URL."}
-            remaining = deadline - monotonic_time.monotonic()
-            if remaining <= 0:
-                return {"error": f"Request timed out ({timeout:g}s limit)"}
-            return await oauth.fetch_json(oauth_url, queue, remaining)
         try:
             remaining = deadline - monotonic_time.monotonic()
             if remaining <= 0:
@@ -475,10 +401,6 @@ async def fetch_reddit_json(
         remaining = deadline - monotonic_time.monotonic()
         if remaining <= 0:
             return {"error": f"Request timed out ({timeout:g}s limit)"}
-        if oauth is not None:
-            # Token refreshes and API reads are each charged by the OAuth
-            # manager, so no outer queue slot may wrap this call.
-            return await _do_get(request_url)
         if queue:
             async def queued_get():
                 return await _do_get(request_url)
@@ -684,7 +606,6 @@ async def browse_reddit(
     timeout: int = 10,
     queue: RedditRequestQueue | None = None,
     browser_solver=None,
-    config: Config | None = None,
 ) -> dict:
     """
     Browse a subreddit's posts.
@@ -728,17 +649,11 @@ async def browse_reddit(
     url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?{urlencode(params)}"
 
     session = await _get_session(browser_solver)
-    oauth = (
-        get_reddit_moderator_oauth(config)
-        if config is not None and config.reddit_moderator_oauth_configured
-        else None
-    )
     result = await fetch_reddit_json(
         url,
         session,
         queue,
         float(timeout),
-        oauth=oauth,
     )
 
     if "error" in result:

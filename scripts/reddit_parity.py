@@ -1,7 +1,7 @@
 """Paced, reproducible live New Reddit parity corpus runner.
 
 The checked-in corpus distinguishes stable anonymous URLs, dynamically
-discovered public URLs with opaque IDs, the two exact OAuth reads, and access
+discovered public URLs with opaque IDs and access
 states that have no real anonymous target. A skipped route is evidence of an
 unrun target, never a pass.
 """
@@ -103,12 +103,6 @@ _FETCH_PREVIOUS_PAGE = re.compile(
     r"(?m)^\[Previous page: "
     r"(?P<url>https://www\.reddit\.com/[^\]\s]+)\]$"
 )
-_REFRESH_OAUTH_ENV = (
-    "REDDIT_CLIENT_ID",
-    "REDDIT_CLIENT_SECRET",
-    "REDDIT_REFRESH_TOKEN",
-)
-_REDDIT_CREDENTIAL_ENV = ("REDDIT_ACCESS_TOKEN", *_REFRESH_OAUTH_ENV)
 _EXPECTED_LIVE_ACCESS_ERRORS = {
     "user_upvoted_private": (
         "Error: Reddit account-private activity is not publicly readable."
@@ -264,7 +258,6 @@ class CorpusEntry:
     pagination_round_trip: bool = False
     required_any: tuple[str, ...] = ()
     access_state: str | None = None
-    oauth_scopes: tuple[str, ...] = ()
     discovery: str | None = None
     offline_reason: str | None = None
     expect_error: bool = False
@@ -768,7 +761,7 @@ def load_corpus(path: Path) -> list[CorpusEntry]:
         if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
             raise ValueError("corpus entry has no string id")
         if raw["id"] in ids or raw.get("live") not in {
-            "stable", "unstable", "fixture_only", "oauth_required"
+            "stable", "unstable", "fixture_only"
         }:
             raise ValueError(f"invalid corpus entry: {raw.get('id')!r}")
         ids.add(raw["id"])
@@ -788,13 +781,6 @@ def load_corpus(path: Path) -> list[CorpusEntry]:
             "banned", "forbidden", "gated", "not_found", "private", "quarantined"
         }:
             raise ValueError(f"unknown access state: {raw['id']}")
-        oauth_scopes = raw.get("oauth_scopes", [])
-        if (
-            not isinstance(oauth_scopes, list)
-            or any(scope not in {"read", "wikiread"} for scope in oauth_scopes)
-            or (raw["live"] == "oauth_required") != bool(oauth_scopes)
-        ):
-            raise ValueError(f"invalid OAuth scope declaration: {raw['id']}")
         discovery = raw.get("discovery")
         if discovery is not None and (
             not isinstance(discovery, str) or not discovery
@@ -838,7 +824,6 @@ def load_corpus(path: Path) -> list[CorpusEntry]:
             pagination=raw.get("pagination", False),
             pagination_round_trip=pagination_round_trip,
             required_any=tuple(required_any), access_state=access_state,
-            oauth_scopes=tuple(oauth_scopes),
             discovery=discovery,
             offline_reason=offline_reason,
             expect_error=expect_error,
@@ -862,16 +847,12 @@ def eligible(entry: CorpusEntry, include_unstable: bool) -> tuple[bool, str]:
     explicitly selected.
     """
 
-    has_direct_token = bool(os.environ.get("REDDIT_ACCESS_TOKEN"))
-    has_refresh_set = all(os.environ.get(name) for name in _REFRESH_OAUTH_ENV)
     if entry.live == "fixture_only":
         return (
             False,
             "not run live: offline fixture evidence only — "
             f"{entry.offline_reason}",
         )
-    if entry.live == "oauth_required" and not (has_direct_token or has_refresh_set):
-        return False, "not run: requires real Reddit OAuth credentials"
     if entry.live == "unstable" and not include_unstable:
         return False, "not run: target is intentionally unstable"
     return True, ""
@@ -1531,13 +1512,9 @@ def _counted_output_error(entry: CorpusEntry, text: str) -> str | None:
             label="items",
         )
     if entry_id == "moderators":
-        return _pattern_result_cardinality(
-            text,
-            label="moderators",
-            pattern=_MODERATOR_CARD,
-            family="moderator",
-            unique_group="name",
-        )
+        # No roster is obtainable anonymously, so there is no claimed count to
+        # reconcile; the semantic contract below requires the gated error text.
+        return None
     if entry_id == "wiki_pages":
         return _pattern_result_cardinality(
             text,
@@ -2359,19 +2336,13 @@ def _semantic_contract_error(entry: CorpusEntry, text: str) -> str | None:
         )
 
     if entry.id == "moderators":
-        if not _has_positive_count(text, "moderators"):
-            return "OAuth moderator roster was empty"
+        # Reddit serves no roster to anonymous callers and fetchaller has no
+        # credential path, so the only honest public outcome is the gated error.
         return require_all(
             (
-                ("exact OAuth provenance", "Source: exact Reddit OAuth"),
-                (
-                    "moderator permission roster",
-                    re.compile(r"(?m)^\d+\. \*\*u/[A-Za-z0-9_-]+\*\* · .+"),
-                ),
-                (
-                    "moderator profile URL",
-                    re.compile(r"https://www\.reddit\.com/user/[A-Za-z0-9_-]+/"),
-                ),
+                ("account-gated moderator error", "requires a logged-in account"),
+                ("anonymous-only statement", "reads Reddit anonymously only"),
+                ("no fabrication", "No moderator names were guessed"),
             )
         )
 
@@ -2379,10 +2350,7 @@ def _semantic_contract_error(entry: CorpusEntry, text: str) -> str | None:
         if not _has_positive_count(text, "pages"):
             return "wiki page index was empty"
         # The page index is served by New Reddit's own logged-out page tree
-        # (SSR, or the anonymous WikiPageRevisionsV2 route). Public parity must
-        # therefore prove the OAuth path was *not* what answered.
-        if "Source: exact Reddit OAuth" in text:
-            return "public wiki page index fell back to OAuth instead of the anonymous page tree"
+        # (SSR, or the anonymous WikiPageRevisionsV2 route) and nothing else.
         return require_all(
             (
                 (
@@ -3779,23 +3747,14 @@ def _required_live_entry_ids(
     *,
     strict: bool,
     include_unstable: bool,
-    require_oauth: bool,
 ) -> set[str]:
     required = (
-        {
-            entry.id
-            for entry in entries
-            if entry.live in {"stable", "oauth_required"}
-        }
+        {entry.id for entry in entries if entry.live == "stable"}
         if strict
         else set()
     )
     if strict and include_unstable:
         required.update(entry.id for entry in entries if entry.live == "unstable")
-    if require_oauth:
-        required.update(
-            entry.id for entry in entries if entry.live == "oauth_required"
-        )
     return required
 
 
@@ -3870,18 +3829,17 @@ def _exit_code(
     *,
     entries: list[CorpusEntry] | None = None,
     include_unstable: bool = False,
-    require_oauth: bool = False,
 ) -> int:
     """Apply the composed release policy without calling an unrun item a pass.
 
-    Failures always fail. Strict mode requires stable and OAuth-backed public
-    evidence; unstable public targets are additionally required when selected.
+    Failures always fail. Strict mode requires every stable public target;
+    unstable public targets are additionally required when selected.
     The inherently non-public ``fixture_only`` class is never required live.
     """
 
     if any(record.status == "failed" for record in records):
         return 1
-    if strict or require_oauth:
+    if strict:
         if entries is None:
             # A release cannot prove exact route/stage cardinality without the
             # corpus that defines the required evidence set.
@@ -3890,7 +3848,6 @@ def _exit_code(
             entries,
             strict=strict,
             include_unstable=include_unstable,
-            require_oauth=require_oauth,
         )
         by_id: dict[str, list[Evidence]] = {}
         for record in records:
@@ -3940,29 +3897,10 @@ def _docker_env_override(arguments: list[str], name: str) -> bool:
     return False
 
 
-def _oauth_forwarding(entries: list[CorpusEntry]) -> tuple[str, tuple[str, ...]]:
-    """Choose only host credentials that make an OAuth corpus entry eligible."""
-
-    if not any(entry.live == "oauth_required" for entry in entries):
-        return "none", ()
-    if os.environ.get("REDDIT_ACCESS_TOKEN"):
-        scopes = sorted(
-            {scope for entry in entries if entry.live == "oauth_required" for scope in entry.oauth_scopes}
-        )
-        return "direct_token", ("REDDIT_ACCESS_TOKEN",) if scopes else ()
-    if all(os.environ.get(name) for name in _REFRESH_OAUTH_ENV):
-        scopes = sorted(
-            {scope for entry in entries if entry.live == "oauth_required" for scope in entry.oauth_scopes}
-        )
-        return "refresh_credentials", _REFRESH_OAUTH_ENV if scopes else ()
-    return "none", ()
-
-
 def _configure_fresh_cache(
     parameters: Any,
     host_cache_dir: Path,
     requested_server_cache_dir: Path | None,
-    oauth_env_names: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Attach one verified fresh cache to the launched process.
 
@@ -3973,9 +3911,6 @@ def _configure_fresh_cache(
 
     command = [parameters.command, *parameters.args]
     server_env = dict(parameters.env or os.environ)
-    for name in _REDDIT_CREDENTIAL_ENV:
-        if name not in oauth_env_names:
-            server_env.pop(name, None)
     parameters.env = server_env
     executable = Path(parameters.command).name
     is_docker_run = executable == "docker" and len(command) >= 2 and command[1] == "run"
@@ -3983,14 +3918,10 @@ def _configure_fresh_cache(
         raise ValueError("parity runner supports Docker only through exact `docker run`")
     if is_docker_run:
         docker_arguments = command[2:]
-        # Reject every credential form even if it is not eligible for this
-        # corpus run. The effective Docker argv is evidence, so an unused or
-        # partial secret must never be allowed into it.
         protected_environment = (
             "WAFER_CACHE_DIR",
             "PUID",
             "PGID",
-            *_REDDIT_CREDENTIAL_ENV,
         )
         if any(_docker_env_override(docker_arguments, name) for name in protected_environment) or any(
             argument == "--env-file" or argument.startswith("--env-file=")
@@ -4029,8 +3960,6 @@ def _configure_fresh_cache(
                     f"PGID={host_gid}",
                 )
             )
-        for name in oauth_env_names:
-            injected.extend(("--env", name))
         command[2:2] = injected
         parameters.command, parameters.args = command[0], command[1:]
         return {
@@ -4072,9 +4001,8 @@ async def main_async(args: argparse.Namespace) -> int:
     # developer cookies. Docker receives a verified bind mount below, rather
     # than an environment variable that only configures the Docker client.
     parameters = _stdio_server_parameters()
-    oauth_mode, oauth_env_names = _oauth_forwarding(entries)
     cache_mapping = _configure_fresh_cache(
-        parameters, cache_dir, args.server_cache_dir, oauth_env_names
+        parameters, cache_dir, args.server_cache_dir
     )
     pacer = _Pacer(args.interval)
     targets: dict[str, str] = {}
@@ -4216,7 +4144,6 @@ async def main_async(args: argparse.Namespace) -> int:
         for evidence_class in (
             "stable",
             "unstable",
-            "oauth_required",
             "fixture_only",
         )
     }
@@ -4227,19 +4154,7 @@ async def main_async(args: argparse.Namespace) -> int:
         "corpus": str(args.corpus),
         "interval_seconds": args.interval,
         "cache_mapping": cache_mapping,
-        "oauth_evidence": {
-            "mode": oauth_mode,
-            "scopes": sorted(
-                {
-                    scope
-                    for entry in entries
-                    if entry.live == "oauth_required" and eligible(entry, args.include_unstable)[0]
-                    for scope in entry.oauth_scopes
-                }
-            ),
-        },
         "include_unstable": args.include_unstable,
-        "require_oauth": args.require_oauth,
         "strict": args.strict,
         "harness_identity": {
             "start": harness_start,
@@ -4253,7 +4168,6 @@ async def main_async(args: argparse.Namespace) -> int:
                     entries,
                     strict=args.strict,
                     include_unstable=args.include_unstable,
-                    require_oauth=args.require_oauth,
                 )
             ),
             "offline_fixture_entries": [
@@ -4273,10 +4187,6 @@ async def main_async(args: argparse.Namespace) -> int:
                 else "run" if args.include_unstable
                 else "not selected"
             ),
-            "oauth_required_live": (
-                "required" if args.strict or args.require_oauth
-                else "run only when complete credentials are configured"
-            ),
             "offline_fixtures": "never run or counted as live by this runner",
         },
         "results": [asdict(record) for record in all_records],
@@ -4294,7 +4204,6 @@ async def main_async(args: argparse.Namespace) -> int:
         args.strict,
         entries=entries,
         include_unstable=args.include_unstable,
-        require_oauth=args.require_oauth,
     )
 
 
@@ -4322,16 +4231,8 @@ def main() -> int:
         "--strict",
         action="store_true",
         help=(
-            "release mode: require stable and OAuth-backed public targets, "
+            "release mode: require every stable public target, "
             "plus every explicitly selected live evidence class"
-        ),
-    )
-    parser.add_argument(
-        "--require-oauth",
-        action="store_true",
-        help=(
-            "require every OAuth live target; fails when complete credentials "
-            "are unavailable"
         ),
     )
     args = parser.parse_args()

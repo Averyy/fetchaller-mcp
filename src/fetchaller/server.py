@@ -171,12 +171,20 @@ def _log_reddit_session_audit() -> None:
     if audit is None:
         _log("REDDIT_SESSION_AUDIT unavailable")
         return
+    # wafer >=0.4.4 names the branch that ended the last bootstrap. Log it: a
+    # bare attempt count cannot distinguish a non-2xx root from an unparseable
+    # verification page or a browser fallback that got no time budget.
     _log(
         "REDDIT_SESSION_AUDIT "
         f"hydrated_anonymous={audit['hydrated_anonymous']} "
         f"hydrated_cookie_count={audit['hydrated_cookie_count']} "
-        f"bootstrap_instrumented={audit['bootstrap_instrumented']} "
-        f"bootstrap_network_attempts={audit['bootstrap_network_attempts']}"
+        f"bootstrap_network_attempts={audit['bootstrap_network_attempts']} "
+        f"successes={audit.get('successes')} "
+        f"last_outcome={audit.get('last_outcome')} "
+        f"last_status={audit.get('last_status')} "
+        f"browser_attempts={audit.get('browser_attempts')} "
+        f"last_browser_outcome={audit.get('last_browser_outcome')} "
+        f"last_browser_budget={audit.get('last_browser_budget')}"
     )
 
 
@@ -1692,7 +1700,6 @@ def create_server(
                     timeout=max(1, min(300, arguments.get("timeout", 10))),
                     queue=reddit_queue,
                     browser_solver=browser_solver,
-                    config=config,
                 )
                 return _format_result(name, result, start_time)
 
@@ -1707,7 +1714,6 @@ def create_server(
                     timeout=max(1, min(300, arguments.get("timeout", 10))),
                     queue=reddit_queue,
                     browser_solver=browser_solver,
-                    config=config,
                 )
                 return _format_result(name, result, start_time)
 

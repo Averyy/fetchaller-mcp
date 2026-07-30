@@ -366,14 +366,15 @@ async def test_content_error_returns_is_error_true(server):
 
 
 @pytest.mark.asyncio
-async def test_missing_reddit_moderator_oauth_is_an_mcp_error(server):
+async def test_account_gated_reddit_moderator_roster_is_an_mcp_error(server):
     with patch(
         "fetchaller.server.fetch_url",
         new_callable=AsyncMock,
         return_value={
             "error": (
-                "Reddit now requires user-context OAuth for exact moderator "
-                "rosters. No moderator names were guessed or reconstructed."
+                "Reddit requires a logged-in account for exact moderator "
+                "rosters, and fetchaller reads Reddit anonymously only. No "
+                "moderator names were guessed or reconstructed."
             )
         },
     ):
@@ -388,7 +389,7 @@ async def test_missing_reddit_moderator_oauth_is_an_mcp_error(server):
         )
 
     assert result.isError is True
-    assert "requires user-context OAuth" in result.content[0].text
+    assert "requires a logged-in account" in result.content[0].text
     assert "No moderator names were guessed" in result.content[0].text
 
 
