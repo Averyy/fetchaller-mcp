@@ -87,7 +87,10 @@ discovery bodies, and requires every such entry. Strict mode requires stable
 live targets and any live class explicitly selected by `--include-unstable` or
 `--require-oauth`. OAuth entries without
 actual credentials remain `not_run`, never a pass; `--require-oauth` makes that
-fatal. The runner injects a fresh host-directory bind beneath `/app/data`,
+fatal. The publication workflow runs this credentialed live gate only when its
+complete Reddit refresh set is configured; otherwise the exact image retains
+the offline Reddit contract and omits hosted Reddit calls. The runner injects a
+fresh host-directory bind beneath `/app/data`,
 aligns the container UID/GID to its host owner, verifies an unexpired
 owner-only Reddit cookie file after warm and recreated stages, requires
 successful anonymous-cookie hydration with zero pure-HTTP Reddit verification

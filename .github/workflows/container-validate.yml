@@ -26,10 +26,11 @@ jobs:
   container:
     runs-on: ubuntu-latest
     env:
-      # Untrusted pull requests cannot receive repository credentials. Their
-      # exact image still runs the offline Reddit contract above; publication
-      # runs exercise the real authenticated API paths below.
-      SMOKE_SKIP_REDDIT: ${{ inputs.publish && '0' || '1' }}
+      # Hosted Reddit reads require an application identity. The exact image
+      # always runs the offline Reddit contract above; live Reddit gates run
+      # only when the complete credential set is actually configured.
+      REDDIT_LIVE_CONFIGURED: ${{ secrets.REDDIT_CLIENT_ID != '' && secrets.REDDIT_CLIENT_SECRET != '' && secrets.REDDIT_REFRESH_TOKEN != '' && '1' || '0' }}
+      SMOKE_SKIP_REDDIT: ${{ secrets.REDDIT_CLIENT_ID != '' && secrets.REDDIT_CLIENT_SECRET != '' && secrets.REDDIT_REFRESH_TOKEN != '' && '0' || '1' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -139,7 +140,7 @@ jobs:
         run: uv run python scripts/smoke_test.py
 
       - name: Verify every reachable and OAuth Reddit route before publish
-        if: inputs.publish
+        if: inputs.publish && env.REDDIT_LIVE_CONFIGURED == '1'
         env:
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
           REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}

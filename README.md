@@ -337,10 +337,13 @@ a fixture-only waiver: its real public-read capability must still pass live.
 OAuth routes run only with a real direct token or the complete
 client-ID/client-secret/refresh-token set; otherwise they remain `not_run`,
 never a pass. Add `--require-oauth` to make missing or failed OAuth evidence
-fatal. CI derives and requires every live target from the versioned contract
-before publication; every offline entry must carry a mandatory reason
-and complete route/schema/renderer/MCP fixture evidence. It forwards only the
-three exact refresh-credential environment variable names into the container.
+fatal. When the repository has the complete refresh credential set, CI derives
+and requires every live target from the versioned contract before publication
+and forwards only those three environment variable names into the container.
+Without that set, CI still requires the complete offline
+route/schema/renderer/MCP contract and omits hosted Reddit calls that cannot
+carry an application identity. Every offline entry must carry a mandatory
+reason and complete fixture evidence.
 
 ### Rate Limits
 
