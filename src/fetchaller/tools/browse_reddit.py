@@ -440,7 +440,9 @@ async def fetch_reddit_json(
 
     current_url = url
     seen_urls: set[str] = set()
-    for redirect_count in range(_MAX_JSON_REDIRECTS + 1):
+    redirect_count = 0
+    gate_retry_attempted = False
+    while redirect_count <= _MAX_JSON_REDIRECTS:
         if current_url in seen_urls:
             return {"error": "Reddit JSON redirect loop detected."}
         seen_urls.add(current_url)
@@ -475,6 +477,7 @@ async def fetch_reddit_json(
                 return {"error": "Reddit returned an unsafe JSON redirect."}
             if redirect_count >= _MAX_JSON_REDIRECTS:
                 return {"error": "Too many Reddit JSON redirects."}
+            redirect_count += 1
             current_url = target_url
             continue
 
@@ -564,6 +567,20 @@ async def fetch_reddit_json(
                         "The session is being re-established -- retry in a few "
                         "seconds."
                     )
+                    # wafer has already re-established the anonymous cookies by
+                    # the time it returns this tagged response. Keep the retry
+                    # inside the caller's original deadline so a cold request
+                    # succeeds without asking the MCP client to coordinate a
+                    # second call. One retry is enough; a repeated gate remains
+                    # an honest error and cannot loop.
+                    remaining = deadline - monotonic_time.monotonic()
+                    if (
+                        not gate_retry_attempted
+                        and applied_delay < remaining
+                    ):
+                        gate_retry_attempted = True
+                        seen_urls.discard(current_url)
+                        continue
             return {"error": message}
 
         if payload is None:

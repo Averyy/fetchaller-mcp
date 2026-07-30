@@ -256,16 +256,32 @@ def _validate_marketplace(text: str) -> str | None:
     }
     if not text.startswith('# Marketplace Search: "bicycle" | Toronto, ON'):
         return "missing marketplace search header"
-    for index, (platform, url_pattern) in enumerate(expected.items()):
+    successful: set[str] = set()
+    for platform, url_pattern in expected.items():
         heading = f"## {platform}"
         start = text.find(heading)
         if start < 0:
-            return f"missing successful {platform} section"
-        later_headings = [text.find(f"## {later}", start + len(heading)) for later in list(expected)[index + 1 :]]
-        end_candidates = [position for position in later_headings if position >= 0]
+            continue
+        later_heading = re.search(r"(?m)^##\s+", text[start + len(heading) :])
+        errors_start = text.find("**Errors:**", start + len(heading))
+        end_candidates = []
+        if later_heading is not None:
+            end_candidates.append(start + len(heading) + later_heading.start())
+        if errors_start >= 0:
+            end_candidates.append(errors_start)
         end = min(end_candidates) if end_candidates else len(text)
-        if not re.search(url_pattern, text[start:end]):
+        if re.search(url_pattern, text[start:end]):
+            successful.add(platform)
+        else:
             return f"missing {platform} listing URL"
+    if len(successful) < 2:
+        return "fewer than two marketplace platforms returned listings"
+    for platform in expected.keys() - successful:
+        if not re.search(
+            rf"(?m)^-\s+{re.escape(platform)}:\s+\S",
+            text,
+        ):
+            return f"missing explicit {platform} error"
     return None
 
 

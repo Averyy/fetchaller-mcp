@@ -247,7 +247,7 @@ def test_commerce_gates_reject_placeholder_or_empty_core_data() -> None:
     )
 
 
-def test_marketplace_gate_requires_every_requested_platform() -> None:
+def test_marketplace_gate_requires_multiple_sources_and_explicit_errors() -> None:
     complete = (
         '# Marketplace Search: "bicycle" | Toronto, ON\n\n'
         "## Kijiji\n"
@@ -259,6 +259,23 @@ def test_marketplace_gate_requires_every_requested_platform() -> None:
     )
     assert _validate_marketplace(complete) is None
     assert _validate_marketplace(complete.replace("## Craigslist", "## Missing")) is not None
+    partial = (
+        '# Marketplace Search: "bicycle" | Toronto, ON\n\n'
+        "## Kijiji\n"
+        "https://www.kijiji.ca/v-bikes/example/1\n\n"
+        "## Craigslist\n"
+        "https://toronto.craigslist.org/tor/bik/d/example/1.html\n\n"
+        "---\n"
+        "**Errors:**\n\n"
+        "- Facebook Marketplace: request denied\n"
+    )
+    assert _validate_marketplace(partial) is None
+    assert _validate_marketplace(partial.replace("- Facebook", "- Missing")) is not None
+    one_source = partial.replace(
+        "## Craigslist\nhttps://toronto.craigslist.org/tor/bik/d/example/1.html",
+        "- Craigslist: request denied",
+    )
+    assert _validate_marketplace(one_source) is not None
 
 
 def test_realtor_gate_requires_priced_listing_and_url() -> None:

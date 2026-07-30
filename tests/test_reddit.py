@@ -8817,13 +8817,19 @@ class TestRedditSessionGateGetsAShortPause:
         response.challenge_type = "reddit"
         return response
 
-    async def test_recognised_gate_uses_the_short_pause(self):
+    async def test_recognised_gate_uses_the_short_pause_and_retries_once(self):
         from fetchaller.tools.browse_reddit import _REDDIT_SESSION_GATE_BACKOFF
 
         queue = self._queue()
+        session = _JsonSession(
+            [
+                self._gate_response(),
+                _JsonResponse({"kind": "Listing", "data": {"children": []}}),
+            ]
+        )
         result = await fetch_reddit_json(
             "https://www.reddit.com/r/Python/hot.json",
-            _JsonSession([self._gate_response()]),
+            session,
             queue,
         )
 
@@ -8831,8 +8837,27 @@ class TestRedditSessionGateGetsAShortPause:
             403, retry_after=None, default_delay=_REDDIT_SESSION_GATE_BACKOFF
         )
         assert _REDDIT_SESSION_GATE_BACKOFF < 60
+        assert result == {
+            "data": {"kind": "Listing", "data": {"children": []}}
+        }
+        assert len(session.calls) == 2
+
+    async def test_repeated_recognised_gate_returns_an_error_without_looping(self):
+        queue = self._queue()
+        session = _JsonSession(
+            [self._gate_response(), self._gate_response()]
+        )
+
+        result = await fetch_reddit_json(
+            "https://www.reddit.com/r/Python/hot.json",
+            session,
+            queue,
+        )
+
         assert "session gate" in result["error"]
         assert "retry" in result["error"].lower()
+        assert len(session.calls) == 2
+        assert queue.set_backoff.call_count == 2
 
     async def test_unrecognised_403_keeps_the_conservative_delay(self):
         from fetchaller.tools.browse_reddit import _OPAQUE_403_BACKOFF
