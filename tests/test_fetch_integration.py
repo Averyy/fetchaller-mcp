@@ -2139,3 +2139,155 @@ class TestHangIsBoundedByTheCallerTimeout:
             await fetch_url("https://wellfound.com/jobs", timeout=12)
 
         assert captured["timeout"] == 12.0
+
+
+# ---------------------------------------------------------------------------
+# Content-Type sniffing — the header is not the last word on the media type
+# ---------------------------------------------------------------------------
+
+
+def _make_test_pdf(text: str = "Hello from a mislabelled PDF") -> bytes:
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    writer = pymupdf.TextWriter(page.rect)
+    writer.append((72, 72), text)
+    writer.write_text(page)
+    content = doc.tobytes()
+    doc.close()
+    return content
+
+
+_PNG_1PX = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+class TestContentTypeSniffing:
+    """S3/CDN-hosted files carry the uploader's Content-Type, not the file's.
+
+    reolink.us serves its spec-sheet PDFs as ``multipart/form-data;`` — the
+    dispatch used to reject them as an unsupported type even though the body
+    starts with ``%PDF-``.
+    """
+
+    def test_file_signature_overrides_the_declared_type(self):
+        from fetchaller.tools.fetch import sniff_content_type
+
+        assert sniff_content_type(b"%PDF-1.5\n%\xb5\xed\xae\xfb", "multipart/form-data") == "application/pdf"
+        assert sniff_content_type(_PNG_1PX, "application/octet-stream") == "image/png"
+        # Even a type the dispatch understands loses to the bytes.
+        assert sniff_content_type(b"%PDF-1.4\n", "text/html") == "application/pdf"
+
+    def test_an_accurate_header_is_left_alone(self):
+        from fetchaller.tools.fetch import sniff_content_type
+
+        assert sniff_content_type(b"%PDF-1.5\n", "application/pdf") is None
+        assert sniff_content_type(_PNG_1PX, "image/png") is None
+        assert sniff_content_type(b"<html><body>hi</body></html>", "text/html") is None
+        # Markup shape is weak evidence: a dispatchable header still wins.
+        assert sniff_content_type(b"<html>not really</html>", "text/plain") is None
+        assert sniff_content_type(b'{"a": 1}', "application/json") is None
+
+    def test_markup_fills_in_for_an_undispatchable_type(self):
+        from fetchaller.tools.fetch import sniff_content_type
+
+        assert sniff_content_type(b"\xef\xbb\xbf<!DOCTYPE html>\n<html>", "application/octet-stream") == "text/html"
+        assert sniff_content_type(b'  <?xml version="1.0"?><rss>', "binary/octet-stream") == "application/xml"
+        assert sniff_content_type(b"<rss version='2.0'>", "") == "application/rss+xml"
+
+    def test_unidentifiable_bytes_keep_the_declared_type(self):
+        from fetchaller.tools.fetch import sniff_content_type
+
+        assert sniff_content_type(b"\x00\x01\x02\x03binary junk", "application/octet-stream") is None
+        assert sniff_content_type(b"", "multipart/form-data") is None
+        # "BM" alone is printable ASCII — a bad size field is not a bitmap.
+        assert sniff_content_type(b"BM garbage that is not a bitmap", "application/octet-stream") is None
+
+    @_PATCH_SSRF
+    async def test_pdf_served_as_multipart_form_data_is_extracted(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        url = "https://home-cdn.example.com/specs-pdf/doorbell.pdf"
+        session = MockWaferSession(
+            {
+                url: MockResponse(
+                    content=_make_test_pdf(),
+                    content_type="multipart/form-data;",
+                    status_code=200,
+                    url=url,
+                )
+            }
+        )
+        with _patch_wafer(session):
+            result = await fetch_url(url)
+
+        assert "error" not in result
+        assert result["content_type"] == "pdf"
+        assert "Hello from a mislabelled PDF" in result["content"]
+
+    @_PATCH_SSRF
+    async def test_image_served_as_octet_stream_is_summarized(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        url = "https://cdn.example.com/uploads/logo.png"
+        session = MockWaferSession(
+            {
+                url: MockResponse(
+                    content=_PNG_1PX,
+                    content_type="application/octet-stream",
+                    status_code=200,
+                    url=url,
+                )
+            }
+        )
+        with _patch_wafer(session):
+            result = await fetch_url(url)
+
+        assert "error" not in result
+        assert "[Image: image/png]" in result["content"]
+
+    @_PATCH_SSRF
+    async def test_html_served_as_octet_stream_becomes_markdown(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        url = "https://cdn.example.com/page"
+        session = MockWaferSession(
+            {
+                url: MockResponse(
+                    content=b"<html><head><title>Mislabelled</title></head><body><p>Real content here.</p></body></html>",
+                    content_type="application/octet-stream",
+                    status_code=200,
+                    url=url,
+                )
+            }
+        )
+        with _patch_wafer(session):
+            result = await fetch_url(url)
+
+        assert "error" not in result
+        assert result["content_type"] == "markdown"
+        assert "Real content here." in result["content"]
+
+    @_PATCH_SSRF
+    async def test_unidentifiable_binary_still_reports_unsupported(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        url = "https://cdn.example.com/firmware.bin"
+        session = MockWaferSession(
+            {
+                url: MockResponse(
+                    content=b"\x00\x01\x02\x03\x04not a known format",
+                    content_type="application/octet-stream",
+                    status_code=200,
+                    url=url,
+                )
+            }
+        )
+        with _patch_wafer(session):
+            result = await fetch_url(url)
+
+        assert "Unsupported content type" in result["error"]

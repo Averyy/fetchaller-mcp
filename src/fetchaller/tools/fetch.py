@@ -7,6 +7,7 @@ import re
 import struct
 import sys
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
@@ -603,6 +604,91 @@ def _format_bytes(n: int) -> str:
         if size < 1024:
             return f"{size:.1f} {unit}"
     return f"{size / 1024:.1f} TB"
+
+
+# Content-Type headers lie. S3/CDN-hosted assets routinely carry whatever the
+# uploader's tooling sent (`multipart/form-data`, `application/octet-stream`)
+# rather than the media type of the bytes actually stored, and the dispatch
+# below would reject a perfectly good PDF on the header's word alone.
+_BINARY_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"%PDF-", "application/pdf"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+_TEXT_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"<!doctype html", "text/html"),
+    (b"<html", "text/html"),
+    (b"<?xml", "application/xml"),
+    (b"<rss", "application/rss+xml"),
+    (b"<feed", "application/atom+xml"),
+)
+
+_DISPATCHABLE_MIMES = frozenset(
+    {
+        "application/json",
+        "application/pdf",
+        "application/xml",
+        "application/rss+xml",
+        "application/atom+xml",
+        "application/xhtml+xml",
+    }
+)
+
+
+def _is_dispatchable_mime(mime: str) -> bool:
+    """Whether a branch below already knows what to do with this media type."""
+    return (
+        mime in _DISPATCHABLE_MIMES
+        or mime.endswith("+json")
+        or mime.startswith(("text/", "image/", "application/javascript"))
+    )
+
+
+def _sniff_binary_mime(data: bytes) -> str | None:
+    """Identify a binary body by its file signature, or None if it has none."""
+    for signature, mime in _BINARY_SIGNATURES:
+        if data.startswith(signature):
+            return mime
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    # "BM" alone is two printable ASCII bytes, so require the header's
+    # little-endian size field to account for the body before trusting it.
+    if data[:2] == b"BM" and len(data) >= 6:
+        with suppress(struct.error):
+            if struct.unpack("<I", data[2:6])[0] == len(data):
+                return "image/bmp"
+    return None
+
+
+def _sniff_text_mime(data: bytes) -> str | None:
+    """Identify a markup body by its opening tag, or None if it has none."""
+    head = data[:1024].lstrip(b"\xef\xbb\xbf").lstrip().lower()
+    for signature, mime in _TEXT_SIGNATURES:
+        if head.startswith(signature):
+            return mime
+    return None
+
+
+def sniff_content_type(data: bytes, declared_mime: str) -> str | None:
+    """Recover the real media type of a body whose Content-Type is wrong.
+
+    Returns the corrected type, or None to keep the declared one. A file
+    signature wins outright: no HTML page, feed, or JSON document begins with
+    ``%PDF-`` or a PNG header, so those bytes are more trustworthy than any
+    label a CDN put on them. Markup shapes are far weaker evidence and only
+    fill in for a declared type nothing below can dispatch on, so an honest
+    header is never second-guessed on the strength of a leading ``<``.
+    """
+    binary_mime = _sniff_binary_mime(data)
+    if binary_mime:
+        return binary_mime if binary_mime != declared_mime else None
+    if _is_dispatchable_mime(declared_mime):
+        return None
+    text_mime = _sniff_text_mime(data)
+    return text_mime if text_mime != declared_mime else None
 
 
 def _image_dimensions(data: bytes, content_type: str) -> tuple[int, int] | None:
@@ -2201,6 +2287,14 @@ async def _fetch_url_impl(
 
     content_type = result.content_type.lower()
     mime = content_type.partition(";")[0].strip()
+    # Correct a mislabelled body before anything dispatches on the header.
+    # Rewriting the field rather than just the local keeps `result.text` and the
+    # image summary reading from the same corrected type; `result.headers` still
+    # carries what the server actually sent.
+    sniffed = sniff_content_type(result.content, mime)
+    if sniffed:
+        _log(f"FETCH {url} -> content-type {mime or '(none)'} sniffed as {sniffed}")
+        result.content_type = content_type = mime = sniffed
     if reddit_explicit_json and not (
         mime == "application/json" or mime.endswith("+json")
     ):
