@@ -102,6 +102,39 @@ ambient cookies or silently re-solve. No Reddit credential is ever forwarded,
 because none exists. `report.json` derives its publication denominator from
 the corpus and lists every offline entry and reason separately.
 
+## Waived live gates on GitHub runners
+
+Three live gates are waived in `container-validate.yml`. Each is a separate
+env flag, each annotates every run it waives, and each is re-armed by setting
+its flag to `'0'`:
+
+| Flag | Waives | Reason |
+|---|---|---|
+| `SMOKE_SKIP_REDDIT` | `browse_reddit`, `search_reddit`, and the parity gate | Reddit answers the anonymous solve origin with 403 from hosted runners, to the HTTP client and a real headful Chrome alike |
+| `SMOKE_SKIP_ALIBABA` | `search_alibaba`, `get_alibaba_product` | Alibaba-group tmd gate |
+| `SMOKE_SKIP_ALIEXPRESS` | `search_aliexpress`, `get_aliexpress_product` | Same tmd gate, reached through AliExpress's MTop path |
+
+The two tmd waivers are about *release blocking*, not capability. The gate is
+intermittent on a timescale of minutes and fails from ordinary networks too,
+not just hosted runners -- `search_alibaba` failed locally on wafer 0.4.5 after
+170.1s on the same day it passed in CI. wafer's own notes say this gate
+"should be validated across a window rather than a single run", which a
+one-shot publish gate cannot do, so it does not gate publishes.
+
+Waived does not mean untested. Run the smoke locally with every gate armed,
+and use a throwaway cache directory so the challenge actually fires instead of
+being skipped by a warm `x5sec` cookie:
+
+```bash
+WAFER_CACHE_DIR=$(mktemp -d) \
+  SMOKE_SKIP_REDDIT=0 SMOKE_SKIP_ALIBABA=0 SMOKE_SKIP_ALIEXPRESS=0 \
+  .venv/bin/python scripts/smoke_test.py
+```
+
+Check `BROWSER_DISPATCH_SUMMARY` in the output. A `total=0` line means no
+challenge was triggered and the run proves nothing about solver behavior --
+a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
+
 ## Test Organization
 
 - `test_site_detection.py` — Tests `_detect_site()` directly (URL-based, HTML-based, priority rules)
