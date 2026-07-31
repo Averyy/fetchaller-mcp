@@ -30,6 +30,7 @@ _VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 _CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 _SERVER_URL = "https://fetchaller.example"
 _REDIRECT_URI = "https://connector.example/oauth/callback"
+_JWT_SECRET = b"0123456789abcdef0123456789abcdef"
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +63,7 @@ def _route_client(
             config,
             {hash_api_key(api_key)} if api_key else set(),
             store,
-            b"0123456789abcdef0123456789abcdef",
+            _JWT_SECRET,
         )
     )
     return TestClient(app), store, config
@@ -95,6 +96,12 @@ def _begin_authorization(
         response.text,
     )
     assert csrf_match
+    # Submit what the page actually rendered, as a browser would. The server
+    # may canonicalize a field (e.g. the resource indicator) before binding it
+    # to the CSRF record, so echoing the request value would not round-trip.
+    rendered = dict(
+        re.findall(r'name="([^"]+)" value="([^"]*)"', response.text)
+    )
     return (
         {
             "client_id": client_id,
@@ -103,8 +110,8 @@ def _begin_authorization(
             "code_challenge": _CHALLENGE,
             "api_key": "test-api-key",
             "csrf_token": csrf_match.group(1),
-            "scope": scope,
-            "resource": resource,
+            "scope": rendered.get("scope", scope),
+            "resource": rendered.get("resource", resource),
         },
         response,
     )
@@ -1559,6 +1566,117 @@ class TestOAuthRoutes:
         succeeded = client_http.post("/token", data=token_form)
         assert succeeded.status_code == 200
         assert auth_code.code not in store.auth_codes
+
+    @pytest.mark.parametrize(
+        "indicator",
+        [
+            f"{_SERVER_URL}/mcp",
+            f"{_SERVER_URL}/mcp/",
+            f"{_SERVER_URL}/",
+            _SERVER_URL,
+        ],
+    )
+    def test_authorize_accepts_every_spelling_of_this_resource(self, indicator):
+        """Connectors send the MCP endpoint URL as the RFC 8707 indicator.
+
+        Metadata advertises the bare origin, but a client configured with
+        ``https://host/mcp`` sends that instead. Both name this server, so both
+        must authorize and bind the canonical origin.
+        """
+        client_http, store, _ = _route_client()
+        oauth_client = store.register_client([_REDIRECT_URI])
+        form, response = _begin_authorization(
+            client_http,
+            oauth_client.client_id,
+            resource=indicator,
+        )
+
+        assert response.status_code == 200
+        assert f'name="resource" value="{_SERVER_URL}"' in response.text
+
+        submitted = client_http.post("/authorize", data=form)
+
+        assert submitted.status_code == 200
+        assert len(store.auth_codes) == 1
+        auth_code = next(iter(store.auth_codes.values()))
+        assert auth_code.resource == _SERVER_URL
+
+    def test_mcp_endpoint_indicator_yields_a_token_the_server_accepts(self):
+        """The end-to-end path a connector runs: /mcp indicator through to auth."""
+        client_http, store, config = _route_client()
+        oauth_client = store.register_client([_REDIRECT_URI])
+        form, _ = _begin_authorization(
+            client_http,
+            oauth_client.client_id,
+            resource=f"{_SERVER_URL}/mcp",
+        )
+        client_http.post("/authorize", data=form)
+        auth_code = next(iter(store.auth_codes.values()))
+
+        response = client_http.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code.code,
+                "client_id": oauth_client.client_id,
+                "redirect_uri": _REDIRECT_URI,
+                "code_verifier": _VERIFIER,
+                "resource": f"{_SERVER_URL}/mcp",
+            },
+        )
+
+        assert response.status_code == 200
+        access_token = response.json()["access_token"]
+        payload = verify_access_token(
+            access_token,
+            _JWT_SECRET,
+            audience=_SERVER_URL,
+            required_scope=OAUTH_SCOPE,
+        )
+        assert payload is not None
+        assert store.verify_token(
+            access_token,
+            _JWT_SECRET,
+            {hash_api_key("test-api-key")},
+        )
+
+    @pytest.mark.parametrize(
+        "indicator",
+        [
+            "https://other.example/mcp",
+            f"{_SERVER_URL}/admin",
+            f"{_SERVER_URL}/mcp/extra",
+            f"{_SERVER_URL}/mcp?x=1",
+            f"{_SERVER_URL}/mcp#frag",
+            "https://fetchaller.example.evil.test/mcp",
+            "http://fetchaller.example/mcp",
+            "https://user:pw@fetchaller.example/mcp",
+        ],
+    )
+    def test_authorize_still_rejects_indicators_naming_another_resource(
+        self,
+        indicator,
+    ):
+        """Widening accepted spellings must not weaken audience binding."""
+        client_http, store, _ = _route_client()
+        oauth_client = store.register_client([_REDIRECT_URI])
+
+        response = client_http.get(
+            "/authorize",
+            params={
+                "client_id": oauth_client.client_id,
+                "redirect_uri": _REDIRECT_URI,
+                "response_type": "code",
+                "code_challenge": _CHALLENGE,
+                "code_challenge_method": "S256",
+                "scope": OAUTH_SCOPE,
+                "resource": indicator,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_target"
+        assert store.auth_codes == {}
 
     def test_authorize_logs_are_control_safe_and_bounded(self, capsys):
         client_http, _, _ = _route_client()

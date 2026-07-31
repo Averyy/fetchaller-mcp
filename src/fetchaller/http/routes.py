@@ -13,7 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from ..config import Config
+from ..config import Config, _canonical_server_origin
 from ..security.crypto import hash_api_key, timing_safe_compare
 from ..security.xss import sanitize_for_log
 from .oauth import OAUTH_SCOPE, OAuthStore
@@ -42,6 +42,10 @@ _CSRF_TTL = 600  # 10 minutes
 _CSRF_MAX_TOKENS = 10000  # Max outstanding tokens
 _MAX_REDIRECT_URIS = 10
 _MAX_REDIRECT_URI_LENGTH = 2048
+# Path spellings that name this resource server: the bare origin our
+# protected-resource metadata advertises, and the MCP endpoint connectors are
+# configured with. Compared after stripping trailing slashes.
+_MCP_RESOURCE_PATHS = ("", "/mcp")
 _PKCE_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43,128}\Z")
 _DNS_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _OAUTH_NO_STORE_HEADERS = {
@@ -245,6 +249,41 @@ def _bounded_string(
         and (allow_empty or bool(value))
         and all(ord(char) >= 0x20 and ord(char) != 0x7F for char in value)
     )
+
+
+def _canonical_resource_indicator(value: object, server_url: str) -> str | None:
+    """Fold an RFC 8707 resource indicator naming this server to its canonical origin.
+
+    Clients derive the indicator from the URL they were configured with, so a
+    connector pointed at ``https://host/mcp`` sends that spelling, while our
+    protected-resource metadata advertises the bare origin. Both name this
+    resource server, so accept either (trailing slash optional) and return the
+    canonical origin that access tokens carry as ``aud``. Anything naming a
+    different origin returns ``None``, so audience binding still rejects tokens
+    minted for someone else's resource server.
+    """
+
+    if not _bounded_string(value, maximum=_MAX_REDIRECT_URI_LENGTH):
+        return None
+    if value == server_url:
+        return server_url
+    if not value.isascii():
+        return None
+    try:
+        parsed = urlparse(value)
+        origin = _canonical_server_origin(value)
+    except ValueError:
+        return None
+    if (
+        parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+        or parsed.path.rstrip("/") not in _MCP_RESOURCE_PATHS
+        or origin != server_url
+    ):
+        return None
+    return server_url
 
 
 def _safe_log(value: object, maximum: int = 64) -> str:
@@ -652,14 +691,11 @@ def create_router(
                     "error_description": f"Only scope={OAUTH_SCOPE} is supported",
                 },
             )
-        requested_resource = resource or server_url
-        if (
-            not _bounded_string(
-                requested_resource,
-                maximum=_MAX_REDIRECT_URI_LENGTH,
-            )
-            or requested_resource != server_url
-        ):
+        requested_resource = _canonical_resource_indicator(
+            resource or server_url,
+            server_url,
+        )
+        if requested_resource is None:
             return _oauth_json(
                 status_code=400,
                 content={
@@ -816,7 +852,8 @@ def create_router(
                         "error_description": f"Only scope={OAUTH_SCOPE} is supported",
                     },
                 )
-            if resource != server_url:
+            canonical_resource = _canonical_resource_indicator(resource, server_url)
+            if canonical_resource is None:
                 return _oauth_json(
                     status_code=400,
                     content={
@@ -824,6 +861,7 @@ def create_router(
                         "error_description": "The requested resource is not supported",
                     },
                 )
+            resource = canonical_resource
 
             client = oauth_store.get_client(client_id)
             if client is None:
@@ -1054,14 +1092,11 @@ def create_router(
                     "error_description": f"Only scope={OAUTH_SCOPE} is supported",
                 },
             )
-        resource = requested_resource if requested_resource is not None else server_url
-        if (
-            not _bounded_string(
-                resource,
-                maximum=_MAX_REDIRECT_URI_LENGTH,
-            )
-            or resource != server_url
-        ):
+        resource = _canonical_resource_indicator(
+            requested_resource if requested_resource is not None else server_url,
+            server_url,
+        )
+        if resource is None:
             return _oauth_json(
                 status_code=400,
                 content={
