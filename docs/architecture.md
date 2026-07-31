@@ -18,11 +18,11 @@ startup readiness preflight. All challenge behavior remains inside wafer.
 ### Reddit read path
 
 Mapped normal-URL `fetch` calls, `browse_reddit`, and `search_reddit` share the
-server's `RedditRequestQueue`. Logged-out reads use a long-lived
-`wafer.AsyncSession` and persistent anonymous cookie jar. When Reddit
-credentials are configured, public structured reads instead use a separate
-cookie-isolated DART-profile wafer session on the official OAuth API origin.
-Wafer 0.4.3 owns both transports; fetchaller never parses a verification
+server's `RedditRequestQueue`. Every read is logged out: one long-lived
+`wafer.AsyncSession` with a persistent anonymous cookie jar. There is no
+credentialed transport -- no OAuth origin, no DART-profile session -- because
+fetchaller holds no Reddit credential to select one with. Wafer >=0.4.6 owns
+that transport; fetchaller never parses a verification
 challenge. Direct/library
 `fetch_url` calls without the injected queue use the process-wide Reddit domain
 limiter. Caller-selected `.json`, `raw=true`, and unmapped HTML fallbacks still

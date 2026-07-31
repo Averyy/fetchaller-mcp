@@ -18,7 +18,7 @@ NO Reddit credential path at all -- no OAuth, no client ID/secret, no refresh
 or access token -- and must never gain one. Routes Reddit serves only to a
 logged-in account (exact moderator rosters, account-private vote activity)
 return an explicit account-gated error and are covered offline as
-`fixture_only`. Wafer >=0.4.1 owns verification/cookie persistence;
+`fixture_only`. Wafer >=0.4.6 owns verification/cookie persistence;
 fetchaller owns strict URL mapping, SSR/API schema validation, and compact
 rendering. Never add an Old Reddit fallback or copy wafer's
 verification parser into this repo. Explicit `.json` stays raw JSON and
