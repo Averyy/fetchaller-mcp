@@ -28,11 +28,9 @@ services:
       - ACCESS_TOKEN_TTL=${ACCESS_TOKEN_TTL:-2592000}
       - MCP_SERVER_URL=${MCP_SERVER_URL:?MCP_SERVER_URL must be the public HTTPS origin}
       - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-}
-      - REDDIT_ACCESS_TOKEN=${REDDIT_ACCESS_TOKEN:-}
-      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID:-}
-      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET:-}
-      - REDDIT_REFRESH_TOKEN=${REDDIT_REFRESH_TOKEN:-}
-      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-fetchaller-mcp/3 exact-reddit-reads}
+      # No REDDIT_* credentials here on purpose. fetchaller reads Reddit
+      # anonymously and has no credential path -- see CLAUDE.md. Wafer owns the
+      # session identity, so there is no user agent to pin here either.
       - MOUSER_API_KEY=${MOUSER_API_KEY:-}
       - DIGIKEY_CLIENT_ID=${DIGIKEY_CLIENT_ID:-}
       - DIGIKEY_CLIENT_SECRET=${DIGIKEY_CLIENT_SECRET:-}

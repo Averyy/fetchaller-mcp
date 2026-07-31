@@ -24,11 +24,9 @@ services:
       - RATE_LIMIT_REQUESTS=100
       - MCP_API_KEY=test-api-key-local
       - MCP_SERVER_URL=http://localhost:6000
-      - REDDIT_ACCESS_TOKEN=${REDDIT_ACCESS_TOKEN:-}
-      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID:-}
-      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET:-}
-      - REDDIT_REFRESH_TOKEN=${REDDIT_REFRESH_TOKEN:-}
-      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-fetchaller-mcp/3 exact-reddit-reads}
+      # No REDDIT_* credentials here on purpose. fetchaller reads Reddit
+      # anonymously and has no credential path -- see CLAUDE.md. Wafer owns the
+      # session identity, so there is no user agent to pin here either.
       - MOUSER_API_KEY=${MOUSER_API_KEY:-}
       - DIGIKEY_CLIENT_ID=${DIGIKEY_CLIENT_ID:-}
       - DIGIKEY_CLIENT_SECRET=${DIGIKEY_CLIENT_SECRET:-}
