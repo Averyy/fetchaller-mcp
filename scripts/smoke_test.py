@@ -364,11 +364,14 @@ async def run_live_tool_suite(
     session: ClientSession,
     *,
     skip_reddit: bool | None = None,
+    skip_alibaba: bool | None = None,
 ) -> list[Result]:
     """Exercise the exact public tool surface with semantic live assertions."""
 
     if skip_reddit is None:
         skip_reddit = os.environ.get("SMOKE_SKIP_REDDIT") == "1"
+    if skip_alibaba is None:
+        skip_alibaba = os.environ.get("SMOKE_SKIP_ALIBABA") == "1"
     results: list[Result] = []
     last_call: dict[str, float] = {}
     initialized = await session.initialize()
@@ -466,42 +469,43 @@ async def run_live_tool_suite(
             )
         )
 
-    await _pace_domain(last_call, "alibaba.com")
-    alibaba_search = await _call(
-        session,
-        "search_alibaba",
-        {"query": "usb c cable", "page": 1},
-        minimum_chars=100,
-        semantic_check=_validate_alibaba_search,
-    )
-    results.append(alibaba_search)
-    alibaba_id = _first_id(
-        alibaba_search.text,
-        (
-            r"/product-detail/[^/\s]+_(\d+)\.html",
-            r"/product/(\d+)\.html",
-            r"\b(\d{12,})\b",
-        ),
-    )
-    if not alibaba_search.passed or alibaba_id is None:
-        results.append(
-            Result(
-                "get_alibaba_product",
-                False,
-                "not called: no semantically valid product ID from live search",
-            )
-        )
-    else:
+    if not skip_alibaba:
         await _pace_domain(last_call, "alibaba.com")
-        results.append(
-            await _call(
-                session,
-                "get_alibaba_product",
-                {"product_id": alibaba_id},
-                minimum_chars=100,
-                semantic_check=_validate_alibaba_product(alibaba_id),
-            )
+        alibaba_search = await _call(
+            session,
+            "search_alibaba",
+            {"query": "usb c cable", "page": 1},
+            minimum_chars=100,
+            semantic_check=_validate_alibaba_search,
         )
+        results.append(alibaba_search)
+        alibaba_id = _first_id(
+            alibaba_search.text,
+            (
+                r"/product-detail/[^/\s]+_(\d+)\.html",
+                r"/product/(\d+)\.html",
+                r"\b(\d{12,})\b",
+            ),
+        )
+        if not alibaba_search.passed or alibaba_id is None:
+            results.append(
+                Result(
+                    "get_alibaba_product",
+                    False,
+                    "not called: no semantically valid product ID from live search",
+                )
+            )
+        else:
+            await _pace_domain(last_call, "alibaba.com")
+            results.append(
+                await _call(
+                    session,
+                    "get_alibaba_product",
+                    {"product_id": alibaba_id},
+                    minimum_chars=100,
+                    semantic_check=_validate_alibaba_product(alibaba_id),
+                )
+            )
 
     results.append(
         await _call(

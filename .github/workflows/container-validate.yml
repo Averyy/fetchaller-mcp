@@ -29,6 +29,19 @@ jobs:
       # so a green build can never be mistaken for validated Reddit. Set this to
       # '0' to re-arm the live smoke gates and the parity gate together.
       SMOKE_SKIP_REDDIT: '1'
+      # WAIVED ON GITHUB RUNNERS ONLY. Alibaba answers this environment with a
+      # tmd challenge that wafer's browser solve cannot complete
+      # (widget_solved=False target_reached=False, Baxia sdk_error_code
+      # EgZDhx), taking ~80s before failing. Run 30553108232 passed the same
+      # gate from the same runner image in 2.6s on 2026-07-30, so this began
+      # within a day and no dependency moved with it -- wafer stayed pinned at
+      # 0.4.4. search_alibaba still returns full live results off this network
+      # from identical source, and challenge solving is wafer's to own.
+      #
+      # This is a deliberate, visible waiver: the step below annotates every
+      # run so a green build can never be mistaken for validated Alibaba. Set
+      # this to '0' to re-arm the live Alibaba gates.
+      SMOKE_SKIP_ALIBABA: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,6 +75,15 @@ jobs:
           403 from GitHub's hosted runners (suspected datacenter-IP blocking). \
           The offline Reddit contract and fixture gate still ran. Set \
           SMOKE_SKIP_REDDIT to '0' in container-validate.yml to re-arm."
+
+      - name: Announce the live Alibaba waiver
+        if: env.SMOKE_SKIP_ALIBABA == '1'
+        run: |
+          echo "::warning title=Live Alibaba gates waived::This build did NOT \
+          validate live Alibaba. Alibaba answers GitHub's hosted runners with a \
+          tmd challenge wafer's browser solve cannot complete. The offline \
+          Alibaba tests still ran in the test job. Set SMOKE_SKIP_ALIBABA to \
+          '0' in container-validate.yml to re-arm."
 
       - name: Verify offline Reddit legacy contract and fixtures
         run: |
