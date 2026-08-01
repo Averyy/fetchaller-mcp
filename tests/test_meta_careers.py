@@ -112,3 +112,72 @@ class TestDocIdDiscovery:
         # every operation the client uses must have one.
         for operation in (api.SEARCH_OPERATION, api.FILTERS_OPERATION, api.LOCATIONS_OPERATION):
             assert api._KNOWN_DOC_IDS[operation].isdigit()
+
+
+class TestJobPostingJsonLd:
+    """Meta publishes schema.org JobPosting on posting pages for search engines.
+
+    That surface is far less build-coupled than the internal
+    xcp_requisition_job_description blob, so it is preferred for the standard
+    fields; the internal object still supplies teams and compensation.
+    """
+
+    def test_extracts_the_jobposting_object(self):
+        html = (
+            '<script type="application/ld+json">'
+            '{"@context":"https://schema.org","@type":"JobPosting","title":"Network Engineer"}'
+            "</script>"
+        )
+        assert api._parse_job_posting_ld(html)["title"] == "Network Engineer"
+
+    def test_ignores_other_ld_types(self):
+        html = (
+            '<script type="application/ld+json">{"@type":"Organization","name":"Meta"}</script>'
+            '<script type="application/ld+json">{"@type":"JobPosting","title":"Real"}</script>'
+        )
+        assert api._parse_job_posting_ld(html)["title"] == "Real"
+
+    def test_handles_an_ld_array(self):
+        html = (
+            '<script type="application/ld+json">'
+            '[{"@type":"Organization"},{"@type":"JobPosting","title":"In Array"}]'
+            "</script>"
+        )
+        assert api._parse_job_posting_ld(html)["title"] == "In Array"
+
+    def test_malformed_ld_is_skipped_not_fatal(self):
+        html = (
+            '<script type="application/ld+json">{not json}</script>'
+            '<script type="application/ld+json">{"@type":"JobPosting","title":"Good"}</script>'
+        )
+        assert api._parse_job_posting_ld(html)["title"] == "Good"
+
+    def test_absent_returns_none(self):
+        assert api._parse_job_posting_ld("<html><body>nothing</body></html>") is None
+
+
+class TestLocationsFromLd:
+    def test_builds_readable_locations(self):
+        posting = {
+            "jobLocation": [
+                {
+                    "address": {
+                        "addressLocality": "Vancouver",
+                        "addressRegion": "BC",
+                        "addressCountry": "Canada",
+                    }
+                }
+            ]
+        }
+        assert api._locations_from_ld(posting) == ["Vancouver, BC, Canada"]
+
+    def test_single_object_not_a_list(self):
+        posting = {"jobLocation": {"address": {"addressLocality": "Menlo Park"}}}
+        assert api._locations_from_ld(posting) == ["Menlo Park"]
+
+    def test_deduplicates(self):
+        entry = {"address": {"addressLocality": "Menlo Park"}}
+        assert api._locations_from_ld({"jobLocation": [entry, entry]}) == ["Menlo Park"]
+
+    def test_missing_returns_empty(self):
+        assert api._locations_from_ld({}) == []

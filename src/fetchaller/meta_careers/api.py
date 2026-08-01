@@ -310,22 +310,101 @@ def _extract_json_object(text: str, start: int) -> dict | None:
     return None
 
 
-async def fetch_job_detail(session, job_id: str) -> dict | None:
-    """One posting, read from the SSR payload on ``/jobs/{id}/``.
+_JSON_LD_RE = re.compile(
+    r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', re.DOTALL | re.IGNORECASE
+)
 
-    The detail page embeds ``xcp_requisition_job_description`` inside its
-    ``data-sjs`` blobs, which avoids needing a second persisted-query id.
+
+def _parse_job_posting_ld(html: str) -> dict | None:
+    """Pull the schema.org ``JobPosting`` object out of a posting page.
+
+    Meta publishes this for search engines, which makes it a standards-based
+    and considerably less build-coupled surface than the internal
+    ``xcp_requisition_job_description`` blob. It does not carry teams or
+    compensation, so the internal object is still read for those.
+    """
+    for match in _JSON_LD_RE.finditer(html):
+        try:
+            parsed = json.loads(match.group(1).strip())
+        except (json.JSONDecodeError, ValueError):
+            continue
+        candidates = parsed if isinstance(parsed, list) else [parsed]
+        for candidate in candidates:
+            if isinstance(candidate, dict) and candidate.get("@type") == "JobPosting":
+                return candidate
+    return None
+
+
+def _locations_from_ld(posting: dict) -> list[str]:
+    raw = posting.get("jobLocation")
+    entries = raw if isinstance(raw, list) else [raw]
+    names: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        address = entry.get("address")
+        if isinstance(address, dict):
+            parts = [
+                address.get("addressLocality"),
+                address.get("addressRegion"),
+                address.get("addressCountry"),
+            ]
+            name = ", ".join(str(p) for p in parts if p)
+        else:
+            name = str(entry.get("name") or "")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+async def fetch_job_detail(session, job_id: str) -> dict | None:
+    """One posting from its canonical page.
+
+    Two surfaces are merged, both on the same request: the schema.org
+    ``JobPosting`` JSON-LD Meta publishes for search engines, and the internal
+    ``xcp_requisition_job_description`` object. The JSON-LD is preferred for
+    the standard fields because it is SEO-facing and therefore far less likely
+    to move with a deploy; the internal object supplies teams, sub-teams, and
+    compensation, which JSON-LD does not carry.
     """
     await meta_careers_limiter.wait()
-    resp = await session.get(f"{SITE}/jobs/{job_id}/", headers={"accept": "text/html"})
+    resp = await session.get(
+        f"{SITE}/profile/job_details/{job_id}/", headers={"accept": "text/html"}
+    )
+    if resp.status_code == 404:
+        # Older permalink shape.
+        await meta_careers_limiter.wait()
+        resp = await session.get(f"{SITE}/jobs/{job_id}/", headers={"accept": "text/html"})
     _check(resp, "job detail")
     if resp.status_code != 200:
         return None
     html = resp.text
+
+    internal: dict = {}
     marker = html.find(_JOB_DESCRIPTION_KEY)
-    if marker < 0:
-        return None
-    brace = html.find("{", marker + len(_JOB_DESCRIPTION_KEY))
-    if brace < 0:
-        return None
-    return _extract_json_object(html, brace)
+    if marker >= 0:
+        brace = html.find("{", marker + len(_JOB_DESCRIPTION_KEY))
+        if brace >= 0:
+            internal = _extract_json_object(html, brace) or {}
+
+    posting = _parse_job_posting_ld(html)
+    if posting is None:
+        return internal or None
+
+    merged = dict(internal)
+    merged.setdefault("id", job_id)
+    if posting.get("title"):
+        merged["title"] = posting["title"]
+    if not merged.get("locations"):
+        merged["locations"] = _locations_from_ld(posting)
+    for source, target in (
+        ("description", "job_description"),
+        ("responsibilities", "responsibilities"),
+        ("qualifications", "qualifications"),
+    ):
+        if posting.get(source) and not merged.get(target):
+            merged[target] = posting[source]
+    for key in ("datePosted", "employmentType", "validThrough"):
+        if posting.get(key):
+            merged[key] = posting[key]
+    return merged

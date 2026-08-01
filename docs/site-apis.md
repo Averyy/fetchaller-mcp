@@ -369,6 +369,22 @@ used: `CareersJobSearchResultsV2DataQuery` (search),
 `CareersJobSearchLocationFilterV3Query` (offices),
 `CareersJobSearchFiltersV3Query` (other facets).
 
+Job detail no longer depends on that internal object alone: posting pages at
+`/profile/job_details/{id}/` carry a schema.org `JobPosting` JSON-LD block,
+which is SEO-facing and therefore far less build-coupled. The client merges
+both from one request — JSON-LD for the standard fields, the internal
+`xcp_requisition_job_description` object for teams, sub-teams, and
+compensation, which JSON-LD omits.
+
+Search has no doc_id-free surface. Raw (non-persisted) GraphQL is disabled —
+posting a `query` document without a `doc_id` returns HTTP 500. The
+robots-advertised `/jobsearch/sitemap.xml` IS a complete, token-free inventory
+(its 789 ids matched the persisted query's inventory exactly), but it carries
+only URLs and a shared `lastmod`, so filtering by title or location through it
+would cost one page fetch per posting. That is fine as a correctness check and
+unusable for interactive search, so search keeps the persisted query with
+bundle rediscovery. See `docs/wafer-request-spa-api-discovery.md`.
+
 Two silent-failure traps: `search_input` must carry Meta's full key set, and
 `offices[]` matches the **`location_display_name`** ("Vancouver, Canada"), not
 the `id` ("vancouver") and not "Vancouver, BC" — an unrecognised office returns

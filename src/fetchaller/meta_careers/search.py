@@ -168,8 +168,17 @@ async def search_meta_jobs(
 def _render_detail(detail: dict) -> str:
     title = _clean(detail.get("title")) or "Job Posting"
     lines = [f"# {title}", ""]
-    for label, key in (("Location", "locations"), ("Team", "teams"), ("Sub-team", "sub_teams")):
-        value = _clean(detail.get(key))
+    # The detail page names teams `departments`/`internal_departments`; the
+    # search query calls the same things `teams`/`sub_teams`.
+    for label, keys in (
+        ("Location", ("locations",)),
+        ("Team", ("teams", "departments")),
+        ("Sub-team", ("sub_teams", "internal_departments")),
+        ("Posted", ("datePosted",)),
+        ("Type", ("employmentType",)),
+        ("Compensation", ("public_compensation",)),
+    ):
+        value = next((_clean(detail.get(k)) for k in keys if _clean(detail.get(k))), "")
         if value:
             lines.append(f"- **{label}**: {value}")
     job_id = detail.get("id")
