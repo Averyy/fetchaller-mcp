@@ -21,10 +21,15 @@ KNOWN_EMPLOYERS: dict[str, str] = {
     "gaf": "https://gafsgi.wd5.myworkdayjobs.com/GAF_Careers",
     "motorolasolutions": "https://motorolasolutions.wd5.myworkdayjobs.com/Careers",
     "nvidia": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
-    # Clearpath Robotics is part of Rockwell and its own careers page sends
-    # candidates here, so both names resolve to the Rockwell-wide board. It is
-    # NOT prefiltered to Clearpath roles.
-    "clearpath": "https://rockwellautomation.wd1.myworkdayjobs.com/External_Rockwell_Automation",
+    # Deliberately NO "clearpath" alias. Clearpath Robotics and OTTO Motors are
+    # part of Rockwell, and both brands' careers pages link to this same board —
+    # but the board has no company, brand, or business-unit facet (its only
+    # facets are jobFamilyGroup, timeType, and location), and searchText is not
+    # an exact brand filter: "OTTO" returns 3 reqs, one of which is an unrelated
+    # Machine Operator. An alias named "clearpath" would therefore return
+    # Rockwell-wide results under a name promising Clearpath ones. Clearpath/OTTO
+    # roles are reachable by location instead: Cambridge, Kitchener, and Waterloo
+    # together hold 10 of the board's 15 Canadian reqs.
     "rockwellautomation": (
         "https://rockwellautomation.wd1.myworkdayjobs.com/External_Rockwell_Automation"
     ),

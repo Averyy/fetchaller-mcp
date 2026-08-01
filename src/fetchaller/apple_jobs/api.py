@@ -1,4 +1,11 @@
-"""Transport and hydration parsing for jobs.apple.com."""
+"""Transport for jobs.apple.com: JSON API primary, SSR hydration as fallback.
+
+Apple's reference routes (``/api/v1/refData/*``) do answer 401, but the search
+route itself is anonymous — no CSRF token, cookie, Referer, or Origin. What
+made it look gated is that it returns HTTP 200 with ``totalRecords: 0`` when
+the request body omits ``format``, which reads as "no results" rather than
+"malformed request". See ``search_api_page``.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +20,7 @@ from ..config import get_wafer_cache_dir
 from ..ratelimit import apple_jobs_limiter
 
 SITE = "https://jobs.apple.com"
+_API_SEARCH_PATH = "/api/v1/search"
 DEFAULT_LOCALE = "en-ca"
 # Apple renders 20 result cards per page.
 PAGE_SIZE = 20
@@ -71,6 +79,16 @@ def location_slug(name: str, post_location_id: str) -> str:
     if not code:
         return ""
     return f"{slug}-{code}" if slug else code
+
+
+def location_filter_id(slug: str) -> str:
+    """Turn the URL form ``toronto-TOR`` back into the API form ``postLocation-TOR``.
+
+    The search URL and the JSON API disagree about how a location is named,
+    so the two forms are converted rather than discovered separately.
+    """
+    code = (slug or "").rsplit("-", 1)[-1]
+    return f"postLocation-{code}" if code else ""
 
 
 def parse_hydration(html: str) -> dict | None:
@@ -143,6 +161,56 @@ async def fetch_search_page(
     return search_data if isinstance(search_data, dict) else None
 
 
+async def search_api_page(
+    *,
+    session,
+    locale: str = DEFAULT_LOCALE,
+    search: str = "",
+    location: str = "",
+    page: int = 1,
+    sort: str = "newest",
+) -> tuple[list[dict], int] | None:
+    """One page from Apple's JSON API. Returns ``(results, total)``.
+
+    ``format`` looks decorative — its values only control date presentation —
+    but it is a required part of the request contract. Omitting it returns
+    HTTP 200 with ``totalRecords: 0`` rather than an error, so a caller that
+    drops it silently sees an empty board. It is sent on every request and
+    pinned by a test for exactly that reason.
+    """
+    body = {
+        "query": search or "",
+        "filters": {},
+        "page": max(1, page),
+        "locale": normalize_locale(locale),
+        "sort": sort,
+        "format": {"longDate": "MMMM D, YYYY", "mediumDate": "MMM D, YYYY"},
+    }
+    filter_id = location_filter_id(location)
+    if filter_id:
+        body["filters"] = {"locations": [filter_id]}
+
+    await apple_jobs_limiter.wait()
+    resp = await session.post(
+        f"{SITE}{_API_SEARCH_PATH}",
+        json=body,
+        headers={"accept": "application/json", "content-type": "application/json"},
+    )
+    _check(resp)
+    if resp.status_code != 200:
+        return None
+    try:
+        payload = resp.json()
+    except Exception:
+        return None
+    result = (payload or {}).get("res")
+    if not isinstance(result, dict):
+        return None
+    results = [r for r in (result.get("searchResults") or []) if isinstance(r, dict)]
+    total = result.get("totalRecords")
+    return results, int(total) if isinstance(total, (int, float)) else len(results)
+
+
 async def search_all(
     *,
     session,
@@ -151,7 +219,57 @@ async def search_all(
     location: str = "",
     limit: int = 25,
 ) -> tuple[list[dict], int]:
-    """Page until ``limit`` results are collected or Apple runs out."""
+    """Page until ``limit`` results are collected or Apple runs out.
+
+    The JSON API is primary; the server-rendered page is the fallback. They
+    return the same posting shape, so callers cannot tell which answered.
+
+    An empty API result is cross-checked against the page once. That is the
+    one case where the API's silent-empty failure mode is indistinguishable
+    from a genuinely empty search, and reporting "no jobs" when there are jobs
+    is the worst outcome this client can produce.
+    """
+    collected, total = await _search_all_api(
+        session=session, locale=locale, search=search, location=location, limit=limit
+    )
+    if collected:
+        return collected, total
+
+    page_results, page_total = await _search_all_page(
+        session=session, locale=locale, search=search, location=location, limit=limit
+    )
+    if page_results:
+        return page_results, page_total
+    return collected, total
+
+
+async def _search_all_api(
+    *, session, locale: str, search: str, location: str, limit: int
+) -> tuple[list[dict], int]:
+    collected: list[dict] = []
+    total = 0
+    for page in range(1, MAX_PAGES + 1):
+        if len(collected) >= limit:
+            break
+        result = await search_api_page(
+            session=session, locale=locale, search=search, location=location, page=page
+        )
+        if result is None:
+            return collected[:limit], total
+        results, page_total = result
+        if page == 1:
+            total = page_total
+        if not results:
+            break
+        collected.extend(results)
+        if len(results) < PAGE_SIZE:
+            break
+    return collected[:limit], total
+
+
+async def _search_all_page(
+    *, session, locale: str, search: str, location: str, limit: int
+) -> tuple[list[dict], int]:
     collected: list[dict] = []
     total = 0
     for page in range(1, MAX_PAGES + 1):

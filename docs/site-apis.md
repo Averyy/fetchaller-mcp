@@ -328,12 +328,26 @@ twelve city values that also contain the word.
 
 ### Apple (`src/fetchaller/apple_jobs/`)
 
-There is no usable JSON API: `/api/v1/refData/*` answers `401 User
-Unauthorized`, and `/api/v1/search` answers `200` with zero results unless the
-caller carries a page-issued token. The SSR page, however, embeds the complete
+`POST /api/v1/search` **is** anonymous — no CSRF token, cookie, Referer, or
+Origin. What makes it look gated is that it answers `200` with
+`totalRecords: 0` when the request body omits **`format`**, which reads as "no
+jobs" rather than "malformed request". `format` only carries date-presentation
+strings, but it is part of the request contract; `format: {}` is enough. (The
+`/api/v1/refData/*` reference routes really do answer `401`, which is what
+sent the first investigation down the wrong path.) A test pins `format` into
+every request body so it cannot be tidied away.
+
+The API is primary. The SSR page remains the fallback and embeds the same
 result set in `window.__staticRouterHydrationData` — a JS string literal handed
 to `JSON.parse`, so it decodes twice (once as the JS literal, once as JSON),
-and the scan for the closing `")` must skip escaped quotes.
+and the scan for the closing `")` must skip escaped quotes. An empty API
+result is cross-checked against the page once, because that is the single case
+where the silent-empty failure mode is indistinguishable from a genuinely
+empty search.
+
+The two surfaces disagree on how a location is named: the URL wants
+`toronto-TOR` and the API wants `postLocation-TOR`, so the forms are
+converted rather than discovered twice.
 
 Filters are all query-string: `?search=`, `?location={slug}-{CODE}`, `?page=`
 (1-indexed, 20 per page). Location codes come from the postings themselves —
@@ -416,3 +430,28 @@ resource carries ``ExternalDescriptionStr`` / ``ExternalResponsibilitiesStr`` /
 (``POST /api/loadSearchJobsResults``) still answers but returns an empty string
 for every ``description`` and all-null locations for many postings, so it was
 dropped rather than kept as a fallback.
+
+
+### Employers with no honest alias
+
+Some employers cannot be represented as an alias without implying a filter the
+board does not have.
+
+**Clearpath Robotics / OTTO Motors** are part of Rockwell Automation, and both
+brands' careers pages link to
+`rockwellautomation.wd1.myworkdayjobs.com/External_Rockwell_Automation`. That
+board's only facets are `jobFamilyGroup`, `timeType`, and location — there is
+no company, brand, subsidiary, or business-unit facet, and no separate
+Clearpath/OTTO site slug exists on any Workday cloud. `searchText` is not a
+brand filter either: "OTTO" returns three reqs, one of which is an unrelated
+Machine Operator. So a `clearpath` alias would return Rockwell-wide results
+under a name promising Clearpath ones, and is deliberately absent.
+
+Reach those roles by location instead: Cambridge, Kitchener, and Waterloo hold
+10 of the board's 15 Canadian reqs, and a Waterloo search surfaces the robotics
+postings directly.
+
+**Buildertrend** (6 reqs) and **GAF** (95 reqs) have no Canadian jobs at all —
+verified by paging every posting and dumping both boards' full location facets,
+not merely by the absence of a "Canada" descriptor. Their boards are US-only,
+so a Canada search there correctly reports the location filter was not applied.

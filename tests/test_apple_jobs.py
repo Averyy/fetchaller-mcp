@@ -1,9 +1,9 @@
-"""jobs.apple.com URL detection, hydration parsing, and rendering.
+"""jobs.apple.com URL detection, API contract, hydration parsing, rendering.
 
-Apple ships no usable JSON API, so the client reads the SSR hydration blob.
-That blob is a JS string literal handed to ``JSON.parse``, meaning it is
-escaped twice — the parsing tests below pin that down, including the case
-where an escaped quote appears before the real terminator.
+The JSON API is the primary surface and the SSR hydration blob is the
+fallback, so both are covered. The hydration blob is a JS string literal
+handed to ``JSON.parse``, meaning it is escaped twice — the parsing tests pin
+that down, including an escaped quote appearing before the real terminator.
 """
 
 import json
@@ -60,6 +60,20 @@ class TestLocationSlug:
 
     def test_missing_code_yields_nothing(self):
         assert api.location_slug("Toronto", "") == ""
+
+
+class TestLocationFilterId:
+    def test_url_form_to_api_form(self):
+        assert api.location_filter_id("toronto-TOR") == "postLocation-TOR"
+
+    def test_country_code(self):
+        assert api.location_filter_id("canada-CANC") == "postLocation-CANC"
+
+    def test_multiword_slug_keeps_only_the_code(self):
+        assert api.location_filter_id("vancouver-metro-area-VANC") == "postLocation-VANC"
+
+    def test_empty(self):
+        assert api.location_filter_id("") == ""
 
 
 class TestNormalizeLocale:
@@ -147,3 +161,53 @@ class TestRender:
         assert "## Description" in out
         assert "## Minimum qualifications" in out
         assert "**Source**:" in out
+
+
+class TestApiRequestContract:
+    """Apple's JSON API returns 200 with totalRecords: 0 when `format` is
+    missing, which reads as "no jobs" rather than "bad request". These pin the
+    body shape so nobody removes the field while tidying up."""
+
+    def _body(self, monkeypatch, **kwargs):
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"res": {"searchResults": [], "totalRecords": 0}}
+
+        class _Session:
+            async def post(self, url, json=None, headers=None):
+                captured["url"] = url
+                captured["body"] = json
+                captured["headers"] = headers
+                return _Resp()
+
+        import asyncio
+
+        asyncio.run(api.search_api_page(session=_Session(), **kwargs))
+        return captured
+
+    def test_format_is_always_sent(self, monkeypatch):
+        captured = self._body(monkeypatch, search="engineer")
+        assert "format" in captured["body"], "omitting `format` silently returns zero results"
+        assert captured["body"]["format"]
+
+    def test_posts_to_the_search_endpoint(self, monkeypatch):
+        captured = self._body(monkeypatch, search="engineer")
+        assert captured["url"].endswith("/api/v1/search")
+        assert captured["headers"]["content-type"] == "application/json"
+
+    def test_location_is_sent_in_api_form(self, monkeypatch):
+        captured = self._body(monkeypatch, search="engineer", location="toronto-TOR")
+        assert captured["body"]["filters"] == {"locations": ["postLocation-TOR"]}
+
+    def test_no_location_means_no_filter(self, monkeypatch):
+        captured = self._body(monkeypatch, search="engineer")
+        assert captured["body"]["filters"] == {}
+
+    def test_page_is_one_based(self, monkeypatch):
+        captured = self._body(monkeypatch, search="engineer", page=0)
+        assert captured["body"]["page"] == 1
