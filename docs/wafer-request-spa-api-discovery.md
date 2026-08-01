@@ -3,10 +3,10 @@
 **Status:** request for wafer. Not implemented in fetchaller, and not
 implementable there — fetchaller owns content processing, wafer owns transport.
 
-**Raised from:** building nine job-board clients in fetchaller. Eight were
-solved with plain HTTP. The ninth exposed a class of problem that plain HTTP
-cannot solve, and the same class cost significant time on four of the other
-eight.
+**Raised from:** building ten job-board clients in fetchaller. Nine were solved
+with plain HTTP. The tenth (Meta search) exposed a class of problem that plain
+HTTP cannot solve, and the same class cost significant time on five of the
+other nine.
 
 ## The problem
 
@@ -24,7 +24,7 @@ Finding it currently means one of two things, both bad:
    shapes until something answers.
 
 Both failed badly in practice, and the failures were expensive because **the
-sites do not report the failure**. Four concrete cases from this work:
+sites do not report the failure**. Five concrete cases from this work:
 
 - A search API returned `HTTP 200` with `totalRecords: 0` because the request
   body omitted a field that only controls *date formatting*. That reads as
@@ -38,6 +38,9 @@ sites do not report the failure**. Four concrete cases from this work:
 - A board's location filter accepts a city name, returns `HTTP 200`, and
   silently ignores it — returning the entire global result set while appearing
   to have filtered.
+- A positional RPC returns a *null* result list past the last page — the exact
+  same response shape it returns for a malformed argument list. "You have
+  reached the end" and "your request was wrong" are indistinguishable.
 
 In each case the site's own front end was making a correct request, in a
 browser, a few metres away. We could not see it.
@@ -120,3 +123,11 @@ each silent-empty trap was found by hand.
 - Oracle Recruiting, Workday, Amazon: send the required parameter, and re-apply
   every filter client-side because the board's own filters cannot be trusted to
   have applied.
+- Google: the whole request is positional with no field names — search
+  arguments are one array of 17 slots and a job is an array of 21 — so every
+  index is pinned by a test, because an off-by-one surfaces as missing data
+  rather than an error. Found by reading bundles.
+
+Six of the ten boards in this repo required bundle archaeology to discover a
+request shape that plain HTTP could then reproduce. That work is not reusable:
+each was site-specific, and each will need redoing when that site ships.
