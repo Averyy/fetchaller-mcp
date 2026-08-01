@@ -517,6 +517,13 @@ def _match_job_board_url(url: str) -> tuple[str, str, dict] | None:
     from ..apple_jobs.url import extract_apple_job, extract_apple_search, extract_locale
     from ..eightfold.url import extract_position_id, is_eightfold_board_url
     from ..meta_careers.url import extract_meta_job_id, is_meta_jobs_index_url
+    from ..oracle_recruiting.url import (
+        employer_for_url as oracle_employer_for_url,
+    )
+    from ..oracle_recruiting.url import (
+        extract_requisition_id,
+        is_oracle_search_url,
+    )
     from ..uber_jobs.url import extract_uber_job_id, is_uber_jobs_list_url
 
     position_id = extract_position_id(url)
@@ -559,6 +566,20 @@ def _match_job_board_url(url: str) -> tuple[str, str, dict] | None:
         return ("amazon.jobs posting", "amazon_job", {"job_path": amazon_path})
     if is_amazon_jobs_search_url(url):
         return ("amazon.jobs search", "amazon_search", {})
+
+    requisition_id = extract_requisition_id(url)
+    if requisition_id:
+        return (
+            "Oracle Recruiting posting",
+            "oracle_job",
+            {"employer": oracle_employer_for_url(url), "requisition_id": requisition_id},
+        )
+    if is_oracle_search_url(url):
+        return (
+            "Oracle Recruiting board",
+            "oracle_search",
+            {"employer": oracle_employer_for_url(url)},
+        )
 
     uber_job_id = extract_uber_job_id(url)
     if uber_job_id:
@@ -614,6 +635,14 @@ async def _dispatch_job_board(
         from ..amazon_jobs.search import search_amazon_jobs
 
         return await search_amazon_jobs(**common)
+    if kind == "oracle_job":
+        from ..oracle_recruiting.search import get_oracle_job
+
+        return await get_oracle_job(kwargs["employer"], kwargs["requisition_id"], **common)
+    if kind == "oracle_search":
+        from ..oracle_recruiting.search import search_oracle_jobs
+
+        return await search_oracle_jobs(kwargs["employer"], strict_title=False, **common)
     if kind == "uber_job":
         from ..uber_jobs.search import get_uber_job
 
