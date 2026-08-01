@@ -114,6 +114,11 @@ costco_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 # IP reputation is a concern — conservative rate limiting.
 facebook_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
 
+# Oracle Recruiting Cloud: {tenant}.fa.{region}.oraclecloud.com/hcmRestApi
+# Fusion hosts are shared infrastructure serving many tenants, so this stays
+# conservative even though the endpoints are public and unauthenticated.
+oracle_recruiting_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.2, 0.6))
+
 # Uber: www.uber.com/api/loadSearchJobsResults (anonymous board JSON)
 # The whole global board is a few hundred reqs, so a full pull is 2-7 calls.
 uber_jobs_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.2, 0.6))

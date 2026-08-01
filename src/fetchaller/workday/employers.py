@@ -11,11 +11,18 @@ from __future__ import annotations
 KNOWN_EMPLOYERS: dict[str, str] = {
     "adobe": "https://adobe.wd5.myworkdayjobs.com/external_experienced",
     "autodesk": "https://autodesk.wd1.myworkdayjobs.com/Ext",
+    # careers.cisco.com is a Phenom front end, but the board underneath is
+    # public Workday. Note the cloud: every slug on wd1/wd3/wd12/wd103 answers
+    # 422, and only wd5 + Cisco_Careers answers 200.
+    "cisco": "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers",
     "crowdstrike": "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers",
     "motorolasolutions": "https://motorolasolutions.wd5.myworkdayjobs.com/Careers",
     "nvidia": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
     "salesforce": "https://salesforce.wd12.myworkdayjobs.com/External_Career_Site",
     "servicetitan": "https://servicetitan.wd1.myworkdayjobs.com/ServiceTitan",
+    # snyk.io's careers page is a Contentful shell that proxies Workday through
+    # its own /api/next/jobs route; the board underneath is public Workday.
+    "snyk": "https://snyk.wd103.myworkdayjobs.com/External",
 }
 
 

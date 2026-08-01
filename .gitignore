@@ -45,3 +45,4 @@ baselines/*
 
 # Runtime data (cookie caches, etc.)
 data/
+.codex-dobby/
