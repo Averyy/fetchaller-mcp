@@ -1787,6 +1787,7 @@ claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp</pre>
       <span class="s">"mcp__fetchaller__search_eightfold_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_workday_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_oracle_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_google_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_amazon_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_apple_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_meta_jobs"</span>,
@@ -1939,7 +1940,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                     </div>
                     <div class="winamp-track">
                         <span class="winamp-track-num">10.</span>
-                        <span class="winamp-track-info"><strong>Tech Careers</strong><span class="winamp-track-desc">Microsoft, Apple, Meta, Amazon, Netflix, Uber, PayPal + any Workday or Eightfold board. Filter by title and location; Amazon pay bands included.</span></span>
+                        <span class="winamp-track-info"><strong>Tech Careers</strong><span class="winamp-track-desc">Google, Microsoft, Apple, Meta, Amazon, Netflix, Uber, Oracle, PayPal, Cisco + any Workday, Eightfold or Oracle Recruiting board. Filter by title and location; Amazon pay bands included.</span></span>
                     </div>
                     <div class="winamp-track">
                         <span class="winamp-track-num">11.</span>
@@ -2172,6 +2173,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                                 &bull; <code>search_workday_jobs</code> &mdash; Adobe, NVIDIA, Salesforce, Autodesk, CrowdStrike, or any Workday board<br>
                                 &bull; <code>search_oracle_jobs</code> &mdash; Oracle, Uber, or any Oracle Recruiting Cloud board<br>
                                 &bull; <code>search_amazon_jobs</code> &mdash; amazon.jobs, including the pay bands Amazon publishes inline<br>
+                                &bull; <code>search_google_jobs</code> &mdash; Google&rsquo;s own board<br>
                                 &bull; <code>search_apple_jobs</code>, <code>search_meta_jobs</code>, <code>search_uber_jobs</code></p>
                                 <p><strong>Filter by job title and location.</strong> This matters more than it sounds: every one of these boards <em>ranks</em> rather than filters. Ask Amazon for a &quot;product designer&quot; in Toronto and it will happily return a Software Development Engineer. fetchaller re-checks the title and location against each posting and reports how many it dropped, so a short list means a short list &mdash; not a filter that quietly failed.</p>
                                 <p>Pasting a posting URL into <code>fetch</code> works too: Eightfold, Apple, Meta, Amazon, and Uber posting links all return the full description instead of an empty page.</p>

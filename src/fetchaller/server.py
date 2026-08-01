@@ -24,6 +24,7 @@ from .apple_jobs.search import search_apple_jobs
 from .cache.response_cache import ResponseCache
 from .config import Config, load_config, set_wafer_cache_dir
 from .eightfold.search import search_eightfold_jobs
+from .google_jobs.search import search_google_jobs
 from .linkedin.search import get_linkedin_job, search_linkedin_jobs
 from .marketplace.search import search_marketplace
 from .meta_careers.search import search_meta_jobs
@@ -601,6 +602,15 @@ _TOOL_ARGUMENTS: dict[str, set[str]] = {
         "limit",
     },
     "search_apple_jobs": {"title", "location", "locale", "strict_title", "limit"},
+    "search_google_jobs": {
+        "title",
+        "location",
+        "strict_title",
+        "strict_location",
+        "remote_only",
+        "sort",
+        "limit",
+    },
     "search_meta_jobs": {"title", "location", "remote_only", "strict_title", "limit"},
     "search_uber_jobs": {
         "title",
@@ -645,6 +655,7 @@ _TOOL_REQUIRED = {
     "search_apple_jobs": {"title"},
     "search_meta_jobs": {"title"},
     "search_uber_jobs": {"title"},
+    "search_google_jobs": {"title"},
     # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
     "search_amazon_jobs": set(),
 }
@@ -724,6 +735,7 @@ _TOOL_ENUMS = {
     ("browse_reddit", "sort"): {"hot", "new", "top", "rising"},
     ("search_eightfold_jobs", "sort"): {"relevance", "recent"},
     ("search_amazon_jobs", "sort"): {"relevant", "recent"},
+    ("search_google_jobs", "sort"): {"relevance", "date"},
     ("search_linkedin_jobs", "sort"): {"relevance", "recent"},
     ("search_linkedin_jobs", "date_posted"): {"any", "24h", "week", "month"},
     ("search_linkedin_jobs", "workplace"): {"on_site", "remote", "hybrid"},
@@ -1856,6 +1868,69 @@ def create_server(
                 },
             ),
             Tool(
+                name="search_google_jobs",
+                description=(
+                    "Search Google's own careers board by job title and location. "
+                    "Google's free-text matching is very loose — a \"product designer\" "
+                    "search in Canada reports 38 matches of which two have a matching "
+                    "title — so each posting's own title and location are re-checked "
+                    "and both counts are reported separately."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"product designer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "Country, or a FULLY QUALIFIED city — "
+                                "\"Waterloo, ON, Canada\", not \"Waterloo\", which Google "
+                                "resolves to Waterloo, Belgium"
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "strict_location": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the posting's own location to match; Google's "
+                                "city filter is radius-based and includes neighbours"
+                            ),
+                        },
+                        "remote_only": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Only remote-eligible postings",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["relevance", "date"],
+                            "default": "relevance",
+                            "description": "Result ordering",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["title"],
+                },
+            ),
+            Tool(
                 name="search_apple_jobs",
                 description=(
                     "Search jobs.apple.com by title and location. A place name is "
@@ -2337,6 +2412,19 @@ def create_server(
                     strict_title=arguments.get("strict_title", True),
                     strict_location=arguments.get("strict_location", True),
                     sort=arguments.get("sort", "relevant"),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_google_jobs":
+                result = await search_google_jobs(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    strict_location=arguments.get("strict_location", True),
+                    remote_only=arguments.get("remote_only", False),
+                    sort=arguments.get("sort", "relevance"),
                     limit=arguments.get("limit", 25),
                     browser_solver=browser_solver,
                 )

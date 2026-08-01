@@ -114,6 +114,11 @@ costco_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 # IP reputation is a concern — conservative rate limiting.
 facebook_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
 
+# Google careers: www.google.com/about/careers/applications (BOQ batchexecute)
+# An internal RPC on google.com proper, so this stays deliberately gentle even
+# though it answers anonymously; a filtered search pages 20 at a time.
+google_jobs_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 0.8))
+
 # Oracle Recruiting Cloud: {tenant}.fa.{region}.oraclecloud.com/hcmRestApi
 # Fusion hosts are shared infrastructure serving many tenants, so this stays
 # conservative even though the endpoints are public and unauthenticated.

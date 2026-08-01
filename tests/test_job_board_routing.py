@@ -23,6 +23,13 @@ ROUTED = [
     ("https://www.amazon.jobs/en/jobs/10471950/art-director", "amazon_job"),
     ("https://www.amazon.jobs/en/search", "amazon_search"),
     ("https://www.uber.com/global/en/careers/list/302805/", "uber_job"),
+    (
+        "https://www.google.com/about/careers/applications/jobs/results/92025237427626694",
+        "google_job",
+    ),
+    ("https://www.google.com/about/careers/applications/jobs/results?q=x", "google_search"),
+    ("https://careers.oracle.com/en/sites/jobsearch/job/338925", "oracle_job"),
+    ("https://careers.oracle.com/en/sites/jobsearch/jobs", "oracle_search"),
     ("https://www.uber.com/us/en/careers/list/", "uber_search"),
 ]
 
@@ -32,6 +39,10 @@ NOT_ROUTED = [
     "https://www.amazon.com/s?k=laptop",
     # Consumer Uber.
     "https://www.uber.com/ca/en/ride/",
+    # google.com is mostly not a job board.
+    "https://www.google.com/",
+    "https://www.google.com/search?q=jobs",
+    "https://www.google.com/about/",
     # Unrelated career pages with no client.
     "https://example.com/careers",
     "https://boards.greenhouse.io/acme",

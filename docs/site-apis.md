@@ -471,3 +471,55 @@ postings directly.
 verified by paging every posting and dumping both boards' full location facets,
 not merely by the absence of a "Canada" descriptor. Their boards are US-only,
 so a Canada search there correctly reports the location filter was not applied.
+
+### Google (`src/fetchaller/google_jobs/`)
+
+`google.com/about/careers/applications` is server-rendered, so a plain fetch
+returns readable text. It is nonetheless worth a client, for one reason:
+**Google's own count cannot be used as the answer.** Its free-text matching is
+extremely loose — on a "product designer" search in Canada, Google reports 38
+matches, of which two have a title containing both words and *none* contain the
+literal word "designer". A nonsense query returns 0, so the query does filter;
+it just filters very generously.
+
+Underneath the page is Google's internal BOQ RPC:
+
+```
+POST /about/careers/applications/_/HiringCportalFrontendUi/data/batchexecute
+Content-Type: application/x-www-form-urlencoded;charset=UTF-8
+f.req=[[["<rpc>","<json-encoded args>",null,"generic"]]]
+```
+
+`r06xKb` searches, `sf9Qmf` returns one posting. Neither needs a cookie, token,
+or referer. The response is XSSI-guarded (`)]}'`) and doubly encoded: the
+payload is a JSON *string* at `outer[0][2]` of a `[["wrb.fr", ...]]` envelope.
+
+Everything is positional, so `api.py` pins every slot by index:
+
+- Search args (one array, wrapped in one more array): 0 query, 1 company,
+  2 degree, 3 employment type, 4 locale, 6 locations, 7 page (1-based),
+  8 skills, 9 remote flag, 10 sort, 16 target level.
+- Job record (21 elements): 0 id, 1 title, 2 apply URL, 3 responsibilities,
+  4 qualifications, 7 company, 9 locations, 10 description, 12/13 timestamps,
+  19 minimum qualifications.
+- A location entry is `[display, [display], city, null, region, country_code]`.
+
+Traps worth knowing:
+
+- **Multi-value filters must repeat**, as arrays. Comma-joining them
+  (`location=Canada, United States`) makes Google treat the whole string as one
+  fuzzy location and return unrelated radius results.
+- **Page size is fixed at 20**; `page_size`, `size`, and `limit` are ignored.
+  Past the last page the RPC returns a *null* job list rather than an empty
+  one — the same shape as a malformed request.
+- **City filters are radius-based.** A Toronto search returned 61 results of
+  which only 25 actually list Toronto, so the location is re-checked locally.
+  A bare city name is also geocoded loosely: "Waterloo" resolves to Waterloo,
+  Belgium. Pass a fully qualified city.
+- **Slots 12–14 are protobuf-style `[seconds, nanos]` pairs.** Slot 12 is
+  always ≤ 13/14, and all three are equal on postings that were never revised,
+  so 12 is rendered as posted and 13 as updated. That is inferred from
+  ordering, not documented, and is never presented as a deadline or a
+  freshness guarantee.
+- The posting page carries **no** JSON-LD; `sf9Qmf` is the structured detail
+  surface. The public permalink needs no slug — the id alone resolves.

@@ -516,6 +516,7 @@ def _match_job_board_url(url: str) -> tuple[str, str, dict] | None:
     from ..amazon_jobs.url import extract_amazon_job_path, is_amazon_jobs_search_url
     from ..apple_jobs.url import extract_apple_job, extract_apple_search, extract_locale
     from ..eightfold.url import extract_position_id, is_eightfold_board_url
+    from ..google_jobs.url import extract_google_job_id, extract_google_search
     from ..meta_careers.url import extract_meta_job_id, is_meta_jobs_index_url
     from ..oracle_recruiting.url import (
         employer_for_url as oracle_employer_for_url,
@@ -554,6 +555,13 @@ def _match_job_board_url(url: str) -> tuple[str, str, dict] | None:
                 "locale": extract_locale(url) or "en-ca",
             },
         )
+
+    google_job_id = extract_google_job_id(url)
+    if google_job_id:
+        return ("Google posting", "google_job", {"job_id": google_job_id})
+    google_search = extract_google_search(url)
+    if google_search is not None:
+        return ("Google search", "google_search", google_search)
 
     meta_job_id = extract_meta_job_id(url)
     if meta_job_id:
@@ -618,6 +626,16 @@ async def _dispatch_job_board(
             location=kwargs["location"],
             locale=kwargs["locale"],
             **common,
+        )
+    if kind == "google_job":
+        from ..google_jobs.search import get_google_job
+
+        return await get_google_job(kwargs["job_id"], **common)
+    if kind == "google_search":
+        from ..google_jobs.search import search_google_jobs
+
+        return await search_google_jobs(
+            title=kwargs["title"], location=kwargs["location"], **common
         )
     if kind == "meta_job":
         from ..meta_careers.search import get_meta_job

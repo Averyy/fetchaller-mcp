@@ -74,6 +74,7 @@ async def test_exact_tool_surface_has_strict_schemas(server):
         "search_workday_jobs",
         "search_oracle_jobs",
         "search_amazon_jobs",
+        "search_google_jobs",
         "search_apple_jobs",
         "search_meta_jobs",
         "search_uber_jobs",
