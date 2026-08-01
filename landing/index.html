@@ -1786,6 +1786,7 @@ claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp</pre>
       <span class="s">"mcp__fetchaller__search_realtor"</span>,
       <span class="s">"mcp__fetchaller__search_eightfold_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_workday_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_oracle_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_amazon_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_apple_jobs"</span>,
       <span class="s">"mcp__fetchaller__search_meta_jobs"</span>,
@@ -1830,6 +1831,7 @@ claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp</pre>
 - <span class="s">**search_marketplace**</span> — Search Kijiji + Craigslist + Facebook Marketplace
 - <span class="s">**search_realtor**</span> — Search realtor.ca real-estate listings
 - <span class="s">**search_eightfold_jobs**</span> / <span class="s">**search_workday_jobs**</span> — Any Eightfold or Workday board (Microsoft, Netflix, PayPal, Adobe, NVIDIA, Salesforce&hellip;)
+- <span class="s">**search_oracle_jobs**</span> — Any Oracle Recruiting Cloud board (Oracle, Uber&hellip;)
 - <span class="s">**search_amazon_jobs**</span> / <span class="s">**search_apple_jobs**</span> / <span class="s">**search_meta_jobs**</span> / <span class="s">**search_uber_jobs**</span> — Filter by job title and location
 - <span class="s">**get_aliexpress_product**</span> / <span class="s">**search_aliexpress**</span> — AliExpress products
 - <span class="s">**get_alibaba_product**</span> / <span class="s">**search_alibaba**</span> — Alibaba.com B2B products
@@ -2168,6 +2170,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                                 <p>Yes &mdash; the big-tech boards that normally need a browser. Each one is a JavaScript app whose HTML contains no jobs at all, so <code>fetch</code> alone returns an empty shell. fetchaller talks to the API behind each board instead, with no account:</p>
                                 <p>&bull; <code>search_eightfold_jobs</code> &mdash; Microsoft, Netflix, PayPal, or any Eightfold board by URL<br>
                                 &bull; <code>search_workday_jobs</code> &mdash; Adobe, NVIDIA, Salesforce, Autodesk, CrowdStrike, or any Workday board<br>
+                                &bull; <code>search_oracle_jobs</code> &mdash; Oracle, Uber, or any Oracle Recruiting Cloud board<br>
                                 &bull; <code>search_amazon_jobs</code> &mdash; amazon.jobs, including the pay bands Amazon publishes inline<br>
                                 &bull; <code>search_apple_jobs</code>, <code>search_meta_jobs</code>, <code>search_uber_jobs</code></p>
                                 <p><strong>Filter by job title and location.</strong> This matters more than it sounds: every one of these boards <em>ranks</em> rather than filters. Ask Amazon for a &quot;product designer&quot; in Toronto and it will happily return a Software Development Engineer. fetchaller re-checks the title and location against each posting and reports how many it dropped, so a short list means a short list &mdash; not a filter that quietly failed.</p>

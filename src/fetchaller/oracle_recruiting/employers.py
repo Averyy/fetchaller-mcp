@@ -34,6 +34,16 @@ class OracleEmployer:
 
 
 KNOWN_EMPLOYERS: dict[str, OracleEmployer] = {
+    # Oracle runs its own product. Note the site number: CX_45001, not the
+    # CX_1 nearly every other deployment uses — which is why site_number has
+    # to be per-employer rather than a constant.
+    "oracle": OracleEmployer(
+        label="Oracle",
+        careers_url="https://careers.oracle.com/en/sites/jobsearch/jobs",
+        fallback_host="https://eeho.fa.us2.oraclecloud.com",
+        site_number="CX_45001",
+        posting_url="https://careers.oracle.com/en/sites/jobsearch/job/{id}",
+    ),
     "uber": OracleEmployer(
         label="Uber",
         careers_url="https://jobs.uber.com/en/jobs/",

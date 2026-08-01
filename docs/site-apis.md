@@ -379,3 +379,40 @@ page is client-rendered with the body absent from the HTML, and the board's own
 `description` field comes back empty. A posting therefore resolves to metadata
 plus a link. Uber also ships all-null location fields for some reqs, which are
 labelled "Not specified" rather than dropped.
+
+### Oracle Recruiting Cloud (`src/fetchaller/oracle_recruiting/`)
+
+ORC is Oracle Fusion's candidate-experience recruiting module. Uber migrated
+onto it (``uber.com/…/careers/list/{id}`` now redirects to ``jobs.uber.com``),
+and Oracle itself runs on it, so one client serves both. Two REST resources,
+both unauthenticated:
+
+- ``GET /hcmRestApi/resources/latest/recruitingCEJobRequisitions``
+  ``?onlyData=true&expand=requisitionList&finder=findReqs;siteNumber={site},limit=N``
+- ``GET /hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails``
+  ``?expand=all&onlyData=true&finder=ById;Id="{id}",siteNumber={site}``
+
+Three traps, all of which fail silently rather than erroring:
+
+- **``expand=requisitionList`` is mandatory.** Without it the response is still
+  HTTP 200 with a correct ``TotalJobsCount``, but the postings array is absent
+  entirely.
+- **``location`` filters on countries and ignores cities.**
+  ``location="Canada"`` narrows Uber's board from 640 to 13;
+  ``location="Toronto"`` returns all 640 while looking like a filter. Only the
+  country is sent; the city is matched against each posting afterwards, and
+  the fetch window widens when no country can be derived.
+- **``siteNumber`` is not constant.** Nearly every deployment uses ``CX_1``,
+  but Oracle's own site is ``CX_45001``, and the value appears nowhere in page
+  markup — so it is per-employer configuration with ``CX_1`` as the default.
+
+The Fusion hostname (``iaziqy.fa.ocs`` for Uber, ``eeho.fa.us2`` for Oracle) is
+deployment-controlled, so it is discovered from the employer's own careers page
+with the last-known host kept only as a fallback.
+
+The search response carries ``ShortDescriptionStr`` on every row and the detail
+resource carries ``ExternalDescriptionStr`` / ``ExternalResponsibilitiesStr`` /
+``ExternalQualificationsStr``. Uber's older in-house endpoint
+(``POST /api/loadSearchJobsResults``) still answers but returns an empty string
+for every ``description`` and all-null locations for many postings, so it was
+dropped rather than kept as a fallback.

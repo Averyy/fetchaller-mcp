@@ -27,6 +27,7 @@ from .eightfold.search import search_eightfold_jobs
 from .linkedin.search import get_linkedin_job, search_linkedin_jobs
 from .marketplace.search import search_marketplace
 from .meta_careers.search import search_meta_jobs
+from .oracle_recruiting.search import search_oracle_jobs
 from .queue.reddit_queue import QueueConfig, RedditRequestQueue
 from .realtor.search import search_realtor
 from .security.browser_proxy import BrowserEgressProxy, BrowserProxyError
@@ -581,6 +582,14 @@ _TOOL_ARGUMENTS: dict[str, set[str]] = {
         "limit",
     },
     "search_workday_jobs": {"employer", "title", "location", "strict_title", "limit"},
+    "search_oracle_jobs": {
+        "employer",
+        "title",
+        "location",
+        "strict_title",
+        "strict_location",
+        "limit",
+    },
     "search_amazon_jobs": {
         "title",
         "location",
@@ -632,6 +641,7 @@ _TOOL_REQUIRED = {
     # to be meaningful, and that is validated in the client.
     "search_eightfold_jobs": {"employer"},
     "search_workday_jobs": {"employer"},
+    "search_oracle_jobs": {"employer"},
     "search_apple_jobs": {"title"},
     "search_meta_jobs": {"title"},
     "search_uber_jobs": {"title"},
@@ -1704,6 +1714,64 @@ def create_server(
                 },
             ),
             Tool(
+                name="search_oracle_jobs",
+                description=(
+                    "Search a career site running on Oracle Recruiting Cloud (Oracle "
+                    "Fusion) — Oracle and Uber today, or any ORC tenant by careers URL "
+                    "or Fusion host. Returns the full posting text, location, "
+                    "department, and job family. The board filters by country but "
+                    "ignores city names, so a city is matched against each posting here."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "employer": {
+                            "type": "string",
+                            "maxLength": 512,
+                            "description": (
+                                "\"oracle\", \"uber\", a careers URL, or a Fusion host "
+                                "(https://{tenant}.fa.{region}.oraclecloud.com)"
+                            ),
+                        },
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"product designer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "City and/or country, e.g. \"Toronto, Canada\". A country "
+                                "narrows the board server-side; a city is filtered here."
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "strict_location": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the location to match the posting's own location"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["employer"],
+                },
+            ),
+            Tool(
                 name="search_amazon_jobs",
                 description=(
                     "Search amazon.jobs by title, location, and job category. Amazon "
@@ -2243,6 +2311,18 @@ def create_server(
                     title=arguments.get("title", ""),
                     location=arguments.get("location", ""),
                     strict_title=arguments.get("strict_title", True),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_oracle_jobs":
+                result = await search_oracle_jobs(
+                    arguments["employer"],
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    strict_location=arguments.get("strict_location", True),
                     limit=arguments.get("limit", 25),
                     browser_solver=browser_solver,
                 )

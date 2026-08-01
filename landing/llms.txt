@@ -118,6 +118,19 @@ Search any Workday board (`*.myworkdayjobs.com`) by job title and location — `
 | strict_title | boolean | true | Require the title words to appear in the posting's own title |
 | limit | integer | 25 | Jobs to return (max 100) |
 
+### search_oracle_jobs(employer, title?, location?, strict_title?, strict_location?, limit?)
+
+Search a career site running on Oracle Recruiting Cloud (Oracle Fusion) — `oracle`, `uber`, or any ORC tenant by careers URL or Fusion host. Returns full posting text, location, department, and job family. The board filters by country but ignores city names, so a city is matched against each posting here.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| employer | string | required | "oracle", "uber", a careers URL, or a Fusion host |
+| title | string | — | Job title, e.g. "product designer" |
+| location | string | — | City and/or country, e.g. "Toronto, Canada" |
+| strict_title | boolean | true | Require the title words to appear in the posting's own title |
+| strict_location | boolean | true | Require the posting's own location to match |
+| limit | integer | 25 | Jobs to return (max 200) |
+
 ### search_amazon_jobs(title?, location?, country?, job_category?, strict_title?, strict_location?, sort?, limit?)
 
 Search amazon.jobs by title, location, and job category. Amazon publishes pay bands inline where local law requires it (including Canada), surfaced as a Pay field. Its own search is fuzzy in both dimensions — a "product designer" query returns engineering reqs, and a city query returns the surrounding radius — so both are re-applied against each posting. At least one of title, location, or job_category is required.
@@ -264,6 +277,7 @@ Add to `~/.claude/settings.json` (or `.claude/settings.local.json` for per-proje
       "mcp__fetchaller__get_linkedin_job",
       "mcp__fetchaller__search_eightfold_jobs",
       "mcp__fetchaller__search_workday_jobs",
+      "mcp__fetchaller__search_oracle_jobs",
       "mcp__fetchaller__search_amazon_jobs",
       "mcp__fetchaller__search_apple_jobs",
       "mcp__fetchaller__search_meta_jobs",
