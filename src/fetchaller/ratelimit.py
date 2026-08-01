@@ -114,6 +114,31 @@ costco_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 # IP reputation is a concern — conservative rate limiting.
 facebook_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
 
+# Uber: www.uber.com/api/loadSearchJobsResults (anonymous board JSON)
+# The whole global board is a few hundred reqs, so a full pull is 2-7 calls.
+uber_jobs_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.2, 0.6))
+
+# Meta: www.metacareers.com/graphql (anonymous persisted queries)
+# Same IP-reputation caution as the facebook.com limiter, and doc_id discovery
+# can walk several multi-hundred-KB bundles in a row.
+meta_careers_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 0.8))
+
+# Apple: jobs.apple.com/{locale}/search (server-rendered HTML, ~190KB a page)
+# Each call is a full page render rather than a JSON row set, so pages are
+# spaced further apart than the JSON boards.
+apple_jobs_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 0.8))
+
+# amazon.jobs: www.amazon.jobs/en/search.json (anonymous board JSON)
+# Amazon's own site polls this route freely, but a filtered search pages 100 at
+# a time; 1.5s keeps a multi-page walk unremarkable.
+amazon_jobs_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.2, 0.6))
+
+# Eightfold: {tenant}/api/pcsx/* (anonymous career-site JSON)
+# One limiter covers every tenant. The endpoints are the ones the tenant's own
+# SPA calls and answered every probe without a 429, but a job search pages in
+# tens of results, so 1s keeps a multi-page walk from looking like a scrape.
+eightfold_limiter = DomainRateLimiter(min_interval=1.0, jitter=(0.2, 0.5))
+
 # LinkedIn: www.linkedin.com/jobs-guest/* (logged-out public job endpoints)
 # 3.2s was the measured safe operating point — 46 probes at that spacing drew
 # no 403, 429, Retry-After, or challenge. The blocking threshold was

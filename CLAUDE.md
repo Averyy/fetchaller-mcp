@@ -26,6 +26,19 @@ verification parser into this repo. Explicit `.json` stays raw JSON and
 a score (not an upvote count); show `upvote_ratio` only when returned, and never
 invent separate up/down vote counts.
 
+### Job boards
+
+Every job board ranks rather than filters: a title query returns adjacent roles
+and a location query returns a radius. So the board's own filter is treated as
+an optimisation and the client's filter as the guarantee — see
+`src/fetchaller/jobfilter.py`, which every board client shares. Never report a
+board's raw result count as if it were the filtered count, and always surface
+how many postings a filter dropped rather than hiding the difference. Workday's
+`searchText` in particular silently drops real matches on some tenants, so a
+located slice is pulled whole and filtered here instead. fetchaller has NO
+credentialed path to any board — all of them answer anonymously and must
+continue to.
+
 ## Pre-Commit Rules
 
 **ALWAYS run lint and tests before EVERY commit. No exceptions.**
@@ -74,5 +87,5 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR.
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber.
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

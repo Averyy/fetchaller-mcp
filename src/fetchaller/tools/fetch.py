@@ -506,6 +506,125 @@ def _encode_json_prefix(
     return encoded, True, True
 
 
+def _match_job_board_url(url: str) -> tuple[str, str, dict] | None:
+    """Recognise a big-tech career-board URL.
+
+    Returns ``(label, kind, kwargs)`` for ``_dispatch_job_board``, or None when
+    the URL belongs to no board this repo has a client for. Imports are local
+    so a fetch of an unrelated URL does not pull in six board packages.
+    """
+    from ..amazon_jobs.url import extract_amazon_job_path, is_amazon_jobs_search_url
+    from ..apple_jobs.url import extract_apple_job, extract_apple_search, extract_locale
+    from ..eightfold.url import extract_position_id, is_eightfold_board_url
+    from ..meta_careers.url import extract_meta_job_id, is_meta_jobs_index_url
+    from ..uber_jobs.url import extract_uber_job_id, is_uber_jobs_list_url
+
+    position_id = extract_position_id(url)
+    if position_id:
+        return ("Eightfold posting", "eightfold_job", {"employer": url, "position_id": position_id})
+    if is_eightfold_board_url(url):
+        return ("Eightfold board", "eightfold_board", {"employer": url})
+
+    apple_job = extract_apple_job(url)
+    if apple_job:
+        return (
+            "Apple posting",
+            "apple_job",
+            {
+                "position_id": apple_job[0],
+                "slug": apple_job[1],
+                "locale": extract_locale(url) or "en-ca",
+            },
+        )
+    apple_search = extract_apple_search(url)
+    if apple_search is not None:
+        return (
+            "Apple search",
+            "apple_search",
+            {
+                "title": apple_search["search"],
+                "location": apple_search["location"],
+                "locale": extract_locale(url) or "en-ca",
+            },
+        )
+
+    meta_job_id = extract_meta_job_id(url)
+    if meta_job_id:
+        return ("Meta posting", "meta_job", {"job_id": meta_job_id})
+    if is_meta_jobs_index_url(url):
+        return ("Meta board", "meta_search", {})
+
+    amazon_path = extract_amazon_job_path(url)
+    if amazon_path:
+        return ("amazon.jobs posting", "amazon_job", {"job_path": amazon_path})
+    if is_amazon_jobs_search_url(url):
+        return ("amazon.jobs search", "amazon_search", {})
+
+    uber_job_id = extract_uber_job_id(url)
+    if uber_job_id:
+        return ("Uber posting", "uber_job", {"job_id": uber_job_id})
+    if is_uber_jobs_list_url(url):
+        return ("Uber board", "uber_search", {})
+    return None
+
+
+async def _dispatch_job_board(
+    board: tuple[str, str, dict], *, timeout: float, browser_solver=None
+) -> dict:
+    """Run the client ``_match_job_board_url`` selected."""
+    _label, kind, kwargs = board
+    common = {"timeout": timeout, "browser_solver": browser_solver}
+
+    if kind == "eightfold_job":
+        from ..eightfold.search import get_eightfold_job
+
+        return await get_eightfold_job(kwargs["employer"], kwargs["position_id"], **common)
+    if kind == "eightfold_board":
+        from ..eightfold.search import search_eightfold_jobs
+
+        return await search_eightfold_jobs(kwargs["employer"], strict_title=False, **common)
+    if kind == "apple_job":
+        from ..apple_jobs.search import get_apple_job
+
+        return await get_apple_job(
+            kwargs["position_id"], slug=kwargs["slug"], locale=kwargs["locale"], **common
+        )
+    if kind == "apple_search":
+        from ..apple_jobs.search import search_apple_jobs
+
+        return await search_apple_jobs(
+            title=kwargs["title"],
+            location=kwargs["location"],
+            locale=kwargs["locale"],
+            **common,
+        )
+    if kind == "meta_job":
+        from ..meta_careers.search import get_meta_job
+
+        return await get_meta_job(kwargs["job_id"], **common)
+    if kind == "meta_search":
+        from ..meta_careers.search import search_meta_jobs
+
+        return await search_meta_jobs(**common)
+    if kind == "amazon_job":
+        from ..amazon_jobs.search import get_amazon_job
+
+        return await get_amazon_job(kwargs["job_path"], **common)
+    if kind == "amazon_search":
+        from ..amazon_jobs.search import search_amazon_jobs
+
+        return await search_amazon_jobs(**common)
+    if kind == "uber_job":
+        from ..uber_jobs.search import get_uber_job
+
+        return await get_uber_job(kwargs["job_id"], **common)
+    if kind == "uber_search":
+        from ..uber_jobs.search import search_uber_jobs
+
+        return await search_uber_jobs(**common)
+    return {"error": f"No client for job board kind '{kind}'."}
+
+
 def truncate_json(text: str, max_tokens: int, chars_per_token: int = 4) -> str | None:
     """Fit JSON to a budget without ever returning syntactically broken JSON.
 
@@ -1186,6 +1305,29 @@ async def _fetch_url_impl(
                 _log(f"FETCH {url} -> LinkedIn job ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "markdown", "url": url}
             return result
+
+    # Big-tech career boards. Each of these is an SPA whose HTML carries no
+    # postings, so the generic HTML path returns an empty shell. Map the URL to
+    # the board's own client instead; on any error each returns an {"error"}
+    # dict and the caller sees that rather than a blank page.
+    if structured:
+        _board = _match_job_board_url(url)
+        if _board is not None:
+            _hit = _intercept_cache_get(url)
+            if _hit:
+                return _hit
+            _board_result = await _dispatch_job_board(
+                _board, timeout=float(timeout), browser_solver=browser_solver
+            )
+            if "content" in _board_result:
+                _intercept_cache_set(url, _board_result["content"], "markdown")
+                content = truncate(_board_result["content"], max_tokens)
+                _log(
+                    f"FETCH {url} -> {_board[0]} ({len(content)} chars, "
+                    f"{time.monotonic() - start:.1f}s)"
+                )
+                return {"content": content, "content_type": "markdown", "url": url}
+            return _board_result
 
     # Costco search/category pages — CSR, use search API when available
     _costco_redirect_fallback = False

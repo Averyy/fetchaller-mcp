@@ -232,3 +232,150 @@ threshold was deliberately never probed, so treat it as a floor.
 
 Modules: `src/fetchaller/linkedin/{api,parse,render,search,url}.py`.
 Full endpoint evidence: `.codex-dobby/linkedin_guest_api_spec.md`.
+
+## Big-tech career boards (Eightfold, Workday search, amazon.jobs, Apple, Meta, Uber)
+
+These are the SPA boards behind the large employers. Each is reachable
+anonymously, but none of them filters honestly on its own — every one ranks
+rather than filters, so a title query returns adjacent roles and a location
+query returns a radius. The shared rule for all six clients: **the board's
+filter is an optimisation, the client's filter is the guarantee.**
+`src/fetchaller/jobfilter.py` holds the matching used by all of them.
+
+| Board | Search endpoint | Detail | Location filter |
+|---|---|---|---|
+| Eightfold PCS-X | GET `{host}/api/pcsx/search?domain={groupId}` | GET `/api/pcsx/position_details` | `location=` free text |
+| Eightfold classic | GET `{host}/api/apply/v2/jobs?domain={groupId}` | GET `/api/apply/v2/jobs/{id}` | `location=` free text |
+| Workday | POST `/wday/cxs/{tenant}/{site}/jobs` | GET `/job{externalPath}` | `appliedFacets` (facet name is per-tenant) |
+| amazon.jobs | GET `/en/search.json` | via `search.json?base_query={id}` | `normalized_location[]` (exact) |
+| Apple | GET `/{locale}/search` (SSR hydration) | `/{locale}/details/{id}/{slug}` | `location={slug}-{CODE}` |
+| Meta | POST `/graphql` (persisted query) | SSR blob on `/jobs/{id}/` | `search_input.offices[]` (display name) |
+| Uber | POST `/api/loadSearchJobsResults` | none (metadata only) | `params.location[].{country,city}` |
+
+### Eightfold (`src/fetchaller/eightfold/`)
+
+Two generations are live and tenants are split across them, so the client
+probes and caches per tenant:
+
+- **PCS-X** (Microsoft, PayPal) — `/api/pcsx/search`. `count` is the real total.
+- **classic** (Netflix) — `/api/apply/v2/jobs`. `num` is capped at 10 and
+  `count` is only `start + len(positions)`, so the grand total is never known.
+
+A PCS-X-disabled tenant answers `/api/pcsx/search` with `403 {"message": "PCSX
+is not enabled for this user."}`; that exact 403 selects the classic path,
+while any *other* 403 is a real refusal and is raised. Classic records are
+renamed to the PCS-X field names before leaving the module so callers see one
+shape.
+
+The `domain` parameter is the Eightfold **group id**, published by every tenant
+page as `window._EF_GROUP_ID` (`microsoft.com`, `netflix.com`, `paypal.com`).
+It is read live rather than tabled, so a vanity host this repo has never seen
+works from its board URL alone. Page size is fixed at 10 on both generations —
+`num` and `pageSize` are ignored.
+
+### Workday search (`src/fetchaller/workday/`)
+
+`content/workday.py` owns transport and URL grammar; this package adds
+filtering. Two tenant-specific traps:
+
+- **`searchText` cannot be trusted.** On Adobe the Canada slice is 6 postings;
+  `searchText="engineer"` cuts it to 4, `searchText="ux"` to 0, and
+  `searchText="designer"` changes nothing at all — the same tenant filters,
+  over-filters, and ignores depending on the token. So when a location facet
+  pins the set down, the whole located set is pulled with **no** `searchText`
+  and the title is applied client-side, which is exact by construction. The
+  board's own search is only used when the located set exceeds one pull or no
+  location was given.
+- **Facet names and values are per-tenant.** The country facet is
+  `locationCountry` (Adobe, Autodesk, CrowdStrike, Motorola),
+  `locationHierarchy1` (NVIDIA), a 90-character `CF_-_REC_-_LRV_-_…` custom
+  field (Salesforce), or absent entirely (ServiceTitan). Values disagree too
+  for the same city: `Canada, Toronto` (NVIDIA), `Canada - Toronto`
+  (Salesforce), `Canada Ontario Remote` (ServiceTitan), `Toronto` (Adobe).
+
+Nothing is therefore keyed by facet name. Location facets are found
+structurally — the children of `locationMainGroup`, plus any top-level facet
+whose human descriptor reads like a place — and values are matched by token
+containment. When several facets match, the one with the **fewest** matching
+values wins, so "Canada" applies the single country value rather than the
+twelve city values that also contain the word.
+
+### amazon.jobs (`src/fetchaller/amazon_jobs/`)
+
+- `loc_query` **does not filter**. "Toronto" alone returns the whole global
+  board (6,641 reqs). The only real location filter is `normalized_location[]`,
+  which demands Amazon's exact spelling — `Toronto, Ontario, CAN` works;
+  `Toronto` and `Toronto, ON, CAN` both return zero. So the client samples the
+  vocabulary first (probing with the *place name* as the query, since Amazon's
+  free-text search matches location words) and then applies the exact values.
+  Repeated values are OR'd.
+- `category[]` takes a slugified `job_category` (`design`,
+  `software-development`). `job_category[]` and bare `category` are silently
+  ignored. This is the reliable way to find roles whose titles vary — Amazon's
+  only Design req in Canada is titled "Art Director", which no title search for
+  "product designer" will ever surface.
+- `facets` is always empty on this route, so category values are derived by
+  slugifying the `job_category` strings the postings carry.
+- **Pay bands.** Canadian and other disclosure-law reqs carry an inline band at
+  the tail of `preferred_qualifications`:
+  `CAN, ON, Toronto - 185,400.00 - 309,600.00 CAD annually`. These are lifted
+  into a `Pay` field. Cents are dropped only when both ends have none, so an
+  hourly `18.50 - 24.00` is not mangled into `18.50-24`.
+- The posting page is server-rendered HTML with no JSON-LD, and the `.json`
+  twin answers 406. A posting is therefore looked up through
+  `search.json?base_query={requisition id}`, which matches exactly and returns
+  the richer record anyway.
+
+### Apple (`src/fetchaller/apple_jobs/`)
+
+There is no usable JSON API: `/api/v1/refData/*` answers `401 User
+Unauthorized`, and `/api/v1/search` answers `200` with zero results unless the
+caller carries a page-issued token. The SSR page, however, embeds the complete
+result set in `window.__staticRouterHydrationData` — a JS string literal handed
+to `JSON.parse`, so it decodes twice (once as the JS literal, once as JSON),
+and the scan for the closing `")` must skip escaped quotes.
+
+Filters are all query-string: `?search=`, `?location={slug}-{CODE}`, `?page=`
+(1-indexed, 20 per page). Location codes come from the postings themselves —
+each carries `locations[].postLocationId` (`postLocation-TOR`) alongside the
+display name, so `toronto-TOR` is reconstructed rather than tabled. The locale
+sets the country scope: `en-ca` is Canadian postings, `en-us` American.
+
+### Meta (`src/fetchaller/meta_careers/`)
+
+`POST /graphql` with three things and no account: an `lsd` CSRF token
+(published in the page as `["LSD",[],{"token":"…"}]`), a `doc_id`, and
+`variables`.
+
+`doc_id` values rotate with Meta's deploys, so they are **not** constants. Each
+is published in a JS bundle as
+`__d("{Operation}_candidate_portalRelayOperation", … a.exports="{id}")`, and a
+known id that stops working triggers rediscovery from the bundles. Operations
+used: `CareersJobSearchResultsV2DataQuery` (search),
+`CareersJobSearchLocationFilterV3Query` (offices),
+`CareersJobSearchFiltersV3Query` (other facets).
+
+Two silent-failure traps: `search_input` must carry Meta's full key set, and
+`offices[]` matches the **`location_display_name`** ("Vancouver, Canada"), not
+the `id` ("vancouver") and not "Vancouver, BC" — an unrecognised office returns
+the *unfiltered* board rather than an error. Responses are newline-delimited
+JSON; the first line is the complete payload. Search returns the whole matching
+set at once rather than paginating. Job detail is read from the
+`xcp_requisition_job_description` object in the page's `data-sjs` blobs, which
+avoids needing a second persisted-query id.
+
+### Uber (`src/fetchaller/uber_jobs/`)
+
+Uber runs its own ATS — the SmartRecruiters `uber` tenant is an unrelated
+one-req stub. `POST /api/loadSearchJobsResults?localeCode=en` with
+`{"params": {"location": [{"country": "CAN", "city": "Toronto"}], "query": "…"},
+"page": 0, "limit": 100}`. An `x-csrf-token` header must be present but its
+value is never validated. `params.query` must be a **string**; a list returns
+zero. Counts arrive as a Long triple `{"low": N, "high": 0}`.
+
+**Limitation:** there is no per-posting description. `/api/{name}` answers
+`ERR_MISSING_HANDLER` for every detail-shaped handler name tried, the posting
+page is client-rendered with the body absent from the HTML, and the board's own
+`description` field comes back empty. A posting therefore resolves to metadata
+plus a link. Uber also ships all-null location fields for some reqs, which are
+labelled "Not specified" rather than dropped.
