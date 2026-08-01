@@ -128,6 +128,15 @@ async def search_meta_jobs(
             # paginating, so `all_jobs` is already complete. Featured jobs are
             # promotional and location-agnostic, so they are not merged in.
             total_before = len(jobs)
+
+            # An office Meta did not recognise must still constrain the result.
+            # Meta answers an unknown office with the UNFILTERED board, so
+            # without this a "Narnia" search returns Shanghai and Menlo Park
+            # postings under a heading naming Narnia.
+            if location and not location_applied:
+                wanted = tokens(location)
+                jobs = [j for j in jobs if location_matches(" ".join(j.get("locations") or []), wanted)]
+
             dropped = 0
             if strict_title and title:
                 jobs, dropped = filter_by_title(jobs, lambda j: j.get("title"), title)

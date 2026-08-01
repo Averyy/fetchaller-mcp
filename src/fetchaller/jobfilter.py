@@ -9,6 +9,13 @@ the board's own values.
 Board vocabularies differ in punctuation and word order for the same place
 ("Canada, Toronto", "Canada - Toronto", "Canada Ontario Remote"), which is why
 matching is token containment rather than string equality.
+
+**Cross-client invariant:** a location the caller asked for always constrains
+the result. When a board cannot resolve it — Meta answers an unknown office
+with the *unfiltered* board, Workday may have no matching facet, Apple no
+matching location code — the filter is applied here instead, so the caller gets
+zero results and an explanation rather than a page of postings from elsewhere
+under a heading naming the place they asked for.
 """
 
 from __future__ import annotations

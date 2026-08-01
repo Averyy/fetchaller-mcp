@@ -13,6 +13,18 @@ from .render import render_job, render_search_results
 _LOCATION_SLUG_RE = re.compile(r"^[a-z0-9-]+-[A-Z0-9]{2,6}$")
 
 
+def _job_locations(job: dict) -> str:
+    """Flatten a posting's locations for matching."""
+    names: list[str] = []
+    for entry in job.get("locations") or []:
+        if isinstance(entry, dict):
+            for key in ("name", "city", "stateProvince", "countryName", "metro"):
+                value = entry.get(key)
+                if value:
+                    names.append(str(value))
+    return " ".join(names)
+
+
 async def _resolve_location(session, locale: str, location: str) -> str:
     """Turn a place name into Apple's ``{slug}-{CODE}`` location parameter."""
     value = (location or "").strip()
@@ -89,6 +101,14 @@ async def search_apple_jobs(
                             seen.add(key)
                             jobs.append(job)
                     total = max(total, extra_total)
+
+            # A location the board could not resolve must still constrain the
+            # result. Returning postings from elsewhere under a heading naming
+            # the requested place reads as "these are your matches" even with a
+            # note attached, so the filter is applied here instead.
+            if location and not location_param:
+                wanted = tokens(location)
+                jobs = [j for j in jobs if location_matches(_job_locations(j), wanted)]
 
             dropped = 0
             if strict_title and title:

@@ -211,3 +211,26 @@ class TestApiRequestContract:
     def test_page_is_one_based(self, monkeypatch):
         captured = self._body(monkeypatch, search="engineer", page=0)
         assert captured["body"]["page"] == 1
+
+
+class TestJobLocations:
+    """Used to enforce a location the board itself could not resolve."""
+
+    def test_flattens_every_location_field(self):
+        from fetchaller.apple_jobs.search import _job_locations
+
+        job = {"locations": [{"name": "Toronto", "countryName": "Canada", "city": ""}]}
+        flat = _job_locations(job)
+        assert "Toronto" in flat and "Canada" in flat
+
+    def test_multiple_locations(self):
+        from fetchaller.apple_jobs.search import _job_locations
+
+        job = {"locations": [{"name": "Toronto"}, {"name": "Vancouver"}]}
+        flat = _job_locations(job)
+        assert "Toronto" in flat and "Vancouver" in flat
+
+    def test_missing_locations(self):
+        from fetchaller.apple_jobs.search import _job_locations
+
+        assert _job_locations({}) == ""

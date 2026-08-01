@@ -16,7 +16,7 @@ from ..content.workday import (
     resolve_location_facet,
     search_workday_board,
 )
-from ..jobfilter import broadened_query, filter_by_title
+from ..jobfilter import broadened_query, filter_by_title, location_matches, tokens
 from .employers import KNOWN_EMPLOYERS, resolve_employer
 
 _MAX_RESPONSE = 10 * 1024 * 1024
@@ -211,6 +211,15 @@ async def search_workday_jobs(
                         if key not in seen:
                             seen.add(key)
                             postings.append(posting)
+
+            # A location no facet matched must still constrain the result,
+            # otherwise the board's full listing comes back under a heading
+            # naming the requested place.
+            if location and not location_applied:
+                wanted = tokens(location)
+                postings = [
+                    p for p in postings if location_matches(p.get("locationsText") or "", wanted)
+                ]
 
             dropped = 0
             if strict_title and title:
