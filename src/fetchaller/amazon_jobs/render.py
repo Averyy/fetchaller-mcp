@@ -6,6 +6,8 @@ import re
 
 from markdownify import markdownify
 
+from ..jobfilter import counts_line
+
 _MARKDOWN_ESCAPE = str.maketrans({ch: "\\" + ch for ch in "\\`*_[]()#<>|"})
 _BLANK_LINE_COLLAPSE_RE = re.compile(r"\n{3,}")
 _MAX_FIELD_CHARS = 300
@@ -90,25 +92,35 @@ def render_search_results(
     *,
     title: str = "",
     location: str = "",
+    country: str = "",
+    job_category: str = "",
     hits: int = 0,
     title_filtered: int = 0,
     location_filtered: int = 0,
 ) -> str:
-    scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
+    # Every filter that shaped the result belongs in the heading. A category
+    # search with no title rendered as a bare "# Amazon jobs", which reads as
+    # the whole board.
+    scope = " · ".join(
+        p
+        for p in (
+            f"“{_clean(title)}”" if title else "",
+            _clean(job_category),
+            _clean(location) or _clean(country),
+        )
+        if p
+    )
     lines = [f"# Amazon jobs{': ' + scope if scope else ''}", ""]
 
-    plural = "" if len(jobs) == 1 else "s"
-    counts = f"_{len(jobs)} job{plural} shown"
-    if hits and hits > len(jobs):
-        counts += f" of {hits} returned by Amazon"
-    dropped = []
-    if title_filtered:
-        dropped.append(f"{title_filtered} by title")
-    if location_filtered:
-        dropped.append(f"{location_filtered} by location")
-    if dropped:
-        counts += "; dropped " + " and ".join(dropped)
-    lines.append(counts + "_")
+    lines.extend(
+        counts_line(
+            len(jobs),
+            dropped_by_title=title_filtered,
+            dropped_by_location=location_filtered,
+            board_total=hits,
+            board_label="Amazon's board",
+        )
+    )
     lines.append("")
 
     if not jobs:

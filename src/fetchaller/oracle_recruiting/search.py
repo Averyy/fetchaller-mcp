@@ -10,6 +10,7 @@ from markdownify import markdownify
 from ..jobfilter import (
     broadened_query,
     country_alpha3,
+    counts_line,
     filter_by_title,
     location_matches,
     tokens,
@@ -77,18 +78,15 @@ def _render_results(
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# {_clean(employer.label)} jobs{': ' + scope if scope else ''}", ""]
 
-    plural = "" if len(jobs) == 1 else "s"
-    counts = f"_{len(jobs)} job{plural} shown"
-    if total and total > len(jobs):
-        counts += f" of {total} matching"
-    dropped = []
-    if title_filtered:
-        dropped.append(f"{title_filtered} by title")
-    if location_filtered:
-        dropped.append(f"{location_filtered} by location")
-    if dropped:
-        counts += "; dropped " + " and ".join(dropped)
-    lines.append(counts + "_")
+    lines.extend(
+        counts_line(
+            len(jobs),
+            dropped_by_title=title_filtered,
+            dropped_by_location=location_filtered,
+            board_total=total,
+            board_label=f"{_clean(employer.label)}'s board",
+        )
+    )
     lines.append("")
 
     if not jobs:

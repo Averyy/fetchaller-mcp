@@ -138,6 +138,8 @@ async def search_amazon_jobs(
                     jobs,
                     title=title,
                     location=location,
+                    country=country,
+                    job_category=category,
                     hits=hits,
                     title_filtered=title_dropped,
                     location_filtered=location_dropped,

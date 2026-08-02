@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 
 from markdownify import markdownify
 
+from ..jobfilter import counts_line
+
 _MARKDOWN_ESCAPE = str.maketrans({ch: "\\" + ch for ch in "\\`*_[]()#<>|"})
 _BLANK_LINE_COLLAPSE_RE = re.compile(r"\n{3,}")
 _MAX_FIELD_CHARS = 300
@@ -99,18 +101,21 @@ def render_search_results(
     )
     lines = [f"# {_clean(employer)} jobs{': ' + scope if scope else ''}", ""]
 
-    plural = "" if len(positions) == 1 else "s"
-    counts = f"_{len(positions)} job{plural} shown"
-    if total and total > len(positions):
-        counts += f" of {total} matching"
-    elif not total and positions:
+    lines.extend(
+        counts_line(
+            len(positions),
+            dropped_by_title=title_filtered,
+            board_total=total,
+            board_label="This board",
+            board_scope=f"in {_clean(location)}" if location else "",
+        )
+    )
+    if not total and positions:
         # Eightfold's classic generation reports no grand total — its `count`
         # is only `start + len(page)`. Saying "3 jobs shown" and stopping
         # implies three is all there is, so the absence is stated instead.
-        counts += " (this board does not report a total, so there may be more)"
-    if title_filtered:
-        counts += f"; {title_filtered} dropped by the title filter"
-    lines.append(counts + "_")
+        lines.append("")
+        lines.append("_This board does not report a total, so there may be more._")
     lines.append("")
 
     if not positions:

@@ -128,3 +128,53 @@ class TestStripCountryTokens:
 
     def test_no_country_leaves_tokens_alone(self):
         assert jobfilter.strip_country_tokens(["toronto"], "") == ["toronto"]
+
+
+class TestCountsLine:
+    """The summary line, which reports two numbers that count different pools.
+
+    Live regression: Microsoft rendered "0 jobs shown of 33 matching; 34
+    dropped by the title filter" — 33 was the board's count for Canada and 34
+    was the number of postings fetched (a broadened-query retry pushes the
+    fetched set past the board's count for the original query). Read as one
+    clause it is arithmetic, and the arithmetic is nonsense.
+    """
+
+    def test_shown_and_dropped_always_reconcile(self):
+        line = jobfilter.counts_line(6, dropped_by_title=34, board_total=72)[0]
+        assert "6 jobs shown; dropped 34 by title" in line
+
+    def test_the_boards_number_gets_its_own_sentence(self):
+        lines = jobfilter.counts_line(
+            0, dropped_by_title=34, board_total=33, board_label="This board"
+        )
+        assert lines[0] == "_0 jobs shown; dropped 34 by title_"
+        assert "This board reported 33 loose matches" in lines[-1]
+        # The two numbers must never end up in one subtractable clause.
+        assert "of 33" not in "".join(lines)
+
+    def test_a_board_total_inside_the_examined_pool_is_not_repeated(self):
+        # 33 shown + 0 dropped already accounts for the board's 33.
+        assert len(jobfilter.counts_line(33, board_total=33)) == 1
+
+    def test_an_unfiltered_total_reads_as_pagination_not_as_matches(self):
+        lines = jobfilter.counts_line(10, board_total=200, board_scope="in Canada")
+        assert "_10 jobs shown_" == lines[0]
+        assert "has 200 in Canada for this query" in lines[-1]
+        assert "raise `limit`" in lines[-1]
+        assert "matching" not in "".join(lines)
+
+    def test_both_filters_are_named(self):
+        lines = jobfilter.counts_line(
+            2, dropped_by_title=39, dropped_by_location=3, board_total=100
+        )
+        assert "dropped 39 by title and 3 by location" in lines[0]
+        assert "own title and location" in lines[-1]
+
+    def test_singular_job_and_singular_match(self):
+        assert jobfilter.counts_line(1)[0] == "_1 job shown_"
+        assert "1 loose match " in jobfilter.counts_line(0, dropped_by_title=0, board_total=1)[-1] \
+            or "has 1 for this query" in jobfilter.counts_line(0, board_total=1)[-1]
+
+    def test_nothing_extra_when_there_is_nothing_to_add(self):
+        assert jobfilter.counts_line(0) == ["_0 jobs shown_"]

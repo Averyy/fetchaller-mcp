@@ -130,6 +130,7 @@ async def search_eightfold_jobs(
                     total = max(total, extra_total)
                     facets = facets or extra_facets
 
+            fetched = len(positions)
             dropped = 0
             if strict_title and title:
                 positions, dropped = filter_by_title(
@@ -147,7 +148,12 @@ async def search_eightfold_jobs(
                 total=total,
                 title_filtered=dropped,
             )
-            if not positions and location:
+            # Only when the *location* found nothing. If the board returned
+            # postings for it and the title filter is what emptied the list,
+            # offering alternative spellings blames the wrong term — Microsoft
+            # answered "Canada" with 34 postings and still printed a spelling
+            # hint listing Redmond and Tokyo.
+            if not positions and location and not fetched:
                 hint = _location_hint(facets)
                 if hint:
                     markdown += (
