@@ -6,6 +6,18 @@ MCP server for fetching any URL without domain restrictions. Full Reddit support
 
 fetchaller owns content processing + MCP tools. wafer (`~/code/wafer`) owns HTTP transport + anti-detection. fetchaller NEVER does bot solving, impersonation, or cookie management — if a site blocks requests, fix it in wafer. See `docs/architecture.md` for full details.
 
+**Escalate to wafer only for active blocking** — bot detection, a WAF challenge
+needing a solve, TLS rejection, clearance cookies, rate limiting. Anything that
+is merely *finding* the right request — reading JS bundles, guessing an
+endpoint, working out a required field, decoding a payload shape, telling one
+JSON blob from another — is content analysis and must be built here. Before
+writing anything down for wafer, ask: is this request being *refused*, or do I
+just not know its shape yet? Only the first is wafer's. `src/fetchaller/discovery/`
+exists for the second — see `docs/spa-discovery.md`. This boundary was settled
+empirically: the discovery capability was built inside wafer, validated against
+seven boards, and discarded because none of them needed a challenge solved
+(`wafer-feedback.md` is the record).
+
 ### Reddit
 
 Normal Reddit URLs use New Reddit's logged-out anonymous JSON path, except the
@@ -88,4 +100,5 @@ Do NOT test against the production version (Docker image from GHCR).
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
 - `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber.
+- `docs/spa-discovery.md` — SPA API discovery (`src/fetchaller/discovery/`): observing a page in a browser and replaying what it made, so an endpoint's shape never needs bundle archaeology again. Ranking (why coverage and record count are directly opposed), the oracle (why a 200 that means "malformed" is the core problem), minimization, mint steps, and the measured per-board results
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

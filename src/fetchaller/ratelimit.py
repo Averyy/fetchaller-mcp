@@ -131,7 +131,12 @@ uber_jobs_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.2, 0.6))
 # Meta: www.metacareers.com/graphql (anonymous persisted queries)
 # Same IP-reputation caution as the facebook.com limiter, and doc_id discovery
 # can walk several multi-hundred-KB bundles in a row.
-meta_careers_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 0.8))
+# 3.5s, not 2s: one search costs three requests (root warm-up, board page for
+# the lsd, then GraphQL), and doc_id rediscovery walks every JS bundle on top.
+# The client also defer()s this limiter for 120s whenever Meta answers with a
+# rate-limit error -- including the HTTP 200 kind, which is the one that used to
+# trigger a bundle scan instead of a backoff.
+meta_careers_limiter = DomainRateLimiter(min_interval=3.5, jitter=(0.4, 1.2))
 
 # Apple: jobs.apple.com/{locale}/search (server-rendered HTML, ~190KB a page)
 # Each call is a full page render rather than a JSON row set, so pages are
@@ -154,3 +159,18 @@ eightfold_limiter = DomainRateLimiter(min_interval=1.0, jitter=(0.2, 0.5))
 # no 403, 429, Retry-After, or challenge. The blocking threshold was
 # deliberately never probed, so treat this as a floor, not a target.
 linkedin_limiter = DomainRateLimiter(min_interval=3.2, jitter=(0.1, 0.4))
+
+# SPA API discovery probes (src/fetchaller/discovery/).
+#
+# Unlike every other limiter here, this one is not per-domain — discovery
+# targets whatever host it was pointed at. It exists because a discovery pass is
+# a *burst*: delta debugging fires up to ~50 replays of the same request at one
+# host, back to back, which is exactly the shape a rate limiter is meant to
+# prevent. Measured the hard way — an unlimited pass against metacareers.com
+# drew a 429 that persisted for the rest of the session, and every subsequent
+# capture then read as "this board has no API".
+#
+# 1.5s is deliberately slower than the per-board clients: those make one request
+# per user action, this makes fifty per invocation, and discovery is a rare
+# failure-path operation where latency costs nothing.
+discovery_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.3, 0.9))
