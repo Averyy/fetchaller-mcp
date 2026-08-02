@@ -186,7 +186,7 @@ Search metacareers.com by title and office. Meta spells its offices "Vancouver, 
 
 ### search_uber_jobs(title, location?, strict_title?, strict_location?, limit?)
 
-Search Uber's own job board by title and location. Returns title, department, team, level, and location. Uber exposes no per-posting description endpoint, so open the returned URL for the full text.
+Search Uber's job board by title and location. Uber runs on Oracle Recruiting, which answers anonymously with the full posting text, so results carry title, department, team, level, location, and description.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|

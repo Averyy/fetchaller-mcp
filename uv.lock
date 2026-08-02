@@ -428,7 +428,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = ">=0.4.6" },
+    { name = "wafer-py", extras = ["browser"], specifier = ">=0.4.7" },
 ]
 provides-extras = ["dev"]
 
@@ -1629,14 +1629,14 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.4.6"
+version = "0.4.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/68/b7/dca9457303b539d44f461cda99809431829532aab5389560ea5efda49aaf/wafer_py-0.4.6.tar.gz", hash = "sha256:7a9436a974b1e11c49a6fee1609b62202ae6f1ed5424fda52ff0173ea1f5381a", size = 1361605, upload-time = "2026-07-31T23:08:48.624Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/b0/635679f2b9123dccb4732ed960cbb08de9c2de3de3491f5463cd08cbda31/wafer_py-0.4.7.tar.gz", hash = "sha256:ecdb46679793bd12c780d3a57cca6aa705452e6ec0aa562f8e55ca2a7263c091", size = 1369715, upload-time = "2026-08-02T14:50:47.977Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/2b/5cde8328b521f0aae013175ff068b4ab748311499c4acabde4c709da4dc7/wafer_py-0.4.6-py3-none-any.whl", hash = "sha256:2aed916c9db50fc2c3efb1b091d908125e4771b872cc0a7dc63f2d320553e233", size = 512638, upload-time = "2026-07-31T23:08:46.985Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/f5/1fdde994b0eddb9d6300cbb7171544f3c44c8e9736ee98f68bd66457d43e/wafer_py-0.4.7-py3-none-any.whl", hash = "sha256:5b789e570dd7060dc8c3526224c2ede39682a481dbe15c3f7b30c065b02e61e2", size = 514574, upload-time = "2026-08-02T14:50:46.183Z" },
 ]
 
 [package.optional-dependencies]
