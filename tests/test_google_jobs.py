@@ -197,7 +197,7 @@ class TestRender:
             google_total=38, title_filtered=22, location_filtered=0,
         )
         assert "38 loose matches" in out
-        assert "after checking each posting" in out
+        assert "after re-checking each posting" in out
 
     def test_no_loose_count_note_when_nothing_was_dropped(self):
         out = search._render_results(

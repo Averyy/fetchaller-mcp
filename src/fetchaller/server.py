@@ -796,6 +796,21 @@ _INTEGER_RANGES = {
     # LinkedIn's guest search answers rows 0..999; 1000+ returns HTTP 400.
     "start": (0, 999),
 }
+# Per-tool overrides, checked before the by-name table above. The job boards
+# page in hundreds and their schemas say so; without these every one of them
+# advertised `"maximum": 100` and then rejected `limit=50` as out of range.
+# Any entry here must equal the `maximum` its inputSchema publishes —
+# test_server.py asserts exactly that, so the two cannot drift apart.
+_TOOL_INTEGER_RANGES = {
+    ("search_eightfold_jobs", "limit"): (1, 100),
+    ("search_workday_jobs", "limit"): (1, 100),
+    ("search_oracle_jobs", "limit"): (1, 200),
+    ("search_amazon_jobs", "limit"): (1, 100),
+    ("search_google_jobs", "limit"): (1, 100),
+    ("search_apple_jobs", "limit"): (1, 100),
+    ("search_meta_jobs", "limit"): (1, 100),
+    ("search_uber_jobs", "limit"): (1, 100),
+}
 
 
 def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
@@ -829,8 +844,10 @@ def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
         allowed_enum = _TOOL_ENUMS.get((tool_name, name), _ENUMS.get(name))
         if allowed_enum is not None and value not in allowed_enum:
             return f"unsupported {name}"
-        if name in _INTEGER_RANGES:
-            minimum, maximum = _INTEGER_RANGES[name]
+        if (tool_name, name) in _TOOL_INTEGER_RANGES or name in _INTEGER_RANGES:
+            minimum, maximum = _TOOL_INTEGER_RANGES.get(
+                (tool_name, name), _INTEGER_RANGES.get(name, (1, 25))
+            )
             if tool_name == "get_aliexpress_product" and name == "timeout":
                 maximum = 180
             if type(value) is not int or not minimum <= value <= maximum:

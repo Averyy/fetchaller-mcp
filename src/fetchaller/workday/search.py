@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import timedelta
 from urllib.parse import urlparse
 
@@ -12,11 +13,18 @@ from ..config import get_wafer_cache_dir
 from ..content.workday import (
     extract_workday_board_params,
     fetch_workday_facets,
+    fetch_workday_job,
     flatten_facets,
     resolve_location_facet,
     search_workday_board,
 )
-from ..jobfilter import broadened_query, filter_by_title, location_matches, tokens
+from ..jobfilter import (
+    broadened_query,
+    counts_line,
+    filter_by_title,
+    location_matches,
+    tokens,
+)
 from .employers import KNOWN_EMPLOYERS, resolve_employer
 
 _MAX_RESPONSE = 10 * 1024 * 1024
@@ -29,6 +37,100 @@ _MARKDOWN_ESCAPE = str.maketrans({ch: "\\" + ch for ch in "\\`*_[]()#<>|"})
 def _clean(value, limit: int = 200) -> str:
     text = " ".join(str(value or "").split())
     return text[:limit].translate(_MARKDOWN_ESCAPE)
+
+
+# Workday's list API summarises a multi-location posting instead of listing
+# it: "11 Locations", or the first place plus ", More...". Geo eligibility is
+# the screen that decides whether a posting is worth reading at all, so a
+# summary is the one thing a listing must not leave the caller to discover by
+# opening every req. The full list is on the detail endpoint as
+# `additionalLocations`; nothing in the list response carries it.
+_SUMMARY_LOCATION_RE = re.compile(r"^\d+\s+Locations?$|,\s*More\.\.\.$")
+# Detail lookups are one request each, so they run only for the postings that
+# need them, concurrently, and only ever this many.
+_EXPAND_CAP = 25
+_EXPAND_CONCURRENCY = 6
+_LOCATIONS_SHOWN = 8
+
+
+def _is_location_summary(posting: dict) -> bool:
+    return bool(_SUMMARY_LOCATION_RE.search((posting.get("locationsText") or "").strip()))
+
+
+async def _expand_locations(postings: list[dict], board_url: str, session) -> None:
+    """Replace summarised location text with the posting's real location list.
+
+    Mutates in place, adding ``allLocations``. Any posting whose detail fetch
+    fails keeps its summary — a missing expansion degrades the display, and
+    must never remove a posting from the result.
+    """
+    targets = [p for p in postings if _is_location_summary(p)][:_EXPAND_CAP]
+    if not targets:
+        return
+    semaphore = asyncio.Semaphore(_EXPAND_CONCURRENCY)
+
+    async def one(posting: dict) -> None:
+        url = _posting_url(board_url, posting)
+        if not url:
+            return
+        async with semaphore:
+            data = await fetch_workday_job(url, session)
+        info = (data or {}).get("jobPostingInfo") or {}
+        places = [info.get("location"), *(info.get("additionalLocations") or [])]
+        clean = [p.strip() for p in places if isinstance(p, str) and p.strip()]
+        if clean:
+            posting["allLocations"] = clean
+
+    await asyncio.gather(*(one(p) for p in targets), return_exceptions=True)
+
+
+def _locations_of(posting: dict, wanted: list[str] | None = None) -> str:
+    """Every location the caller can be screened on, or the board's summary.
+
+    Places matching the requested location come first. Motorola's 60-location
+    "US REMOTE" req is genuinely open to Alberta, BC, Ontario and Quebec; in
+    board order the first eight are US states and the Canadian ones fall behind
+    "+52 more", which answers a Canada search by hiding the answer.
+    """
+    places = posting.get("allLocations")
+    if not places:
+        return _clean(posting.get("locationsText"))
+    if wanted:
+        matched = [p for p in places if location_matches(p, wanted)]
+        places = matched + [p for p in places if p not in matched]
+    shown = [_clean(p, 80) for p in places[:_LOCATIONS_SHOWN]]
+    text = " · ".join(shown)
+    if len(places) > _LOCATIONS_SHOWN:
+        text += f" · +{len(places) - _LOCATIONS_SHOWN} more"
+    return text
+
+
+def _req_id(posting: dict) -> str:
+    """The requisition id alone.
+
+    ``bulletFields`` is a tenant-configured list of list-view columns, not an
+    id field. Motorola puts the location code first and the req second, so
+    joining them produced "British Columbia Remote Work, R65471".
+
+    ``externalPath`` ends in the requisition — ``..._R65471``,
+    ``..._26WD97217-2`` — so the req is the entry matching that final segment.
+    Matching the whole path instead would be too loose: a one-word location
+    like "Remote" appears in ``/job/Remote/Engineer_R123`` as readily as the id
+    does. A tenant whose id is not in the path falls back to every column,
+    which is the previous behaviour.
+    """
+    bullets = posting.get("bulletFields")
+    if not isinstance(bullets, list):
+        return ""
+    values = [str(b).strip() for b in bullets if isinstance(b, (str, int)) and str(b).strip()]
+    if not values:
+        return ""
+    external = posting.get("externalPath") or ""
+    # Workday appends "-1", "-2" to the path when a req is posted more than
+    # once; the id itself keeps no such suffix.
+    tail = external.rsplit("_", 1)[-1] if "_" in external else ""
+    embedded = [v for v in values if tail and (v == tail or tail.startswith(f"{v}-"))]
+    return _clean(", ".join(embedded or values))
 
 
 def _posting_url(board_url: str, posting: dict) -> str:
@@ -55,15 +157,16 @@ def _render(
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# {_clean(employer)} jobs{': ' + scope if scope else ''}", ""]
 
-    plural = "" if len(postings) == 1 else "s"
-    counts = f"_{len(postings)} job{plural} shown"
-    if total and total > len(postings):
-        # With a facet applied, `total` counts the located slice, not the board.
-        scope_word = f"in {_clean(location)}" if location_applied else "on the board"
-        counts += f" of {total} {scope_word}"
-    if dropped:
-        counts += f"; {dropped} dropped by the title filter"
-    lines.append(counts + "_")
+    lines.extend(
+        counts_line(
+            len(postings),
+            dropped_by_title=dropped,
+            board_total=total,
+            board_label="This board",
+            # With a facet applied, `total` counts the located slice, not the board.
+            board_scope=f"in {_clean(location)}" if location_applied and location else "",
+        )
+    )
     if location and not location_applied:
         lines.append("")
         lines.append(
@@ -83,17 +186,15 @@ def _render(
         name = _clean(posting.get("title")) or "(untitled)"
         url = _posting_url(board_url, posting)
         lines.append(f"## {index}. [{name}]({url})" if url else f"## {index}. {name}")
-        where = _clean(posting.get("locationsText"))
+        where = _locations_of(posting, tokens(location) if location else None)
         if where:
             lines.append(f"- **Location**: {where}")
         posted = _clean(posting.get("postedOn"))
         if posted:
             lines.append(f"- **Posted**: {posted}")
-        bullets = posting.get("bulletFields") or []
-        if isinstance(bullets, list):
-            shown = [_clean(b) for b in bullets if b not in (None, "")]
-            if shown:
-                lines.append(f"- **Req ID**: {', '.join(shown)}")
+        req = _req_id(posting)
+        if req:
+            lines.append(f"- **Req ID**: {req}")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -214,20 +315,38 @@ async def search_workday_jobs(
 
             # A location no facet matched must still constrain the result,
             # otherwise the board's full listing comes back under a heading
-            # naming the requested place.
+            # naming the requested place. "11 Locations" names no place, so
+            # judging a multi-location posting on the summary alone drops it
+            # however well it matches; expand those first. Past the cap a
+            # posting stays summarised and is dropped as before — that needs
+            # both a failed facet lookup and 25+ multi-location postings.
             if location and not location_applied:
                 wanted = tokens(location)
+                await _expand_locations(postings, board_url, session)
                 postings = [
-                    p for p in postings if location_matches(p.get("locationsText") or "", wanted)
+                    p
+                    for p in postings
+                    if any(
+                        location_matches(value, wanted)
+                        for value in (p.get("allLocations") or [p.get("locationsText") or ""])
+                    )
                 ]
 
+            located = len(postings)
             dropped = 0
             if strict_title and title:
                 postings, dropped = filter_by_title(postings, lambda p: p.get("title"), title)
             postings = postings[:limit]
 
+            # Only the postings actually being shown, so this costs at most
+            # `limit` requests and only for the ones the board summarised.
+            await _expand_locations(postings, board_url, session)
+
+            # Only when the location itself came back empty. With postings in
+            # hand, an empty result is the title filter's doing and listing
+            # other place names blames the wrong term.
             hint = ""
-            if not postings and location:
+            if not postings and location and not located:
                 if facets is None:
                     facets = await fetch_workday_facets(board_url, session)
                 hint = _location_values(facets)

@@ -1144,3 +1144,60 @@ class TestAuditedBrowserSolverCountsEveryNavigation:
         assert not unaudited, (
             f"BrowserSolver method(s) navigate uncounted: {sorted(unaudited)}"
         )
+
+
+@pytest.mark.asyncio
+async def test_every_advertised_integer_bound_is_actually_accepted(server):
+    """A published `maximum` the boundary then rejects is worse than no schema.
+
+    All eight job-board tools declared `"maximum": 100` (Oracle 200) while the
+    validator's by-name table capped `limit` at 25 for every tool, so a call
+    that was valid per the advertised schema failed with "limit must be an
+    integer from 1 to 25". This walks the real schemas rather than a copy, so
+    a new tool with a wider bound cannot drift from what it enforces.
+    """
+    from fetchaller.server import (
+        _TOOL_ANY_REQUIRED,
+        _TOOL_ARGUMENTS,
+        _validate_tool_arguments,
+    )
+
+    checked = 0
+    for tool in await _list_tools(server):
+        if tool.name not in _TOOL_ARGUMENTS:
+            continue
+        properties = tool.inputSchema.get("properties") or {}
+
+        def sample(name, _properties=properties):
+            spec = _properties.get(name) or {}
+            if spec.get("enum"):
+                return spec["enum"][0]
+            return {"string": "microsoft", "integer": 1, "boolean": True}.get(
+                spec.get("type"), "microsoft"
+            )
+
+        needed = list(tool.inputSchema.get("required") or [])
+        any_required = _TOOL_ANY_REQUIRED.get(tool.name)
+        if any_required:
+            needed.append(sorted(any_required)[0])
+        for arg, spec in properties.items():
+            if spec.get("type") != "integer":
+                continue
+            arguments = {name: sample(name) for name in needed}
+            for bound in ("minimum", "maximum"):
+                if bound not in spec:
+                    continue
+                error = _validate_tool_arguments(tool.name, {**arguments, arg: spec[bound]})
+                assert error is None, f"{tool.name}.{arg} {bound}={spec[bound]}: {error}"
+                checked += 1
+    assert checked > 20  # the surface is walked, not silently skipped
+
+
+@pytest.mark.asyncio
+async def test_a_value_past_the_advertised_maximum_is_still_refused(server):
+    from fetchaller.server import _validate_tool_arguments
+
+    assert _validate_tool_arguments("search_eightfold_jobs", {"employer": "x", "limit": 100}) is None
+    assert _validate_tool_arguments("search_eightfold_jobs", {"employer": "x", "limit": 101})
+    # The narrower tools keep their own bound rather than inheriting the widest.
+    assert _validate_tool_arguments("search_reddit", {"query": "x", "limit": 26})

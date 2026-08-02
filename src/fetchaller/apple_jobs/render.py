@@ -6,6 +6,8 @@ import re
 
 from markdownify import markdownify
 
+from ..jobfilter import counts_line
+
 _MARKDOWN_ESCAPE = str.maketrans({ch: "\\" + ch for ch in "\\`*_[]()#<>|"})
 _BLANK_LINE_COLLAPSE_RE = re.compile(r"\n{3,}")
 _MAX_FIELD_CHARS = 400
@@ -70,13 +72,15 @@ def render_search_results(
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# Apple jobs{': ' + scope if scope else ''}", ""]
 
-    plural = "" if len(jobs) == 1 else "s"
-    counts = f"_{len(jobs)} job{plural} shown"
-    if total and total > len(jobs):
-        counts += f" of {total} matching"
-    if title_filtered:
-        counts += f"; {title_filtered} dropped by the title filter"
-    lines.append(counts + "_")
+    lines.extend(
+        counts_line(
+            len(jobs),
+            dropped_by_title=title_filtered,
+            board_total=total,
+            board_label="Apple's board",
+            board_scope=f"in {_clean(location)}" if location and location_applied else "",
+        )
+    )
     if location and not location_applied:
         lines.append("")
         lines.append(

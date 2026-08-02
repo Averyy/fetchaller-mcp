@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ..jobfilter import filter_by_title, location_matches, tokens
+from ..jobfilter import counts_line, filter_by_title, location_matches, tokens
 from . import api
 
 _MARKDOWN_ESCAPE = str.maketrans({ch: "\\" + ch for ch in "\\`*_[]()#<>|"})
@@ -51,13 +51,15 @@ def _render(
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# Meta jobs{': ' + scope if scope else ''}", ""]
 
-    plural = "" if len(jobs) == 1 else "s"
-    counts = f"_{len(jobs)} job{plural} shown"
-    if total_before_filter > len(jobs):
-        counts += f" of {total_before_filter} matching"
-    if title_filtered:
-        counts += f"; {title_filtered} dropped by the title filter"
-    lines.append(counts + "_")
+    lines.extend(
+        counts_line(
+            len(jobs),
+            dropped_by_title=title_filtered,
+            board_total=total_before_filter,
+            board_label="Meta's board",
+            board_scope=f"in {_clean(location)}" if location and location_applied else "",
+        )
+    )
     if location and not location_applied:
         lines.append("")
         lines.append(

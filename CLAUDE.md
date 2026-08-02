@@ -45,7 +45,13 @@ and a location query returns a radius. So the board's own filter is treated as
 an optimisation and the client's filter as the guarantee — see
 `src/fetchaller/jobfilter.py`, which every board client shares. Never report a
 board's raw result count as if it were the filtered count, and always surface
-how many postings a filter dropped rather than hiding the difference. Workday's
+how many postings a filter dropped rather than hiding the difference. Those are
+two different pools and must never share a clause — `jobfilter.counts_line()`
+renders both for every board, keeping `shown + dropped` reconcilable and giving
+the board's own figure a separate, labelled sentence. A tool's published
+`maximum` must equal what the boundary validator accepts (`_TOOL_INTEGER_RANGES`
+in `server.py`); advertising a bound and then rejecting it is worse than
+publishing no bound. Workday's
 `searchText` in particular silently drops real matches on some tenants, so a
 located slice is pulled whole and filtered here instead. fetchaller has NO
 credentialed path to any board — all of them answer anonymously and must

@@ -137,7 +137,8 @@ class TestRender:
             total=13,
         )
         assert "# Microsoft jobs" in out
-        assert "1 job shown of 13 matching" in out
+        assert "_1 job shown_" in out
+        assert "This board has 13 in Vancouver, Canada" in out
         assert "https://apply.careers.microsoft.com/careers/job/1970393556750546" in out
         assert "Vancouver, BC, CA" in out
         assert "200024676" in out
@@ -151,7 +152,7 @@ class TestRender:
             total=9,
             title_filtered=9,
         )
-        assert "9 dropped by the title filter" in out
+        assert "dropped 9 by title" in out
         assert "No postings matched." in out
 
     def test_position_renders_custom_tenant_fields(self):

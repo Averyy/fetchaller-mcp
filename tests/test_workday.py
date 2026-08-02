@@ -7,6 +7,7 @@ regressions show up in CI.
 """
 
 from fetchaller.content import workday
+from fetchaller.workday import search
 
 # ---------------------------------------------------------------------------
 # URL detection
@@ -143,3 +144,109 @@ class TestRender:
             source_url="https://x.wd1.myworkdayjobs.com/s",
         )
         assert "Job Board (0 open positions)" in out
+
+
+class TestMultiLocationPostings:
+    """Workday's list API summarises multi-location postings.
+
+    "11 Locations" and "Maryland, US Offsite, More..." name places the caller
+    cannot screen on, and geo eligibility decides whether a posting is worth
+    opening at all. The real list is `additionalLocations` on the detail
+    endpoint; nothing in the list response carries it.
+    """
+
+    def test_a_count_summary_is_recognised(self):
+        assert search._is_location_summary({"locationsText": "11 Locations"})
+        assert search._is_location_summary({"locationsText": "2 Locations"})
+        assert search._is_location_summary({"locationsText": "1 Location"})
+
+    def test_a_truncated_list_is_recognised(self):
+        assert search._is_location_summary({"locationsText": "Maryland, US Offsite, More..."})
+
+    def test_a_real_place_is_not_a_summary(self):
+        for text in ("Vancouver, Canada", "Chicago, IL", "Allen, TX (TX139)", ""):
+            assert not search._is_location_summary({"locationsText": text}), text
+
+    def test_expanded_locations_replace_the_summary(self):
+        posting = {
+            "locationsText": "3 Locations",
+            "allLocations": ["Toronto, ON, CAN", "Montreal, QC, CAN", "Ontario - Offsite/Home"],
+        }
+        assert search._locations_of(posting) == (
+            "Toronto, ON, CAN · Montreal, QC, CAN · Ontario - Offsite/Home"
+        )
+
+    def test_a_long_list_is_capped_with_the_remainder_named(self):
+        posting = {"locationsText": "12 Locations", "allLocations": [f"City {i}" for i in range(12)]}
+        out = search._locations_of(posting)
+        assert out.count(" · ") == 8  # 8 shown + the "+4 more" separator
+        assert out.endswith("+4 more")
+
+    def test_the_summary_survives_a_failed_expansion(self):
+        # A detail fetch that fails must degrade the display, never the result.
+        assert search._locations_of({"locationsText": "4 Locations"}) == "4 Locations"
+
+
+class TestReqId:
+    """`bulletFields` is a tenant-configured column list, not an id field.
+
+    Motorola puts the location code first and the requisition second, so
+    joining them rendered "Req ID: British Columbia Remote Work, R65471".
+    """
+
+    def test_the_location_column_is_not_part_of_the_id(self):
+        posting = {
+            "externalPath": "/job/Vancouver-Canada/DevOps-Engineer-II_R65291",
+            "bulletFields": ["Vancouver on site (BRC06)", "R65291"],
+        }
+        assert search._req_id(posting) == "R65291"
+
+    def test_a_tenant_that_publishes_only_the_id_is_unchanged(self):
+        posting = {
+            "externalPath": "/job/Toronto-ON-CAN/Software-Manager_26WD97217-2",
+            "bulletFields": ["26WD97217"],
+        }
+        assert search._req_id(posting) == "26WD97217"
+
+    def test_a_repost_suffix_on_the_path_still_resolves(self):
+        posting = {
+            "externalPath": "/job/Maryland-US-Offsite/Senior-System-Engineer_R65468-1",
+            "bulletFields": ["Maryland, US Offsite (MD999)", "R65468"],
+        }
+        assert search._req_id(posting) == "R65468"
+
+    def test_a_one_word_location_in_the_path_is_not_mistaken_for_the_id(self):
+        # Matching anywhere in the path would take "Remote" here.
+        posting = {
+            "externalPath": "/job/Remote/Engineer_R123",
+            "bulletFields": ["Remote", "R123"],
+        }
+        assert search._req_id(posting) == "R123"
+
+    def test_an_id_absent_from_the_path_still_renders(self):
+        # Better a noisy id than none; the fallback is the old behaviour.
+        posting = {"externalPath": "/job/Somewhere/Role", "bulletFields": ["Somewhere", "R1"]}
+        assert search._req_id(posting) == "Somewhere, R1"
+
+    def test_no_bullets_is_empty_not_an_error(self):
+        assert search._req_id({"externalPath": "/job/x/y_R1"}) == ""
+        assert search._req_id({"bulletFields": [], "externalPath": "/x"}) == ""
+
+
+class TestRequestedLocationOrdering:
+    def test_matching_places_come_first(self):
+        # Measured on Motorola R66106: 60 locations, the four Canadian ones
+        # ranked 53rd onward, so a Canada search hid them behind "+52 more".
+        posting = {
+            "locationsText": "Colorado Remote Work, More...",
+            "allLocations": [f"State {i} Remote Work" for i in range(56)]
+            + ["Alberta Remote Work", "British Columbia Remote Work",
+               "Ontario Remote Work", "Quebec Remote Work"],
+        }
+        out = search._locations_of(posting, ["ontario"])
+        assert out.startswith("Ontario Remote Work · ")
+        assert "+52 more" in out
+
+    def test_order_is_untouched_without_a_requested_location(self):
+        posting = {"locationsText": "3 Locations", "allLocations": ["A", "B", "C"]}
+        assert search._locations_of(posting, None) == "A · B · C"

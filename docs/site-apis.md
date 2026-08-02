@@ -286,6 +286,33 @@ filtering. Two tenant-specific traps:
   and the title is applied client-side, which is exact by construction. The
   board's own search is only used when the located set exceeds one pull or no
   location was given.
+- **The list response hides multi-location postings.** `locationsText` is a
+  display summary, not data: Autodesk sends `"11 Locations"` and Motorola
+  `"Maryland, US Offsite, More..."`. Geo eligibility is the screen that decides
+  whether a posting is worth opening, so a summary makes the listing useless
+  for the one question it most needs to answer. The real list is
+  `additionalLocations` on the **detail** endpoint — nothing in the list
+  response carries it. Summarised postings are therefore expanded with a
+  bounded concurrent detail fetch (`_EXPAND_CAP`, `_EXPAND_CONCURRENCY`), once
+  before the client-side location filter so a posting is never dropped on a
+  summary it could have matched, and once over the postings actually shown.
+  Places matching the requested location are listed first: Motorola's
+  `R66106` ("US REMOTE" in its title) is genuinely open to four Canadian
+  provinces, and in board order they sit past the display cap. A failed detail
+  fetch keeps the summary — it may degrade the display, never the result.
+
+  Known limit: ordering matches on tokens, so a Canadian location named only
+  by province ("Alberta Remote Work") is not recognised for a `Canada` query.
+  Workday's own facet knows the hierarchy; `jobfilter` has no
+  subdivision→country gazetteer.
+- **`bulletFields` is not an id field.** It is a tenant-configured list of
+  list-view columns. Motorola puts the location code first and the requisition
+  second, so joining them rendered `Req ID: British Columbia Remote Work,
+  R65471`. The requisition is the entry matching the final `_`-segment of
+  `externalPath` (`..._R65471`, `..._26WD97217-2`, where a trailing `-1`/`-2`
+  marks a repost). Matching anywhere in the path is too loose — a one-word
+  location like `Remote` appears in `/job/Remote/Engineer_R123` as readily as
+  the id does.
 - **Facet names and values are per-tenant.** The country facet is
   `locationCountry` (Adobe, Autodesk, CrowdStrike, Motorola),
   `locationHierarchy1` (NVIDIA), a 90-character `CF_-_REC_-_LRV_-_…` custom

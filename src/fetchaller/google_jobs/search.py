@@ -7,7 +7,13 @@ import re
 
 from markdownify import markdownify
 
-from ..jobfilter import broadened_query, filter_by_title, location_matches, tokens
+from ..jobfilter import (
+    broadened_query,
+    counts_line,
+    filter_by_title,
+    location_matches,
+    tokens,
+)
 from . import api
 
 SORT = ("relevance", "date")
@@ -56,27 +62,19 @@ def _render_results(
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# Google jobs{': ' + scope if scope else ''}", ""]
 
-    plural = "" if len(jobs) == 1 else "s"
-    counts = f"_{len(jobs)} job{plural} shown"
-    dropped = []
-    if title_filtered:
-        dropped.append(f"{title_filtered} by title")
-    if location_filtered:
-        dropped.append(f"{location_filtered} by location")
-    if dropped:
-        counts += "; dropped " + " and ".join(dropped)
-    lines.append(counts + "_")
-
     # Google's own count is reported separately and explicitly labelled,
     # because its free-text matching is loose enough that presenting it as the
     # answer would overstate the result by an order of magnitude: a "product
     # designer" search returns 38, of which two have a matching title.
-    if google_total and (title_filtered or location_filtered):
-        lines.append("")
-        lines.append(
-            f"_Google's own search reported {google_total} loose matches for this query; "
-            "the count above is after checking each posting's own title and location._"
+    lines.extend(
+        counts_line(
+            len(jobs),
+            dropped_by_title=title_filtered,
+            dropped_by_location=location_filtered,
+            board_total=google_total,
+            board_label="Google's own search",
         )
+    )
     lines.append("")
 
     if not jobs:
