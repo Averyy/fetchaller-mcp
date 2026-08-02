@@ -6,6 +6,8 @@ an unrecognised office with the unfiltered board, not an error), and the
 persisted-query ids must stay discoverable rather than hardcoded.
 """
 
+import pytest
+
 from fetchaller.meta_careers import api, url
 
 # ---------------------------------------------------------------------------
@@ -181,3 +183,60 @@ class TestLocationsFromLd:
 
     def test_missing_returns_empty(self):
         assert api._locations_from_ld({}) == []
+
+
+class TestRateLimitHandling:
+    """Being throttled must never trigger a bundle scan.
+
+    Meta answers a throttled search with ``HTTP 200`` and
+    ``{"errors":[{"message":"Rate limit exceeded","code":1675004}]}``. That is
+    indistinguishable from a rotated ``doc_id`` unless the error is read — and
+    rediscovery fetches the board page *and walks every JS bundle*, so answering
+    "slow down" with a bundle scan turns one throttle into a lasting one.
+    """
+
+    def test_detects_the_live_error_shape(self):
+        assert api._rate_limited(
+            {"errors": [{"message": "Rate limit exceeded", "severity": "CRITICAL", "code": 1675004}]}
+        )
+
+    def test_detects_by_message_without_the_code(self):
+        assert api._rate_limited({"errors": [{"message": "Too many requests"}]})
+
+    def test_a_rotated_doc_id_is_not_a_rate_limit(self):
+        # This one *should* still trigger rediscovery.
+        assert not api._rate_limited({"errors": [{"message": "Unknown persisted query"}]})
+
+    def test_a_healthy_payload_is_not_a_rate_limit(self):
+        assert not api._rate_limited({"data": {"all_jobs": [1, 2]}})
+
+    def test_malformed_payloads_do_not_raise(self):
+        for value in (None, [], "text", {"errors": "nope"}, {"errors": [None]}):
+            assert api._rate_limited(value) is False
+
+    async def test_a_throttled_reply_backs_off_instead_of_rediscovering(self, monkeypatch):
+        deferred: list[float] = []
+        monkeypatch.setattr(api.meta_careers_limiter, "defer", deferred.append)
+
+        async def no_wait(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(api.meta_careers_limiter, "wait", no_wait)
+        monkeypatch.setattr(api, "_lsd_cache", "lsd-token-value")
+
+        async def explode(*_a, **_k):  # pragma: no cover - must not run
+            raise AssertionError("rediscovery must not run while throttled")
+
+        monkeypatch.setattr(api, "discover_doc_id", explode)
+
+        class Resp:
+            status_code = 200
+            text = '{"errors":[{"message":"Rate limit exceeded","code":1675004}]}'
+
+        class Session:
+            async def post(self, *_a, **_k):
+                return Resp()
+
+        with pytest.raises(api.MetaCareersBlockedError, match="rate-limited"):
+            await api.graphql(Session(), api.SEARCH_OPERATION, {"search_input": {}})
+        assert deferred and deferred[0] >= 60  # long enough to actually clear

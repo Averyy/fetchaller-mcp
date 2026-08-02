@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from datetime import timedelta
@@ -28,6 +29,12 @@ _KNOWN_DOC_IDS = {
     LOCATIONS_OPERATION: "24867916029505828",
 }
 
+# Meta answers a throttled GraphQL search with HTTP 200 and this code.
+_RATE_LIMIT_CODES = frozenset({1675004})
+# Long enough to actually clear. A throttle that is merely paused around gets
+# re-tripped, and Meta's persists far longer than a normal backoff.
+_RATE_LIMIT_BACKOFF_SECONDS = 120.0
+
 _MAX_RESPONSE = 12 * 1024 * 1024
 _LSD_RE = re.compile(r'\["LSD",\[\],\{"token":"([^"]+)"\}')
 _BUNDLE_RE = re.compile(r'https://static\.xx\.fbcdn\.net/rsrc\.php/[^"\\\s]+\.js')
@@ -40,6 +47,7 @@ _DOC_ID_TEMPLATE = (
 _session: wafer.AsyncSession | None = None
 _session_lock = asyncio.Lock()
 _lsd_cache: str | None = None
+_warmed = False
 _doc_id_cache: dict[str, str] = {}
 
 
@@ -66,20 +74,49 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
 
 
 async def close_session() -> None:
-    global _session, _lsd_cache
+    global _session, _lsd_cache, _warmed
     _session = None
     _lsd_cache = None
+    _warmed = False
     _doc_id_cache.clear()
 
 
 def _check(resp, what: str) -> None:
-    if resp.status_code in (401, 403, 429):
+    if resp.status_code == 429:
+        # Hold every caller off this host, not just this one, and honour the
+        # server's own number when it gives one. Without this the limiter keeps
+        # letting requests through at its base interval into an active throttle.
+        wait = float(getattr(resp, "retry_after", None) or _RATE_LIMIT_BACKOFF_SECONDS)
+        meta_careers_limiter.defer(wait)
+        raise MetaCareersBlockedError(
+            f"Meta rate-limited the {what} request; backing off {wait:.0f}s."
+        )
+    if resp.status_code in (401, 403):
         raise MetaCareersBlockedError(f"Meta declined the {what} request ({resp.status_code}).")
     if resp.status_code >= 500:
         raise MetaCareersUnavailableError(f"Meta returned {resp.status_code} for {what}.")
 
 
+async def _warm_origin(session) -> None:
+    """Visit the site root once per session before asking for the board page.
+
+    Meta throttles per path, and a cold session arriving straight at ``/jobs``
+    is the pattern it throttles: measured directly, ``/`` answered 200 while
+    ``/jobs?q=…`` raised ``RateLimited`` on the same session, and the block
+    persisted for hours. One root fetch earns the cookies that make the board
+    request read as a continuation rather than a first contact.
+    """
+    global _warmed
+    if _warmed:
+        return
+    _warmed = True
+    with contextlib.suppress(Exception):
+        await meta_careers_limiter.wait()
+        await session.get(SITE + "/", headers={"accept": "text/html"})
+
+
 async def _fetch_jobs_page(session) -> str:
+    await _warm_origin(session)
     await meta_careers_limiter.wait()
     resp = await session.get(SITE + _JOBS_PATH, headers={"accept": "text/html"})
     _check(resp, "board page")
@@ -188,6 +225,18 @@ async def graphql(
         _doc_id_cache[operation] = doc_id
         return payload
 
+    # Being throttled must never trigger rediscovery. A rate-limit reply and a
+    # rotated-doc_id reply look identical to _usable() — both carry `errors` and
+    # no `data` — but rediscovery fetches the board page *and walks every JS
+    # bundle*, so answering a "slow down" with a bundle scan is precisely the
+    # amplification that turns one throttle into a lasting one. Back off instead.
+    if _rate_limited(payload):
+        meta_careers_limiter.defer(_RATE_LIMIT_BACKOFF_SECONDS)
+        raise MetaCareersBlockedError(
+            f"Meta rate-limited the {operation} request; backing off "
+            f"{_RATE_LIMIT_BACKOFF_SECONDS:.0f}s. The query is fine — retry shortly."
+        )
+
     # A rotated doc_id answers with an error rather than data. Rediscover once.
     if allow_rediscovery:
         fresh = await discover_doc_id(session, operation)
@@ -200,6 +249,28 @@ async def graphql(
 
 def _usable(payload) -> bool:
     return isinstance(payload, dict) and isinstance(payload.get("data"), dict) and payload["data"]
+
+
+def _rate_limited(payload) -> bool:
+    """Whether a GraphQL reply means "slow down" rather than "wrong query".
+
+    Meta answers a throttled search with ``HTTP 200`` and::
+
+        {"errors":[{"message":"Rate limit exceeded","code":1675004}], ...}
+
+    Indistinguishable from a rotated ``doc_id`` unless the error is read.
+    """
+    if not isinstance(payload, dict):
+        return False
+    for error in payload.get("errors") or ():
+        if not isinstance(error, dict):
+            continue
+        if error.get("code") in _RATE_LIMIT_CODES:
+            return True
+        message = str(error.get("message") or "").casefold()
+        if "rate limit" in message or "too many requests" in message:
+            return True
+    return False
 
 
 def build_search_input(

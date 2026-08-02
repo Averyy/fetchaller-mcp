@@ -383,7 +383,25 @@ robots-advertised `/jobsearch/sitemap.xml` IS a complete, token-free inventory
 only URLs and a shared `lastmod`, so filtering by title or location through it
 would cost one page fetch per posting. That is fine as a correctness check and
 unusable for interactive search, so search keeps the persisted query with
-bundle rediscovery. See `docs/wafer-request-spa-api-discovery.md`.
+bundle rediscovery.
+
+**Rate limiting is a correctness concern here, not just politeness.** Meta
+throttles per path and answers a throttled search with `HTTP 200` carrying
+`{"errors":[{"message":"Rate limit exceeded","code":1675004}]}` — which is
+indistinguishable from a rotated `doc_id` unless the error is read. It used to
+be read as one, and rediscovery fetches the board page *and walks every JS
+bundle*, so being throttled triggered a bundle scan and made the throttle
+worse. Three rules now hold that off:
+
+- `_rate_limited()` reads the error and backs off instead of rediscovering.
+- `_check()` `defer()`s the shared limiter on a 429, honouring `Retry-After`.
+- `meta_careers_limiter` is 3.5s, not 2s: one search costs three requests (root
+  warm-up, board page for the `lsd`, then GraphQL).
+
+`_warm_origin()` fetches `/` once per session before `/jobs`. Measured
+directly: `/` answered 200 while `/jobs?q=…` raised `RateLimited` on the same
+session. A cold session landing straight on a deep path is the pattern Meta
+throttles. See `docs/spa-discovery.md`.
 
 Two silent-failure traps: `search_input` must carry Meta's full key set, and
 `offices[]` matches the **`location_display_name`** ("Vancouver, Canada"), not
@@ -396,19 +414,31 @@ avoids needing a second persisted-query id.
 
 ### Uber (`src/fetchaller/uber_jobs/`)
 
-Uber runs its own ATS — the SmartRecruiters `uber` tenant is an unrelated
-one-req stub. `POST /api/loadSearchJobsResults?localeCode=en` with
-`{"params": {"location": [{"country": "CAN", "city": "Toronto"}], "query": "…"},
-"page": 0, "limit": 100}`. An `x-csrf-token` header must be present but its
-value is never validated. `params.query` must be a **string**; a list returns
-zero. Counts arrive as a Long triple `{"low": N, "high": 0}`.
+Uber migrated off its own ATS to **Oracle Recruiting Cloud**, so `uber_jobs/`
+is a thin adapter over `oracle_recruiting/` rather than a client in its own
+right. The SmartRecruiters `uber` tenant is an unrelated one-req stub. The
+legacy `POST /api/loadSearchJobsResults` endpoint is gone from this repo: it
+returned empty `description` fields and unreliable locations, while ORC answers
+anonymously with the full posting text.
 
-**Limitation:** there is no per-posting description. `/api/{name}` answers
-`ERR_MISSING_HANDLER` for every detail-shaped handler name tried, the posting
-page is client-rendered with the body absent from the HTML, and the board's own
-`description` field comes back empty. A posting therefore resolves to metadata
-plus a link. Uber also ships all-null location fields for some reqs, which are
-labelled "Not specified" rather than dropped.
+`uber.com/{region}/{lang}/careers/list/` redirects to
+`jobs.uber.com/{lang}/jobs/`; both forms route here.
+
+**The board itself is server-rendered and has no client-side data endpoint** —
+established three ways rather than assumed:
+
+- Driving it in a browser: pagination is plain
+  `<a href="/en/jobs?query=…&page=2&pagesize=10">` links, no XHR. `pagesize` is
+  capped at 10 server-side, so it is not tunable.
+- Its React Flight (`text/x-component`) prefetches decode cleanly but carry
+  navigation and i18n labels — the largest record set is a 16-entry menu,
+  byte-identical between the detail and list pages.
+- The real search runs server-side against Oracle Fusion.
+
+Discovery therefore reports "this board server-renders its results" rather than
+returning a plan; see `docs/spa-discovery.md`. Note the board's RSC prefetches
+are challenged by Cloudflare when requested by an *unhardened* browser, which
+is a property of the client, not of Uber — plain wafer gets 200.
 
 ### Oracle Recruiting Cloud (`src/fetchaller/oracle_recruiting/`)
 
