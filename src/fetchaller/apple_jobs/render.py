@@ -68,6 +68,8 @@ def render_search_results(
     total: int = 0,
     title_filtered: int = 0,
     location_applied: bool = True,
+    truncated_by_limit: int = 0,
+    examined: int = 0,
 ) -> str:
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# Apple jobs{': ' + scope if scope else ''}", ""]
@@ -79,6 +81,8 @@ def render_search_results(
             board_total=total,
             board_label="Apple's board",
             board_scope=f"in {_clean(location)}" if location and location_applied else "",
+            truncated_by_limit=truncated_by_limit,
+            examined=examined,
         )
     )
     if location and not location_applied:

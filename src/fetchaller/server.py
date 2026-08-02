@@ -1707,6 +1707,7 @@ def create_server(
                             "description": (
                                 "\"adobe\", \"nvidia\", \"salesforce\", \"autodesk\", "
                                 "\"crowdstrike\", \"servicetitan\", \"motorolasolutions\", "
+                                "\"mastercard\", "
                                 "or a board URL "
                                 "(e.g. https://acme.wd1.myworkdayjobs.com/External)"
                             ),
@@ -1807,7 +1808,12 @@ def create_server(
                     "publishes pay bands inline where local law requires it (including "
                     "Canada), and those are surfaced as a Pay field. Its own search is "
                     "fuzzy — a \"product designer\" query returns engineering reqs — so "
-                    "title and location are both re-applied against each posting."
+                    "title and location are both re-applied against each posting. "
+                    "`title` and `job_category` search DIFFERENT things and return "
+                    "disjoint sets: category=\"Design\" finds an \"Art Director\" that "
+                    "no title query reaches, while title=\"designer\" finds a \"Design "
+                    "Verification Engineer\" that is not in the Design category. To "
+                    "survey a field rather than a job name, run the category too."
                 ),
                 inputSchema={
                     "type": "object",
@@ -1951,9 +1957,9 @@ def create_server(
                 name="search_apple_jobs",
                 description=(
                     "Search jobs.apple.com by title and location. A place name is "
-                    "resolved to Apple's own location code automatically. The locale "
-                    "sets the country scope: en-ca shows Canadian postings, en-us "
-                    "American ones."
+                    "resolved to Apple's own location code automatically. Country "
+                    "scope comes from `location` only — the locale changes the "
+                    "storefront in the output URLs and nothing else."
                 ),
                 inputSchema={
                     "type": "object",
@@ -1976,7 +1982,9 @@ def create_server(
                             "type": "string",
                             "maxLength": 16,
                             "description": (
-                                "Storefront locale, e.g. \"en-ca\" (default) or \"en-us\""
+                                "Storefront for the returned links, e.g. \"en-ca\" "
+                                "(default) or \"en-us\". Does NOT scope the search — "
+                                "use `location` for that."
                             ),
                         },
                         "strict_title": {

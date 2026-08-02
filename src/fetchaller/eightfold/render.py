@@ -81,6 +81,27 @@ def _description_markdown(html: str) -> str:
     return _BLANK_LINE_COLLAPSE_RE.sub("\n\n", md).strip()
 
 
+_REMOTE_RE = re.compile(r"\bremote\b", re.IGNORECASE)
+
+
+def _work_type(position: dict, where: str) -> str:
+    """The work mode, or nothing when the board's field is not real data.
+
+    On Eightfold's classic generation ``workLocationOption`` is the constant
+    ``"onsite"`` for every posting — measured across Netflix's board, where
+    reqs whose own location reads "Canada - Remote" and "USA - Remote" all
+    carry it. Work mode is a hard screen, so a field that contradicts the
+    location is worse than an absent one: the location is per-posting and the
+    board actually populates it.
+    """
+    declared = _clean(position.get("workLocationOption"))
+    if not _REMOTE_RE.search(where):
+        return declared
+    if declared.casefold().replace("-", "") in {"onsite", "on site", "inoffice", ""}:
+        return "remote (from the posting's location; this board's work-type field is unreliable)"
+    return declared
+
+
 def render_search_results(
     positions: list[dict],
     *,
@@ -90,6 +111,8 @@ def render_search_results(
     location: str = "",
     total: int = 0,
     title_filtered: int = 0,
+    truncated_by_limit: int = 0,
+    examined: int = 0,
 ) -> str:
     scope = " · ".join(
         part
@@ -108,6 +131,8 @@ def render_search_results(
             board_total=total,
             board_label="This board",
             board_scope=f"in {_clean(location)}" if location else "",
+            truncated_by_limit=truncated_by_limit,
+            examined=examined,
         )
     )
     if not total and positions:
@@ -131,12 +156,12 @@ def render_search_results(
         where = _location(position)
         if where:
             meta.append(f"- **Location**: {where}")
-        for label, key in (
-            ("Department", "department"),
-            ("Work type", "workLocationOption"),
-            ("Flexibility", "locationFlexibility"),
+        work_type = _work_type(position, where)
+        for label, value in (
+            ("Department", _clean(position.get("department"))),
+            ("Work type", work_type),
+            ("Flexibility", _clean(position.get("locationFlexibility"))),
         ):
-            value = _clean(position.get(key))
             if value:
                 meta.append(f"- **{label}**: {value}")
         posted = _posted(position)

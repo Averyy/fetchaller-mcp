@@ -16,6 +16,13 @@ from ..jobfilter import (
 )
 from . import api
 
+# How many postings one search examines, independent of `limit`. `limit`
+# sizes the output; this sizes the pool the filters run over. Tying the two
+# together made the result depend on how many rows the caller asked to see:
+# limit=1 examined 4 and returned 0 where limit=25 examined 100 and returned 13.
+_EXAMINE_CEILING = 200
+
+
 SORT = ("relevance", "date")
 _MARKDOWN_ESCAPE = str.maketrans({ch: "\\" + ch for ch in "\\`*_[]()#<>|"})
 _BLANK_LINE_COLLAPSE_RE = re.compile(r"\n{3,}")
@@ -58,6 +65,8 @@ def _render_results(
     google_total: int,
     title_filtered: int,
     location_filtered: int,
+    truncated_by_limit: int = 0,
+    examined: int = 0,
 ) -> str:
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# Google jobs{': ' + scope if scope else ''}", ""]
@@ -73,6 +82,8 @@ def _render_results(
             dropped_by_location=location_filtered,
             board_total=google_total,
             board_label="Google's own search",
+            truncated_by_limit=truncated_by_limit,
+            examined=examined,
         )
     )
     lines.append("")
@@ -171,7 +182,7 @@ async def search_google_jobs(
             # fetching only `limit` rows and then dropping some would report
             # "2 jobs in Toronto" from a board that has far more.
             filtering = (strict_title and title) or (strict_location and location)
-            fetch_limit = min(limit * 6, 200) if filtering else limit
+            fetch_limit = _EXAMINE_CEILING if filtering else limit
             locations = [location] if location else None
 
             async def run(query: str):
@@ -203,6 +214,7 @@ async def search_google_jobs(
             # Google's city filter is radius-based: a Toronto search returned 61
             # results of which only 25 actually list Toronto. The requested
             # place is therefore re-checked against each posting.
+            examined = len(jobs)
             location_dropped = 0
             if strict_location and location:
                 wanted = tokens(location)
@@ -213,6 +225,7 @@ async def search_google_jobs(
             title_dropped = 0
             if strict_title and title:
                 jobs, title_dropped = filter_by_title(jobs, _title, title)
+            matched = len(jobs)
             jobs = jobs[:limit]
 
             return {
@@ -223,6 +236,8 @@ async def search_google_jobs(
                     google_total=google_total,
                     title_filtered=title_dropped,
                     location_filtered=location_dropped,
+                    truncated_by_limit=matched - len(jobs),
+                    examined=examined,
                 ),
                 "content_type": "markdown",
             }

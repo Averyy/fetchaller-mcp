@@ -18,6 +18,13 @@ from ..jobfilter import (
 from . import api
 from .employers import KNOWN_EMPLOYERS, OracleEmployer, resolve_employer
 
+# How many postings one search examines, independent of `limit`. `limit`
+# sizes the output; this sizes the pool the filters run over. Tying the two
+# together made the result depend on how many rows the caller asked to see:
+# limit=1 examined 4 and returned 0 where limit=25 examined 100 and returned 13.
+_EXAMINE_CEILING = 400
+
+
 _MARKDOWN_ESCAPE = str.maketrans({ch: "\\" + ch for ch in "\\`*_[]()#<>|"})
 _BLANK_LINE_COLLAPSE_RE = re.compile(r"\n{3,}")
 
@@ -74,6 +81,8 @@ def _render_results(
     total: int,
     title_filtered: int,
     location_filtered: int,
+    truncated_by_limit: int = 0,
+    examined: int = 0,
 ) -> str:
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# {_clean(employer.label)} jobs{': ' + scope if scope else ''}", ""]
@@ -85,6 +94,8 @@ def _render_results(
             dropped_by_location=location_filtered,
             board_total=total,
             board_label=f"{_clean(employer.label)}'s board",
+            truncated_by_limit=truncated_by_limit,
+            examined=examined,
         )
     )
     lines.append("")
@@ -228,7 +239,7 @@ async def search_oracle_jobs(
                 }
 
             server_location = _server_location(location)
-            fetch_limit = min(limit * 6, 400) if (strict_title and title) else limit
+            fetch_limit = _EXAMINE_CEILING if (strict_title and title) else limit
             # A city the board will not filter on means the whole board comes
             # back, so pull deeper before matching locally — otherwise a real
             # match sitting past the window reads as "no jobs there".
@@ -260,6 +271,7 @@ async def search_oracle_jobs(
                             jobs.append(job)
                     total = max(total, extra_total)
 
+            examined = len(jobs)
             location_dropped = 0
             if strict_location and location:
                 wanted = tokens(location)
@@ -270,6 +282,7 @@ async def search_oracle_jobs(
             title_dropped = 0
             if strict_title and title:
                 jobs, title_dropped = filter_by_title(jobs, lambda j: j.get("Title"), title)
+            matched = len(jobs)
             jobs = jobs[:limit]
 
             return {
@@ -281,6 +294,8 @@ async def search_oracle_jobs(
                     total=total,
                     title_filtered=title_dropped,
                     location_filtered=location_dropped,
+                    truncated_by_limit=matched - len(jobs),
+                    examined=examined,
                 ),
                 "content_type": "markdown",
             }

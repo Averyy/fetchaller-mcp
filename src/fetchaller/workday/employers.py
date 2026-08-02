@@ -19,6 +19,9 @@ KNOWN_EMPLOYERS: dict[str, str] = {
     "cisco": "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers",
     "crowdstrike": "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers",
     "gaf": "https://gafsgi.wd5.myworkdayjobs.com/GAF_Careers",
+    # 1,073 reqs, 83 of them in Canada, and a real Toronto design presence.
+    # The site id is "CorporateCareers"; "External" 404s on this tenant.
+    "mastercard": "https://mastercard.wd1.myworkdayjobs.com/CorporateCareers",
     "motorolasolutions": "https://motorolasolutions.wd5.myworkdayjobs.com/Careers",
     "nvidia": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
     # Deliberately NO "clearpath" alias. Clearpath Robotics and OTTO Motors are

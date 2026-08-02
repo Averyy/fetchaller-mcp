@@ -178,3 +178,67 @@ class TestCountsLine:
 
     def test_nothing_extra_when_there_is_nothing_to_add(self):
         assert jobfilter.counts_line(0) == ["_0 jobs shown_"]
+
+
+class TestCountryAliases:
+    """Boards disagree on how to spell a country; it is one constraint.
+
+    Live regression: Google spells the US "New York, NY, USA", so
+    location="United States" with strict matching dropped all 60 of its US
+    postings while location="Canada" matched "Waterloo, ON, Canada" fine.
+    The asymmetry was the tell.
+    """
+
+    def test_the_country_name_matches_the_code(self):
+        assert jobfilter.location_matches("New York, NY, USA", jobfilter.tokens("United States"))
+        assert jobfilter.location_matches("Sunnyvale, CA, USA", jobfilter.tokens("United States"))
+
+    def test_the_code_matches_the_name(self):
+        assert jobfilter.location_matches("London, United Kingdom", jobfilter.tokens("GBR"))
+
+    def test_the_previously_working_direction_still_works(self):
+        assert jobfilter.location_matches("Waterloo, ON, Canada", jobfilter.tokens("Canada"))
+
+    def test_a_city_plus_a_respelled_country_still_needs_the_city(self):
+        assert jobfilter.location_matches("New York, NY, USA", jobfilter.tokens("New York, United States"))
+        assert not jobfilter.location_matches("Austin, TX, USA", jobfilter.tokens("New York, United States"))
+
+    def test_a_different_country_does_not_match(self):
+        assert not jobfilter.location_matches("Austin, TX, USA", jobfilter.tokens("Canada"))
+        assert not jobfilter.location_matches("Toronto, ON, Canada", jobfilter.tokens("United States"))
+
+    def test_a_short_code_does_not_match_a_longer_word(self):
+        # "us" must not hit "Houston" or similar.
+        assert not jobfilter.location_matches("Houston, Texas", jobfilter.tokens("US"))
+
+
+class TestTruncationDisclosure:
+    """`limit` sizes the output; it must never silently hide matches."""
+
+    def test_matches_that_did_not_fit_are_named(self):
+        line = jobfilter.counts_line(3, dropped_by_title=136, truncated_by_limit=4)[0]
+        assert "3 jobs shown of 7 matched (raise `limit` for the rest)" in line
+        assert "dropped 136 by title" in line
+
+    def test_nothing_is_added_when_everything_fitted(self):
+        assert jobfilter.counts_line(7, dropped_by_title=136)[0] == (
+            "_7 jobs shown; dropped 136 by title_"
+        )
+
+    def test_an_unexamined_remainder_is_stated(self):
+        # Apple: 1510 loose matches, a 100-posting window, "13 jobs shown".
+        lines = jobfilter.counts_line(
+            13, dropped_by_title=87, board_total=1510, examined=100,
+            board_label="Apple's board",
+        )
+        body = "\n".join(lines)
+        assert "the first 100 examined" in body
+        assert "remaining 1410 were not examined" in body
+
+    def test_a_fully_examined_board_says_nothing_about_a_window(self):
+        lines = jobfilter.counts_line(
+            21, dropped_by_title=8, board_total=28, examined=29, board_label="This board"
+        )
+        body = "\n".join(lines)
+        assert "examined" not in body
+        assert "each posting's own title" in body
