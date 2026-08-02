@@ -9,6 +9,7 @@ from scripts import smoke_test
 from scripts.smoke_test import (
     _BLOCKED_RESPONSE,
     EXPECTED_TOOLS,
+    LIVE_SUITE_EXEMPT,
     Result,
     _has_real_price,
     _stdio_server_parameters,
@@ -386,7 +387,9 @@ async def test_shared_live_suite_calls_every_tool_and_uses_search_ids() -> None:
         "get_linkedin_job",
         "search_realtor",
     ]
-    assert len(results) == len(EXPECTED_TOOLS) + 1
+    # Every registered tool must get a live call except the explicitly
+    # exempt job boards; +1 for the stdio-cleanliness gate.
+    assert len(results) == len(EXPECTED_TOOLS) - len(LIVE_SUITE_EXEMPT) + 1
     assert calls[5] == (
         "get_aliexpress_product",
         {"product_id": "1005001234567890"},
@@ -483,3 +486,61 @@ async def test_shared_live_suite_can_omit_credentialed_reddit_calls() -> None:
     assert "browse_reddit" not in calls
     assert "search_reddit" not in calls
     assert "fetch" in calls
+
+
+class TestExpectedToolsTracksTheServer:
+    """`EXPECTED_TOOLS` is compared for exact equality, order included.
+
+    It drifted silently when the eight tech-careers tools landed: the only
+    check lived behind a full Docker build, so CI reported
+    `FAIL initialize/list_tools: fetchaller 3.4.0; 20 tools` only after the
+    image was built and pushed. This runs in the normal suite instead.
+    """
+
+    def _registered_in_order(self) -> list[str]:
+        import pathlib
+        import re
+
+        src = pathlib.Path("src/fetchaller/server.py").read_text()
+        seen: set[str] = set()
+        order: list[str] = []
+        for name in re.findall(r'name="([a-z_]+)"', src):
+            if name not in seen:
+                seen.add(name)
+                order.append(name)
+        return order
+
+    def test_matches_the_servers_registration_order(self):
+        assert EXPECTED_TOOLS == self._registered_in_order()
+
+    def test_every_tech_careers_tool_is_covered(self):
+        for name in (
+            "search_eightfold_jobs",
+            "search_workday_jobs",
+            "search_oracle_jobs",
+            "search_amazon_jobs",
+            "search_google_jobs",
+            "search_apple_jobs",
+            "search_meta_jobs",
+            "search_uber_jobs",
+        ):
+            assert name in EXPECTED_TOOLS, name
+
+    def test_no_duplicates(self):
+        assert len(EXPECTED_TOOLS) == len(set(EXPECTED_TOOLS))
+
+
+class TestLiveSuiteExemptions:
+    """The every-tool invariant is narrowed explicitly, never silently."""
+
+    def test_exempt_tools_are_all_real_registered_tools(self):
+        assert LIVE_SUITE_EXEMPT <= set(EXPECTED_TOOLS)
+
+    def test_only_job_boards_are_exempt(self):
+        # Exemption is for rate-limited third-party boards. Anything else
+        # skipping the live gate should be a deliberate, reviewed decision.
+        assert all(name.startswith("search_") and name.endswith("_jobs") for name in LIVE_SUITE_EXEMPT)
+
+    def test_core_tools_are_never_exempt(self):
+        for name in ("fetch", "search", "browse_reddit", "search_reddit", "search_realtor"):
+            assert name not in LIVE_SUITE_EXEMPT, name

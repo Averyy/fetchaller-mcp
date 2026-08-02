@@ -29,6 +29,9 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from fetchaller import __version__
 from fetchaller.content._price import has_positive_price
 
+# Compared for exact equality *including order* against what the server
+# registers, so this must track `server.py`'s Tool() order, not just its set.
+# The tech-careers tools sit between get_linkedin_job and search_realtor.
 EXPECTED_TOOLS = [
     "fetch",
     "browse_reddit",
@@ -41,8 +44,40 @@ EXPECTED_TOOLS = [
     "search_marketplace",
     "search_linkedin_jobs",
     "get_linkedin_job",
+    "search_eightfold_jobs",
+    "search_workday_jobs",
+    "search_oracle_jobs",
+    "search_amazon_jobs",
+    "search_google_jobs",
+    "search_apple_jobs",
+    "search_meta_jobs",
+    "search_uber_jobs",
     "search_realtor",
 ]
+
+# Registered tools the live suite deliberately does NOT call.
+#
+# Every other tool gets a real request on each container build. These do not,
+# because they hit third-party job boards that rate-limit aggressively —
+# Meta will answer a burst with an HTTP 200 carrying "Rate limit exceeded" —
+# so putting eight of them in the build gate buys flakiness rather than
+# signal. They are covered by unit tests and by live testing at development
+# time instead.
+#
+# This exists so the omission is visible and asserted, rather than the
+# every-tool invariant being quietly loosened.
+LIVE_SUITE_EXEMPT = frozenset(
+    {
+        "search_eightfold_jobs",
+        "search_workday_jobs",
+        "search_oracle_jobs",
+        "search_amazon_jobs",
+        "search_google_jobs",
+        "search_apple_jobs",
+        "search_meta_jobs",
+        "search_uber_jobs",
+    }
+)
 
 _STDIO_COMMAND_ENV = "SMOKE_STDIO_COMMAND"
 
