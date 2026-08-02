@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "fetchaller-mcp"
-version = "3.3.4"
+version = "3.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -428,7 +428,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = ">=0.4.7" },
+    { name = "wafer-py", extras = ["browser"], specifier = ">=0.4.8" },
 ]
 provides-extras = ["dev"]
 
@@ -1629,14 +1629,14 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.4.7"
+version = "0.4.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/33/b0/635679f2b9123dccb4732ed960cbb08de9c2de3de3491f5463cd08cbda31/wafer_py-0.4.7.tar.gz", hash = "sha256:ecdb46679793bd12c780d3a57cca6aa705452e6ec0aa562f8e55ca2a7263c091", size = 1369715, upload-time = "2026-08-02T14:50:47.977Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/3c/8f086e9eae29f71ba65ff7839e81fb4b026e19d31e71bbc614adf4acfa8e/wafer_py-0.4.8.tar.gz", hash = "sha256:3e10715d03b31a08ca3dc9b84fc7576c75683414d1d77785e1792797b82ef49d", size = 1373686, upload-time = "2026-08-02T19:33:31.426Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/f5/1fdde994b0eddb9d6300cbb7171544f3c44c8e9736ee98f68bd66457d43e/wafer_py-0.4.7-py3-none-any.whl", hash = "sha256:5b789e570dd7060dc8c3526224c2ede39682a481dbe15c3f7b30c065b02e61e2", size = 514574, upload-time = "2026-08-02T14:50:46.183Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/ce/0cdb34914762cecf0890250ac86c16132df3b8a5abd28c0f5d81a4588c80/wafer_py-0.4.8-py3-none-any.whl", hash = "sha256:5cab517c46843bcee2610d68b0b87c9cd8bca0b10d859b51733907f45395c3b4", size = 515397, upload-time = "2026-08-02T19:33:29.265Z" },
 ]
 
 [package.optional-dependencies]
