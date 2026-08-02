@@ -108,7 +108,7 @@ Search a career site hosted by Eightfold AI — `microsoft`, `netflix`, `paypal`
 
 ### search_workday_jobs(employer, title?, location?, strict_title?, limit?)
 
-Search any Workday board (`*.myworkdayjobs.com`) by job title and location — `adobe`, `nvidia`, `salesforce`, `autodesk`, `crowdstrike`, `servicetitan`, `motorolasolutions`, or any tenant by board URL. Resolves the tenant's own location facet whatever it is named (tenants variously call it `locationCountry`, `locationHierarchy1`, or a custom field), and filters the title client-side because Workday's `searchText` silently drops real matches on some tenants.
+Search any Workday board (`*.myworkdayjobs.com`) by job title and location — `adobe`, `nvidia`, `salesforce`, `autodesk`, `crowdstrike`, `servicetitan`, `motorolasolutions`, `mastercard`, or any tenant by board URL. Resolves the tenant's own location facet whatever it is named (tenants variously call it `locationCountry`, `locationHierarchy1`, or a custom field), and filters the title client-side because Workday's `searchText` silently drops real matches on some tenants.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|

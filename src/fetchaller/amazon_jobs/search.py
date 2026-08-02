@@ -15,6 +15,13 @@ from ..jobfilter import (
 from . import api
 from .render import render_job, render_search_results
 
+# How many postings one search examines, independent of `limit`. `limit`
+# sizes the output; this sizes the pool the filters run over. Tying the two
+# together made the result depend on how many rows the caller asked to see:
+# limit=1 examined 4 and returned 0 where limit=25 examined 100 and returned 13.
+_EXAMINE_CEILING = 300
+
+
 SORT = ("relevant", "recent")
 
 
@@ -77,7 +84,7 @@ async def search_amazon_jobs(
 
             # Over-fetch when a filter will thin the results afterwards.
             filtering = (strict_title and title) or (strict_location and location)
-            fetch_limit = min(limit * 6, 300) if filtering else limit
+            fetch_limit = _EXAMINE_CEILING if filtering else limit
 
             async def run(query: str):
                 return await api.search_all_jobs(
@@ -108,6 +115,7 @@ async def search_amazon_jobs(
                             jobs.append(job)
                     hits = max(hits, extra_hits)
 
+            examined = len(jobs)
             location_dropped = 0
             if strict_location and location:
                 # Amazon writes the country as an alpha-3 code
@@ -131,6 +139,7 @@ async def search_amazon_jobs(
             title_dropped = 0
             if strict_title and title:
                 jobs, title_dropped = filter_by_title(jobs, lambda j: j.get("title"), title)
+            matched = len(jobs)
             jobs = jobs[:limit]
 
             return {
@@ -143,6 +152,8 @@ async def search_amazon_jobs(
                     hits=hits,
                     title_filtered=title_dropped,
                     location_filtered=location_dropped,
+                    truncated_by_limit=matched - len(jobs),
+                    examined=examined,
                 ),
                 "content_type": "markdown",
             }

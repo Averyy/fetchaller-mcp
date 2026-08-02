@@ -66,13 +66,51 @@ def location_matches(value: str, wanted: list[str]) -> bool:
 
     Exact-ish by design: "Toronto" matches "Canada - Toronto" and "Canada,
     Toronto", and "Canada" matches both of those plus "Canada Remote".
+
+    A country is matched by any of its spellings. Boards disagree on which to
+    write — Google spells the United States "New York, NY, USA" — so
+    ``location="United States"`` dropped all 60 of its US postings while
+    ``location="Canada"`` matched "Waterloo, ON, Canada" fine. The asymmetry
+    was the tell: the country name and its code are the same constraint.
     """
     if not wanted:
         return True
     have = tokens(value)
     if not have:
         return False
-    return all(_token_hit(token, have) for token in wanted)
+    return any(
+        all(_token_hit(token, have) for token in variant)
+        for variant in _country_variants(wanted)
+    )
+
+
+def _build_country_aliases() -> dict[str, tuple[tuple[str, ...], ...]]:
+    """Every token spelling of each country, keyed by its alpha-3 code."""
+    by_code: dict[str, set[tuple[str, ...]]] = {}
+    for name, code in COUNTRY_ALPHA3.items():
+        spellings = by_code.setdefault(code, set())
+        spelling = tuple(tokens(name))
+        if spelling:
+            spellings.add(spelling)
+        spellings.add((code.casefold(),))
+    return {code: tuple(sorted(spellings)) for code, spellings in by_code.items()}
+
+
+def _country_variants(wanted: list[str]) -> list[tuple[str, ...]]:
+    """``wanted`` re-spelled with each alias of whatever country it names."""
+    original = tuple(wanted)
+    variants = [original]
+    for aliases in _COUNTRY_ALIASES.values():
+        for alias in aliases:
+            size = len(alias)
+            for start in range(len(original) - size + 1):
+                if original[start : start + size] != alias:
+                    continue
+                head, tail = original[:start], original[start + size :]
+                variants.extend(
+                    head + other + tail for other in aliases if other != alias
+                )
+    return variants
 
 
 def filter_by_title(items, name_of, title: str):
@@ -92,21 +130,30 @@ def counts_line(
     board_total: int = 0,
     board_label: str = "The board",
     board_scope: str = "",
+    truncated_by_limit: int = 0,
+    examined: int = 0,
 ) -> list[str]:
     """The result-count preamble, as markdown lines.
 
-    Two different numbers get reported and they count different things. The
-    drop counts describe the postings this process actually examined, so
-    ``shown + dropped`` always reconciles. ``board_total`` is the board's own
-    figure for a query it *ranked* rather than filtered, and is a larger pool
-    than the one examined whenever a page limit applied.
+    Three numbers get reported and they count different things.
 
-    Concatenating the two reads as arithmetic and produces nonsense — Microsoft
+    ``shown + dropped`` is the pool this process examined and always
+    reconciles. ``truncated_by_limit`` is what matched but did not fit in
+    ``limit``; leaving it out let "3 shown of 143; 136 dropped" hide the four
+    further matches the caller never saw. ``board_total`` is the board's own
+    figure for a query it *ranked* rather than filtered.
+
+    Concatenating them reads as arithmetic and produces nonsense — Microsoft
     reported "0 jobs shown of 33 matching; 34 dropped by the title filter",
     where 33 was the board's count for Canada and 34 was the number of postings
     fetched (the broadened-query retry adds postings past the first count). So
     the board's figure gets its own sentence, explicitly labelled as the
     board's and as loose.
+
+    ``examined`` is how many of ``board_total`` were actually pulled. Any board
+    ranking more postings than one search can page through leaves the rest
+    unseen, and a result that says only "13 jobs shown" against 1510 matches
+    invites the reader to treat 13 as the answer.
     """
     plural = "" if shown == 1 else "s"
     dropped: list[tuple[int, str]] = []
@@ -116,6 +163,8 @@ def counts_line(
         dropped.append((dropped_by_location, "location"))
 
     head = f"_{shown} job{plural} shown"
+    if truncated_by_limit:
+        head += f" of {shown + truncated_by_limit} matched (raise `limit` for the rest)"
     if dropped:
         head += "; dropped " + " and ".join(f"{n} by {field}" for n, field in dropped)
     lines = [head + "_"]
@@ -127,19 +176,34 @@ def counts_line(
     # says has results and the filter emptied.
     if board_total > shown:
         where = f" {board_scope}" if board_scope else ""
+        # A window smaller than the board's own count means the rest was never
+        # looked at, and saying so is the difference between a partial answer
+        # and a wrong one.
+        partial = 0 < examined < board_total
         if dropped:
             fields = " and ".join(field for _, field in dropped)
+            checked = (
+                f"the first {examined} examined" if partial else "each posting's own"
+            )
             lines.append("")
             lines.append(
                 f"_{board_label} reported {board_total} loose "
                 f"match{'' if board_total == 1 else 'es'}{where} for this query; the "
-                f"count above is after re-checking each posting's own {fields}._"
+                f"count above is after re-checking {checked}"
+                + (f" {fields}._" if not partial else f" against {fields}._")
             )
         else:
             lines.append("")
             lines.append(
                 f"_{board_label} has {board_total}{where} for this query; "
                 "raise `limit` to see more._"
+            )
+        if partial:
+            lines.append("")
+            lines.append(
+                f"_The remaining {board_total - examined} were not examined. "
+                "Narrow the query — a location, or a more specific title — to "
+                "bring them inside the window._"
             )
     return lines
 
@@ -204,6 +268,10 @@ COUNTRY_ALPHA3 = {
     "thailand": "THA",
     "netherland": "NLD",
 }
+
+# Built once from the table above, so a country added there is matchable by
+# every one of its spellings without a second list to keep in step.
+_COUNTRY_ALIASES = _build_country_aliases()
 
 
 def country_alpha3(text: str) -> str:

@@ -48,7 +48,11 @@ board's raw result count as if it were the filtered count, and always surface
 how many postings a filter dropped rather than hiding the difference. Those are
 two different pools and must never share a clause — `jobfilter.counts_line()`
 renders both for every board, keeping `shown + dropped` reconcilable and giving
-the board's own figure a separate, labelled sentence. A tool's published
+the board's own figure a separate, labelled sentence. `limit` sizes the output
+and nothing else: the examined pool is a per-board `_EXAMINE_CEILING` constant,
+never a multiple of `limit`, because deriving it from `limit` made the *answer*
+depend on how many rows the caller asked for. Whatever a window could not
+reach must be stated, never left implied. A tool's published
 `maximum` must equal what the boundary validator accepts (`_TOOL_INTEGER_RANGES`
 in `server.py`); advertising a bound and then rejecting it is worse than
 publishing no bound. Workday's

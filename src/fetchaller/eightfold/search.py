@@ -17,6 +17,13 @@ from . import api
 from .render import render_position, render_search_results
 from .url import KNOWN_EMPLOYERS, board_root, extract_position_id, resolve_employer
 
+# How many postings one search examines, independent of `limit`. `limit`
+# sizes the output; this sizes the pool the filters run over. Tying the two
+# together made the result depend on how many rows the caller asked to see:
+# limit=1 examined 4 and returned 0 where limit=25 examined 100 and returned 13.
+_EXAMINE_CEILING = 100
+
+
 SORT = ("relevance", "recent")
 _SORT_PARAM = {"relevance": "relevance", "recent": "most_recent"}
 
@@ -97,7 +104,8 @@ async def search_eightfold_jobs(
             )
 
             # Over-fetch when a title filter will thin the results afterwards.
-            fetch_limit = min(limit * 4, 100) if (strict_title and title) else limit
+            # Fixed, not a multiple of `limit`: see _EXAMINE_CEILING.
+            fetch_limit = _EXAMINE_CEILING if (strict_title and title) else limit
 
             async def run(query: str):
                 return await api.search_all_positions(
@@ -136,6 +144,7 @@ async def search_eightfold_jobs(
                 positions, dropped = filter_by_title(
                     positions, lambda p: p.get("name"), title
                 )
+            matched = len(positions)
             positions = positions[:limit]
 
             root = board_root(board_url) or board_url
@@ -147,6 +156,8 @@ async def search_eightfold_jobs(
                 location=location,
                 total=total,
                 title_filtered=dropped,
+                truncated_by_limit=matched - len(positions),
+                examined=fetched,
             )
             # Only when the *location* found nothing. If the board returned
             # postings for it and the title filter is what emptied the list,

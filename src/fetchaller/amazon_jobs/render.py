@@ -97,6 +97,8 @@ def render_search_results(
     hits: int = 0,
     title_filtered: int = 0,
     location_filtered: int = 0,
+    truncated_by_limit: int = 0,
+    examined: int = 0,
 ) -> str:
     # Every filter that shaped the result belongs in the heading. A category
     # search with no title rendered as a bare "# Amazon jobs", which reads as
@@ -119,6 +121,8 @@ def render_search_results(
             dropped_by_location=location_filtered,
             board_total=hits,
             board_label="Amazon's board",
+            truncated_by_limit=truncated_by_limit,
+            examined=examined,
         )
     )
     lines.append("")

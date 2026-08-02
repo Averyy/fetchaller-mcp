@@ -133,6 +133,59 @@ def _req_id(posting: dict) -> str:
     return _clean(", ".join(embedded or values))
 
 
+async def _diagnose_board(board_url: str, session) -> str:
+    """Say which failure it was.
+
+    Every path in ``search_workday_board`` returns ``None``, so a gated board,
+    a wrong site id and a wrong host all read as "did not answer" — three
+    different problems, only one of which the caller can fix. Measured:
+    Intuit answers 401, Visa 422, Thomson Reuters 404. One request, and only
+    on the failure path.
+    """
+    generic = f"Workday board {board_url} did not answer."
+    params = extract_workday_board_params(board_url)
+    if not params:
+        return (
+            f"{board_url} is not a Workday board URL. Expected "
+            "https://{tenant}.wd{N}.myworkdayjobs.com/{site}."
+        )
+    tenant, _lang, site = params
+    api = f"https://{urlparse(board_url).netloc}/wday/cxs/{tenant}/{site}/jobs"
+    try:
+        resp = await session.post(
+            api,
+            json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""},
+            headers={"accept": "application/json", "content-type": "application/json"},
+        )
+    except Exception as exc:  # noqa: BLE001 - the type is the diagnosis
+        return (
+            f"Could not reach {urlparse(board_url).netloc} ({type(exc).__name__}). "
+            "Check the tenant host — Workday numbers them wd1 through wd103 and "
+            "the number is part of the hostname."
+        )
+    status = resp.status_code
+    if status in (401, 403):
+        return (
+            f"Workday board {board_url} requires a login (HTTP {status}). "
+            "This tenant does not publish its jobs anonymously, so there is no "
+            "public listing to read."
+        )
+    if status == 404:
+        return (
+            f"No Workday board at {board_url} (HTTP 404). Either the host is "
+            f"wrong or '{tenant}' publishes under a different wd number."
+        )
+    if status == 422:
+        return (
+            f"Workday rejected the site id '{site}' on tenant '{tenant}' "
+            f"(HTTP 422). The host is right; the path segment after it is not — "
+            "check the board's own URL for the exact spelling."
+        )
+    if status >= 500:
+        return f"Workday tenant '{tenant}' returned HTTP {status}. Try again shortly."
+    return f"{generic} (HTTP {status})"
+
+
 def _posting_url(board_url: str, posting: dict) -> str:
     external = (posting.get("externalPath") or "").strip()
     if not external:
@@ -153,6 +206,7 @@ def _render(
     dropped: int,
     location_applied: bool,
     location_hint: str,
+    truncated_by_limit: int = 0,
 ) -> str:
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# {_clean(employer)} jobs{': ' + scope if scope else ''}", ""]
@@ -165,6 +219,7 @@ def _render(
             board_label="This board",
             # With a facet applied, `total` counts the located slice, not the board.
             board_scope=f"in {_clean(location)}" if location_applied and location else "",
+            truncated_by_limit=truncated_by_limit,
         )
     )
     if location and not location_applied:
@@ -284,7 +339,7 @@ async def search_workday_jobs(
                 limit=fetch_limit,
             )
             if result is None:
-                return {"error": f"Workday board {board_url} did not answer."}
+                return {"error": await _diagnose_board(board_url, session)}
 
             postings = result.get("jobPostings") or []
             total = result.get("total") or len(postings)
@@ -336,6 +391,7 @@ async def search_workday_jobs(
             dropped = 0
             if strict_title and title:
                 postings, dropped = filter_by_title(postings, lambda p: p.get("title"), title)
+            matched = len(postings)
             postings = postings[:limit]
 
             # Only the postings actually being shown, so this costs at most
@@ -360,6 +416,7 @@ async def search_workday_jobs(
                     location=location,
                     total=total,
                     dropped=dropped,
+                    truncated_by_limit=matched - len(postings),
                     location_applied=location_applied,
                     location_hint=hint,
                 ),

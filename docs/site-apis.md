@@ -242,6 +242,26 @@ query returns a radius. The shared rule for all six clients: **the board's
 filter is an optimisation, the client's filter is the guarantee.**
 `src/fetchaller/jobfilter.py` holds the matching used by all of them.
 
+**`limit` sizes the output, never the work.** Each client has an
+`_EXAMINE_CEILING` — the number of postings one search pulls before the
+filters run — and it is a constant, independent of `limit`. Deriving it from
+`limit` (as `min(limit * 4, 100)`) made the answer depend on how many rows the
+caller asked to see: Apple's "designer in Cupertino" examined 4 postings at
+`limit=1` and returned **none**, then examined 100 at `limit=25` and returned
+13. Asking for fewer results returned fewer *matches*, and raising `limit`
+surfaced different jobs rather than more of the same ranked list. Two
+disclosures follow from the ceiling and both are mandatory: matches that did
+not fit `limit` are counted in the summary line, and a board reporting more
+than the window examined gets an explicit "the remaining N were not examined".
+Apple ranks 1510 for that query against a 100-posting window — a bare "13 jobs
+shown" reads as the answer when it is 6% of one page of it.
+
+**A country is one constraint however a board spells it.** `location_matches`
+expands a country name to every alias in `COUNTRY_ALPHA3`, so `"United
+States"` matches Google's `"New York, NY, USA"`. Without it the behaviour was
+asymmetric — `"Canada"` matched `"Waterloo, ON, Canada"` while `"United
+States"` dropped all 60 US postings.
+
 | Board | Search endpoint | Detail | Location filter |
 |---|---|---|---|
 | Eightfold PCS-X | GET `{host}/api/pcsx/search?domain={groupId}` | GET `/api/pcsx/position_details` | `location=` free text |
@@ -266,6 +286,15 @@ is not enabled for this user."}`; that exact 403 selects the classic path,
 while any *other* 403 is a real refusal and is raised. Classic records are
 renamed to the PCS-X field names before leaving the module so callers see one
 shape.
+
+**`workLocationOption` is not data on the classic generation.** Every Netflix
+posting carries the constant `"onsite"`, including reqs whose own `location`
+reads `"Canada - Remote"` and `"USA - Remote"`; `locationFlexibility` is
+`null` throughout. Work mode is a hard screen, so a field contradicting the
+location is worse than an absent one — the location is per-posting and the
+board populates it. `render._work_type` prefers the location wherever the two
+disagree and says why in the rendered value. PCS-X tenants populate the field
+properly (`remote_local` and similar) and are passed through untouched.
 
 The `domain` parameter is the Eightfold **group id**, published by every tenant
 page as `window._EF_GROUP_ID` (`microsoft.com`, `netflix.com`, `paypal.com`).
@@ -363,6 +392,14 @@ strings, but it is part of the request contract; `format: {}` is enough. (The
 `/api/v1/refData/*` reference routes really do answer `401`, which is what
 sent the first investigation down the wrong path.) A test pins `format` into
 every request body so it cannot be tidied away.
+
+**The locale is cosmetic.** `en-us` and `en-ca` return byte-identical results
+— same 4878 total, same requisition ids in the same order — differing only in
+the `/en-us/` or `/en-ca/` segment of each output link. It selects a
+storefront for URLs, not a country scope. The tool description used to claim
+otherwise ("en-ca shows Canadian postings, en-us American ones"), which would
+have a caller believe they had scoped a search they had not. Country scope
+comes from `location` alone.
 
 The API is primary. The SSR page remains the fallback and embeds the same
 result set in `window.__staticRouterHydrationData` — a JS string literal handed

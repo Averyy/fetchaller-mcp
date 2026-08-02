@@ -10,6 +10,13 @@ from . import api
 from .render import render_job, render_search_results
 
 # Already in `{slug}-{CODE}` form, e.g. "toronto-TOR" — passed through as-is.
+# How many postings one search examines, independent of `limit`. `limit`
+# sizes the output; this sizes the pool the filters run over. Tying the two
+# together made the result depend on how many rows the caller asked to see:
+# limit=1 examined 4 and returned 0 where limit=25 examined 100 and returned 13.
+_EXAMINE_CEILING = 100
+
+
 _LOCATION_SLUG_RE = re.compile(r"^[a-z0-9-]+-[A-Z0-9]{2,6}$")
 
 
@@ -61,8 +68,12 @@ async def search_apple_jobs(
 ) -> dict:
     """Search jobs.apple.com, filtered by title and location.
 
-    ``locale`` selects the storefront and with it the default country scope —
-    ``en-ca`` shows Canadian postings, ``en-us`` American ones.
+    ``locale`` selects the storefront for the output URLs and nothing else.
+    Measured: ``en-us`` and ``en-ca`` return byte-identical results — the same
+    4878 total and the same requisition ids in the same order — differing only
+    in the ``/en-us/`` or ``/en-ca/`` segment of each link. Country scope comes
+    from ``location`` alone, so a caller who set the locale and trusted it to
+    scope the search would believe they had filtered when they had not.
     """
     limit = max(1, min(int(limit or 25), 100))
     locale = api.normalize_locale(locale)
@@ -74,7 +85,12 @@ async def search_apple_jobs(
             location_param = await _resolve_location(session, locale, location)
             location_applied = bool(location_param) or not location
 
-            fetch_limit = min(limit * 4, 100) if (strict_title and title) else limit
+            # The examined window is fixed, never a multiple of `limit`.
+            # Deriving it from `limit` meant limit=1 examined 4 postings and
+            # returned none while limit=25 examined 100 and returned 13 —
+            # asking for fewer results returned fewer *matches*, and raising
+            # `limit` surfaced different jobs rather than more of the same list.
+            fetch_limit = _EXAMINE_CEILING if (strict_title and title) else limit
 
             async def run(query: str):
                 return await api.search_all(
@@ -110,9 +126,11 @@ async def search_apple_jobs(
                 wanted = tokens(location)
                 jobs = [j for j in jobs if location_matches(_job_locations(j), wanted)]
 
+            examined = len(jobs)
             dropped = 0
             if strict_title and title:
                 jobs, dropped = filter_by_title(jobs, lambda j: j.get("postingTitle"), title)
+            matched = len(jobs)
             jobs = jobs[:limit]
 
             return {
@@ -123,6 +141,8 @@ async def search_apple_jobs(
                     location=location,
                     total=total,
                     title_filtered=dropped,
+                    truncated_by_limit=matched - len(jobs),
+                    examined=examined,
                     location_applied=location_applied,
                 ),
                 "content_type": "markdown",

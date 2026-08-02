@@ -250,3 +250,61 @@ class TestRequestedLocationOrdering:
     def test_order_is_untouched_without_a_requested_location(self):
         posting = {"locationsText": "3 Locations", "allLocations": ["A", "B", "C"]}
         assert search._locations_of(posting, None) == "A · B · C"
+
+
+class TestBoardDiagnosis:
+    """Three different failures must not read as one.
+
+    Measured: Intuit answers 401 (gated), Visa 422 (wrong site id), Thomson
+    Reuters 404 (wrong host). All three rendered as "did not answer", and only
+    one of them is something the caller can fix.
+    """
+
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    class FakeSession:
+        def __init__(self, status_code=None, error=None):
+            self.status_code, self.error = status_code, error
+
+        async def post(self, *_args, **_kwargs):
+            if self.error:
+                raise self.error
+            return TestBoardDiagnosis.FakeResponse(self.status_code)
+
+    async def _diagnose(self, url, **kwargs):
+        return await search._diagnose_board(url, self.FakeSession(**kwargs))
+
+    async def test_a_gated_board_says_so(self):
+        out = await self._diagnose(
+            "https://intuit.wd1.myworkdayjobs.com/IntuitCareers", status_code=401
+        )
+        assert "requires a login (HTTP 401)" in out
+        assert "does not publish its jobs anonymously" in out
+
+    async def test_a_wrong_site_id_names_the_segment(self):
+        out = await self._diagnose("https://visa.wd1.myworkdayjobs.com/Visa", status_code=422)
+        assert "rejected the site id 'Visa' on tenant 'visa'" in out
+        assert "The host is right" in out
+
+    async def test_a_wrong_host_says_host(self):
+        out = await self._diagnose(
+            "https://thomsonreuters.wd5.myworkdayjobs.com/External", status_code=404
+        )
+        assert "No Workday board" in out and "HTTP 404" in out
+
+    async def test_a_server_error_is_transient(self):
+        out = await self._diagnose("https://x.wd1.myworkdayjobs.com/s", status_code=503)
+        assert "HTTP 503" in out and "Try again shortly" in out
+
+    async def test_an_unreachable_host_names_the_exception(self):
+        out = await self._diagnose(
+            "https://x.wd1.myworkdayjobs.com/s", error=OSError("no route")
+        )
+        assert "Could not reach x.wd1.myworkdayjobs.com (OSError)" in out
+
+    async def test_a_url_that_is_not_a_board_never_makes_a_request(self):
+        # No session call at all — the URL is wrong before the network matters.
+        out = await search._diagnose_board("https://example.com/careers", None)
+        assert "is not a Workday board URL" in out

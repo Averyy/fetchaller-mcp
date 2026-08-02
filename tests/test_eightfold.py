@@ -180,3 +180,37 @@ class TestRender:
         )
         assert "\\[Senior\\]" in out
         assert "\\*Remote\\*" in out
+
+
+class TestWorkType:
+    """`workLocationOption` is not real data on the classic generation.
+
+    Measured across Netflix's board: every posting carries the constant
+    "onsite", including reqs whose own location reads "Canada - Remote" and
+    "USA - Remote". Work mode is a hard screen, so a field that contradicts
+    the location is worse than an absent one.
+    """
+
+    def test_a_remote_location_overrides_a_contradicting_onsite(self):
+        out = render._work_type({"workLocationOption": "onsite"}, "Canada - Remote")
+        assert out.startswith("remote")
+        assert "unreliable" in out
+
+    def test_a_genuine_onsite_posting_is_untouched(self):
+        assert render._work_type({"workLocationOption": "onsite"}, "Helsinki, Finland") == "onsite"
+
+    def test_a_populated_remote_field_is_kept_as_the_board_wrote_it(self):
+        # `_clean` escapes the underscore for markdown; the value is untouched.
+        assert render._work_type({"workLocationOption": "remote_local"}, "USA - Remote") == (
+            "remote\\_local"
+        )
+
+    def test_an_absent_field_with_a_remote_location_still_reports_remote(self):
+        assert render._work_type({}, "USA - Remote").startswith("remote")
+
+    def test_an_absent_field_with_no_signal_stays_absent(self):
+        assert render._work_type({}, "Redmond, WA") == ""
+
+    def test_the_word_must_stand_alone(self):
+        # "Remotely" or a street called "Remote Park" should not trigger it.
+        assert render._work_type({"workLocationOption": "onsite"}, "Remoteness Rd") == "onsite"
