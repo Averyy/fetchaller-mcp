@@ -31,6 +31,8 @@ ROUTED = [
     ("https://careers.oracle.com/en/sites/jobsearch/job/338925", "oracle_job"),
     ("https://careers.oracle.com/en/sites/jobsearch/jobs", "oracle_search"),
     ("https://www.uber.com/us/en/careers/list/", "uber_search"),
+    # The host uber.com/careers/list/ actually redirects to.
+    ("https://jobs.uber.com/en/jobs/", "uber_search"),
 ]
 
 NOT_ROUTED = [
@@ -39,6 +41,9 @@ NOT_ROUTED = [
     "https://www.amazon.com/s?k=laptop",
     # Consumer Uber.
     "https://www.uber.com/ca/en/ride/",
+    # Sibling paths on the jobs host that are not search results.
+    "https://jobs.uber.com/en/jobs/saved-jobs/",
+    "https://jobs.uber.com/en/sitemap/",
     # google.com is mostly not a job board.
     "https://www.google.com/",
     "https://www.google.com/search?q=jobs",

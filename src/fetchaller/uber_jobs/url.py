@@ -9,7 +9,11 @@ from urllib.parse import urlparse
 # and jobs.uber.com/{lang}/jobs/{id}.
 _UBER_JOB_RE = re.compile(r"^(?:/[a-z]{2,6}){0,2}/careers/list/(\d{3,12})/?$")
 _JOBS_UBER_RE = re.compile(r"^(?:/[a-z]{2,6})?/jobs/(\d{3,12})/?$")
-_LIST_RE = re.compile(r"^(?:/[a-z]{2,6}){0,2}/careers/list/?$")
+# Both list forms: uber.com/{region}/{lang}/careers/list and the
+# jobs.uber.com/{lang}/jobs form the board actually redirects to. Without the
+# second, `fetch()` silently declined to dispatch the very URL a user lands on
+# after following uber.com/us/en/careers/list/.
+_LIST_RE = re.compile(r"^(?:/[a-z]{2,6}){0,2}/careers/list/?$|^(?:/[a-z]{2,6})?/jobs/?$")
 
 
 def is_uber_jobs_host(hostname: str) -> bool:

@@ -2029,9 +2029,9 @@ def create_server(
             Tool(
                 name="search_uber_jobs",
                 description=(
-                    "Search Uber's own job board by title and location. Returns title, "
-                    "department, team, level, and location. Uber exposes no per-posting "
-                    "description endpoint, so open the returned URL for the full text."
+                    "Search Uber's job board by title and location. Uber runs on Oracle "
+                    "Recruiting, which answers anonymously with the full posting text, so "
+                    "results carry title, department, team, level, location, and description."
                 ),
                 inputSchema={
                     "type": "object",

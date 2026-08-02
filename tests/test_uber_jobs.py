@@ -30,6 +30,19 @@ class TestUrlDetection:
         assert url.is_uber_jobs_list_url("https://www.uber.com/us/en/careers/list/")
         assert not url.is_uber_job_url("https://www.uber.com/us/en/careers/list/")
 
+    def test_the_redirect_target_is_also_a_list_url(self):
+        # uber.com/{region}/{lang}/careers/list/ redirects to jobs.uber.com/{lang}/jobs/.
+        # Without this, fetch() silently declined the very URL a user lands on.
+        assert url.is_uber_jobs_list_url("https://jobs.uber.com/en/jobs/")
+        assert url.is_uber_jobs_list_url("https://jobs.uber.com/en/jobs")
+        assert not url.is_uber_job_url("https://jobs.uber.com/en/jobs/")
+
+    def test_sibling_paths_on_the_jobs_host_are_not_the_list(self):
+        # The board also serves saved-jobs, sitemap and people-stories; none is
+        # a search result page and none should route to the Oracle client.
+        for path in ("/en/jobs/saved-jobs/", "/en/sitemap/", "/en/people-stories/", "/en/"):
+            assert not url.is_uber_jobs_list_url(f"https://jobs.uber.com{path}"), path
+
     def test_non_careers_uber_page_rejected(self):
         # uber.com is mostly a consumer site; only the careers paths qualify.
         assert not url.is_uber_job_url("https://www.uber.com/ca/en/ride/")
