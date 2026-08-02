@@ -2291,3 +2291,66 @@ class TestContentTypeSniffing:
             result = await fetch_url(url)
 
         assert "Unsupported content type" in result["error"]
+
+
+class TestRenderFallbackOnChallenge:
+    """A WAF challenge must try wafer's render path before giving up.
+
+    `get()` and `render()` do not have the same reach on interstitials.
+    Measured on support.lutron.com (Imperva): `get()` raises ChallengeDetected
+    even with a real system-Chrome solver attached, while `render()` returns
+    200 with 110,305 bytes of the article. Returning the error without trying
+    render meant fetchaller reported "could not be bypassed" for a page wafer
+    could already fetch.
+    """
+
+    def _session(self, *, content=b"<html><body>Real page</body></html>", raises=None):
+        class FakeResponse:
+            status_code = 200
+            url = "https://support.example.com/article"
+            headers = {"content-type": "text/html"}
+
+            def __init__(self, body):
+                self.content = body
+
+        class FakeSession:
+            async def render(self, url, timeout=None):
+                if raises is not None:
+                    raise raises
+                return FakeResponse(content)
+
+        return FakeSession()
+
+    async def _call(self, session, *, method="GET", solver=object(), deadline_in=120.0):
+        from fetchaller.tools.fetch import _render_after_challenge
+
+        return await _render_after_challenge(
+            session,
+            "https://support.example.com/article",
+            method=method,
+            browser_solver=solver,
+            deadline=time.monotonic() + deadline_in,
+        )
+
+    async def test_a_challenged_get_is_retried_through_render(self):
+        out = await self._call(self._session())
+        assert out is not None
+        assert out.status_code == 200
+        assert b"Real page" in out.content
+
+    async def test_post_is_never_rendered(self):
+        # A render is a navigation: it cannot carry the caller's method, body
+        # or headers, so replaying a POST would send something never asked for.
+        assert await self._call(self._session(), method="POST") is None
+
+    async def test_no_solver_means_no_fallback(self):
+        assert await self._call(self._session(), solver=None) is None
+
+    async def test_an_exhausted_deadline_is_respected(self):
+        assert await self._call(self._session(), deadline_in=1.0) is None
+
+    async def test_a_failing_render_falls_back_to_the_original_error(self):
+        assert await self._call(self._session(raises=RuntimeError("boom"))) is None
+
+    async def test_an_empty_render_is_not_treated_as_success(self):
+        assert await self._call(self._session(content=b"")) is None

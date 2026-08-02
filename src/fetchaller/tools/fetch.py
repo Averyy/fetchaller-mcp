@@ -356,6 +356,53 @@ def _canon_host(host: str) -> str:
     return h
 
 
+async def _render_after_challenge(
+    session,
+    url: str,
+    *,
+    method: str,
+    browser_solver,
+    deadline: float,
+) -> "FetchResult | None":
+    """Retry a challenged GET through wafer's browser-render path.
+
+    ``get()`` and ``render()`` do not have the same reach on WAF interstitials:
+    render navigates in the browser and solves in place with the same per-WAF
+    handlers, then re-captures the page. Measured on ``support.lutron.com``
+    (Imperva), ``get()`` raises even with a system-Chrome solver attached while
+    ``render()`` returns 200 and the article.
+
+    Returns None when render is not applicable or does not help, so the caller
+    reports the original challenge rather than a second, less useful error.
+
+    **GET only, deliberately.** A render is a navigation: it cannot carry the
+    caller's method, body or headers, so replaying a POST this way would send
+    something the caller never asked for. The returned URL is *not* trusted
+    here either — the caller's final-host check still runs, because a solve can
+    surface a host that was never validated.
+    """
+    if method != "GET" or browser_solver is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 5:
+        return None
+    try:
+        resp = await session.render(url, timeout=remaining)
+    except Exception as exc:  # noqa: BLE001 - fall back to the original error
+        _log(f"FETCH {url} -> render fallback failed ({type(exc).__name__})")
+        return None
+    if not resp.content:
+        return None
+    _log(f"FETCH {url} -> solved via render fallback ({len(resp.content)} bytes)")
+    return FetchResult(
+        content=resp.content,
+        content_type=resp.headers.get("content-type", ""),
+        status_code=resp.status_code,
+        final_url=str(resp.url),
+        headers=dict(resp.headers),
+    )
+
+
 @dataclass
 class FetchResult:
     """Result from fetching a URL."""
@@ -2409,7 +2456,27 @@ async def _fetch_url_impl(
         else:
             return {"error": "Too many redirects (redirect loop detected)."}
     except wafer.ChallengeDetected as e:
-        return {"error": describe_challenge(e.challenge_type)}
+        # wafer solves WAF interstitials two different ways, and they do not
+        # have the same reach. `get()` runs the inline/solver path; `render()`
+        # navigates in the browser, solves the interstitial *in place* with the
+        # same per-WAF handlers, then re-captures the page.
+        #
+        # Measured on support.lutron.com (Imperva): `get()` raises
+        # ChallengeDetected even with a real system-Chrome solver attached,
+        # while `render()` returns 200 with 110,305 bytes of the actual
+        # article. Returning the error without trying render meant fetchaller
+        # reported "could not be bypassed" for a page wafer could already
+        # fetch.
+        rendered = await _render_after_challenge(
+            session,
+            current_url,
+            method=current_method,
+            browser_solver=browser_solver,
+            deadline=fetch_deadline,
+        )
+        if rendered is None:
+            return {"error": describe_challenge(e.challenge_type)}
+        result = rendered
     except wafer.RateLimited as e:
         if is_reddit:
             retry_after = e.retry_after
