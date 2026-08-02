@@ -19,10 +19,16 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool
 
 from . import __version__
+from .amazon_jobs.search import search_amazon_jobs
+from .apple_jobs.search import search_apple_jobs
 from .cache.response_cache import ResponseCache
 from .config import Config, load_config, set_wafer_cache_dir
+from .eightfold.search import search_eightfold_jobs
+from .google_jobs.search import search_google_jobs
 from .linkedin.search import get_linkedin_job, search_linkedin_jobs
 from .marketplace.search import search_marketplace
+from .meta_careers.search import search_meta_jobs
+from .oracle_recruiting.search import search_oracle_jobs
 from .queue.reddit_queue import QueueConfig, RedditRequestQueue
 from .realtor.search import search_realtor
 from .security.browser_proxy import BrowserEgressProxy, BrowserProxyError
@@ -40,6 +46,8 @@ from .tools.search import search_web
 from .tools.search_alibaba import search_alibaba_tool
 from .tools.search_aliexpress import search_aliexpress_tool
 from .tools.search_reddit import search_reddit
+from .uber_jobs.search import search_uber_jobs
+from .workday.search import search_workday_jobs
 
 
 def _log(msg: str) -> None:
@@ -565,6 +573,52 @@ _TOOL_ARGUMENTS: dict[str, set[str]] = {
         "limit",
     },
     "get_linkedin_job": {"job_id"},
+    "search_eightfold_jobs": {
+        "employer",
+        "title",
+        "location",
+        "strict_title",
+        "include_remote",
+        "sort",
+        "limit",
+    },
+    "search_workday_jobs": {"employer", "title", "location", "strict_title", "limit"},
+    "search_oracle_jobs": {
+        "employer",
+        "title",
+        "location",
+        "strict_title",
+        "strict_location",
+        "limit",
+    },
+    "search_amazon_jobs": {
+        "title",
+        "location",
+        "country",
+        "job_category",
+        "strict_title",
+        "strict_location",
+        "sort",
+        "limit",
+    },
+    "search_apple_jobs": {"title", "location", "locale", "strict_title", "limit"},
+    "search_google_jobs": {
+        "title",
+        "location",
+        "strict_title",
+        "strict_location",
+        "remote_only",
+        "sort",
+        "limit",
+    },
+    "search_meta_jobs": {"title", "location", "remote_only", "strict_title", "limit"},
+    "search_uber_jobs": {
+        "title",
+        "location",
+        "strict_title",
+        "strict_location",
+        "limit",
+    },
     "search_realtor": {
         "location",
         "transaction",
@@ -592,6 +646,24 @@ _TOOL_REQUIRED = {
     "search_realtor": {"location"},
     "search_linkedin_jobs": {"keywords"},
     "get_linkedin_job": {"job_id"},
+    # The board-search tools all default to "the whole board", so nothing is
+    # required: search_eightfold_jobs/search_workday_jobs need only `employer`
+    # to be meaningful, and that is validated in the client.
+    "search_eightfold_jobs": {"employer"},
+    "search_workday_jobs": {"employer"},
+    "search_oracle_jobs": {"employer"},
+    "search_apple_jobs": {"title"},
+    "search_meta_jobs": {"title"},
+    "search_uber_jobs": {"title"},
+    "search_google_jobs": {"title"},
+    # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
+    "search_amazon_jobs": set(),
+}
+# Tools where at least one of several arguments must be present, but no single
+# one can be mandatory. Mirrors the `anyOf` in the published schema so the MCP
+# boundary enforces it too rather than trusting the client to read the schema.
+_TOOL_ANY_REQUIRED: dict[str, set[str]] = {
+    "search_amazon_jobs": {"title", "location", "job_category"},
 }
 _STRING_LIMITS = {
     "url": 8192,
@@ -600,6 +672,11 @@ _STRING_LIMITS = {
     "job_id": 32,
     "geo_id": 24,
     "location": 256,
+    "employer": 512,
+    "title": 256,
+    "job_category": 64,
+    "locale": 16,
+    "country": 64,
     "subreddit": 100,
     "after": 64,
     "product_id": 2048,
@@ -656,6 +733,9 @@ _ENUMS = {
 }
 _TOOL_ENUMS = {
     ("browse_reddit", "sort"): {"hot", "new", "top", "rising"},
+    ("search_eightfold_jobs", "sort"): {"relevance", "recent"},
+    ("search_amazon_jobs", "sort"): {"relevant", "recent"},
+    ("search_google_jobs", "sort"): {"relevance", "date"},
     ("search_linkedin_jobs", "sort"): {"relevance", "recent"},
     ("search_linkedin_jobs", "date_posted"): {"any", "24h", "week", "month"},
     ("search_linkedin_jobs", "workplace"): {"on_site", "remote", "hybrid"},
@@ -732,6 +812,9 @@ def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
     missing = _TOOL_REQUIRED[tool_name] - set(arguments)
     if missing:
         return f"missing required argument: {sorted(missing)[0]}"
+    any_required = _TOOL_ANY_REQUIRED.get(tool_name)
+    if any_required and not (any_required & set(arguments)):
+        return f"provide at least one of: {', '.join(sorted(any_required))}"
 
     for name, value in arguments.items():
         if name in _STRING_LIMITS:
@@ -1523,6 +1606,475 @@ def create_server(
                 },
             ),
             Tool(
+                name="search_eightfold_jobs",
+                description=(
+                    "Search a company career site hosted by Eightfold AI — Microsoft, "
+                    "Netflix, PayPal, or any other Eightfold tenant by board URL. "
+                    "Filter by job title and location. The board ranks rather than "
+                    "filters, so the title is re-applied against each posting's own "
+                    "name and the number dropped is reported. Use fetch() on a "
+                    "returned posting URL for the full description."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "employer": {
+                            "type": "string",
+                            "maxLength": 512,
+                            "description": (
+                                "\"microsoft\", \"netflix\", \"paypal\", or any Eightfold "
+                                "board URL (e.g. https://acme.eightfold.ai/careers)"
+                            ),
+                        },
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"software engineer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "City or country as the board spells it, e.g. "
+                                "\"Vancouver, Canada\". Returns the board's own "
+                                "spellings when nothing matches."
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's "
+                                "title. Turn off to see everything the board ranked."
+                            ),
+                        },
+                        "include_remote": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Include remote postings in a location search",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["relevance", "recent"],
+                            "default": "relevance",
+                            "description": "Result ordering",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["employer"],
+                },
+            ),
+            Tool(
+                name="search_workday_jobs",
+                description=(
+                    "Search any Workday board (*.myworkdayjobs.com) by job title and "
+                    "location — Adobe, NVIDIA, Salesforce, Autodesk, CrowdStrike, "
+                    "ServiceTitan, Motorola Solutions, or any tenant by board URL. "
+                    "Resolves the tenant's own location facet, whatever it is named, "
+                    "and filters the title client-side because Workday's searchText "
+                    "is unreliable (on some tenants it silently drops real matches)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "employer": {
+                            "type": "string",
+                            "maxLength": 512,
+                            "description": (
+                                "\"adobe\", \"nvidia\", \"salesforce\", \"autodesk\", "
+                                "\"crowdstrike\", \"servicetitan\", \"motorolasolutions\", "
+                                "or a board URL "
+                                "(e.g. https://acme.wd1.myworkdayjobs.com/External)"
+                            ),
+                        },
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"product designer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "City, region, or country, e.g. \"Toronto\" or "
+                                "\"Canada\". Matched against the tenant's location "
+                                "facet; its real values are listed when nothing matches."
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["employer"],
+                },
+            ),
+            Tool(
+                name="search_oracle_jobs",
+                description=(
+                    "Search a career site running on Oracle Recruiting Cloud (Oracle "
+                    "Fusion) — Oracle and Uber today, or any ORC tenant by careers URL "
+                    "or Fusion host. Returns the full posting text, location, "
+                    "department, and job family. The board filters by country but "
+                    "ignores city names, so a city is matched against each posting here."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "employer": {
+                            "type": "string",
+                            "maxLength": 512,
+                            "description": (
+                                "\"oracle\", \"uber\", a careers URL, or a Fusion host "
+                                "(https://{tenant}.fa.{region}.oraclecloud.com)"
+                            ),
+                        },
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"product designer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "City and/or country, e.g. \"Toronto, Canada\". A country "
+                                "narrows the board server-side; a city is filtered here."
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "strict_location": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the location to match the posting's own location"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["employer"],
+                },
+            ),
+            Tool(
+                name="search_amazon_jobs",
+                description=(
+                    "Search amazon.jobs by title, location, and job category. Amazon "
+                    "publishes pay bands inline where local law requires it (including "
+                    "Canada), and those are surfaced as a Pay field. Its own search is "
+                    "fuzzy — a \"product designer\" query returns engineering reqs — so "
+                    "title and location are both re-applied against each posting."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"software engineer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "City or country, e.g. \"Toronto\" or "
+                                "\"Vancouver, British Columbia, Canada\". Resolved to "
+                                "Amazon's exact location value automatically."
+                            ),
+                        },
+                        "country": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "description": (
+                                "ISO alpha-3 code or country name, e.g. \"CAN\". "
+                                "Inferred from location when omitted."
+                            ),
+                        },
+                        "job_category": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "description": (
+                                "Amazon job category, e.g. \"Design\", "
+                                "\"Software Development\", \"Marketing\". This is the "
+                                "reliable way to find design roles, whose titles vary "
+                                "(\"Art Director\", \"UX Designer\")."
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "strict_location": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the location to match the posting's own "
+                                "location, not just Amazon's search radius"
+                            ),
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["relevant", "recent"],
+                            "default": "relevant",
+                            "description": "Result ordering",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    # No single field is required: filtering by job_category
+                    # alone is the reliable way to find roles whose titles vary
+                    # ("Art Director" is Amazon's only Design req in Canada).
+                    # At least one filter must still be present.
+                    "anyOf": [
+                        {"required": ["title"]},
+                        {"required": ["location"]},
+                        {"required": ["job_category"]},
+                    ],
+                },
+            ),
+            Tool(
+                name="search_google_jobs",
+                description=(
+                    "Search Google's own careers board by job title and location. "
+                    "Google's free-text matching is very loose — a \"product designer\" "
+                    "search in Canada reports 38 matches of which two have a matching "
+                    "title — so each posting's own title and location are re-checked "
+                    "and both counts are reported separately."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"product designer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "Country, or a FULLY QUALIFIED city — "
+                                "\"Waterloo, ON, Canada\", not \"Waterloo\", which Google "
+                                "resolves to Waterloo, Belgium"
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "strict_location": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the posting's own location to match; Google's "
+                                "city filter is radius-based and includes neighbours"
+                            ),
+                        },
+                        "remote_only": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Only remote-eligible postings",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["relevance", "date"],
+                            "default": "relevance",
+                            "description": "Result ordering",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["title"],
+                },
+            ),
+            Tool(
+                name="search_apple_jobs",
+                description=(
+                    "Search jobs.apple.com by title and location. A place name is "
+                    "resolved to Apple's own location code automatically. The locale "
+                    "sets the country scope: en-ca shows Canadian postings, en-us "
+                    "American ones."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"machine learning engineer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "City or country, e.g. \"Toronto\", \"Vancouver\", "
+                                "\"Canada\""
+                            ),
+                        },
+                        "locale": {
+                            "type": "string",
+                            "maxLength": 16,
+                            "description": (
+                                "Storefront locale, e.g. \"en-ca\" (default) or \"en-us\""
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["title"],
+                },
+            ),
+            Tool(
+                name="search_meta_jobs",
+                description=(
+                    "Search metacareers.com by title and office. Meta spells its "
+                    "offices \"Vancouver, Canada\" rather than \"Vancouver, BC\"; a "
+                    "place name is matched against its real office list and the list "
+                    "is returned when nothing matches."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"product designer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "Office, city, or country, e.g. \"Toronto\", "
+                                "\"Menlo Park\", \"Canada\""
+                            ),
+                        },
+                        "remote_only": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Only remote postings",
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["title"],
+                },
+            ),
+            Tool(
+                name="search_uber_jobs",
+                description=(
+                    "Search Uber's job board by title and location. Uber runs on Oracle "
+                    "Recruiting, which answers anonymously with the full posting text, so "
+                    "results carry title, department, team, level, location, and description."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Job title, e.g. \"product designer\"",
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                "City and/or country, e.g. \"Toronto, Canada\" or "
+                                "\"Canada\""
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "strict_location": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the city to match the posting's own location"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "required": ["title"],
+                },
+            ),
+            Tool(
                 name="search_realtor",
                 description=(
                     "Search Canadian homes for sale or rent on realtor.ca with full filters "
@@ -1811,6 +2363,102 @@ def create_server(
                 result = await get_linkedin_job(
                     arguments["job_id"],
                     max_tokens=config.default_max_tokens,
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_eightfold_jobs":
+                result = await search_eightfold_jobs(
+                    arguments["employer"],
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    include_remote=arguments.get("include_remote", True),
+                    sort=arguments.get("sort", "relevance"),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_workday_jobs":
+                result = await search_workday_jobs(
+                    arguments["employer"],
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_oracle_jobs":
+                result = await search_oracle_jobs(
+                    arguments["employer"],
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    strict_location=arguments.get("strict_location", True),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_amazon_jobs":
+                result = await search_amazon_jobs(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    country=arguments.get("country", ""),
+                    category=arguments.get("job_category", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    strict_location=arguments.get("strict_location", True),
+                    sort=arguments.get("sort", "relevant"),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_google_jobs":
+                result = await search_google_jobs(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    strict_location=arguments.get("strict_location", True),
+                    remote_only=arguments.get("remote_only", False),
+                    sort=arguments.get("sort", "relevance"),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_apple_jobs":
+                result = await search_apple_jobs(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    locale=arguments.get("locale", "en-ca"),
+                    strict_title=arguments.get("strict_title", True),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_meta_jobs":
+                result = await search_meta_jobs(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    remote_only=arguments.get("remote_only", False),
+                    strict_title=arguments.get("strict_title", True),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_uber_jobs":
+                result = await search_uber_jobs(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    strict_location=arguments.get("strict_location", True),
+                    limit=arguments.get("limit", 25),
                     browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)

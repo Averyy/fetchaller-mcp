@@ -70,10 +70,30 @@ async def test_exact_tool_surface_has_strict_schemas(server):
         "search_marketplace",
         "search_linkedin_jobs",
         "get_linkedin_job",
+        "search_eightfold_jobs",
+        "search_workday_jobs",
+        "search_oracle_jobs",
+        "search_amazon_jobs",
+        "search_google_jobs",
+        "search_apple_jobs",
+        "search_meta_jobs",
+        "search_uber_jobs",
         "search_realtor",
     ]
     assert all(tool.inputSchema["additionalProperties"] is False for tool in tools)
-    assert all(tool.inputSchema["required"] for tool in tools)
+    # Every tool must make the caller commit to at least one argument, so a
+    # zero-argument call cannot dump an unfiltered board. search_amazon_jobs
+    # expresses that as anyOf instead of a flat `required` list: filtering by
+    # job_category alone is a real use case (it is the only way to find roles
+    # whose titles vary, like Amazon's "Art Director" Design req), so no one
+    # field can be mandatory on its own.
+    for tool in tools:
+        if "required" in tool.inputSchema:
+            assert tool.inputSchema["required"], tool.name
+        else:
+            alternatives = tool.inputSchema["anyOf"]
+            assert alternatives, tool.name
+            assert all(option["required"] for option in alternatives), tool.name
     product = next(tool for tool in tools if tool.name == "get_aliexpress_product")
     assert product.inputSchema["properties"]["timeout"] == {
         "type": "integer",

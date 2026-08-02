@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>fetchaller — MCP server for Claude Code</title>
-    <meta name="description" content="Search the web with Google & DuckDuckGo, browse Reddit, fetch any URL with site-specific cleanup for 15+ sites. No permission prompts. WebFetch alternative for Claude Code.">
+    <meta name="description" content="Search the web with Google & DuckDuckGo, browse Reddit, search tech-careers job boards (Microsoft, Apple, Meta, Amazon, Workday, Eightfold), fetch any URL with site-specific cleanup for 15+ sites. No permission prompts. WebFetch alternative for Claude Code.">
     <meta name="keywords" content="Claude Code fetch websites, Claude Code MCP server, WebFetch alternative, Claude Code Reddit, web search Claude Code, Google search Claude Code, DuckDuckGo Claude Code, browse reddit Claude Code, search reddit Claude Code, fetch Reddit posts, Claude AI fetch URL, Claude Code PDF, site-specific cleanup, no permission prompts, no domain restrictions">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://www.fetchaller.com/">
@@ -1720,6 +1720,7 @@
                                 <div class="cmd"><span class="cmd-name">browse_reddit</span><span class="cmd-desc">subreddit listings</span></div>
                                 <div class="cmd"><span class="cmd-name">search_reddit</span><span class="cmd-desc">search posts across Reddit</span></div>
                                 <div class="cmd"><span class="cmd-name">search_marketplace</span><span class="cmd-desc">Kijiji + Craigslist + FB Marketplace</span></div>
+                                <div class="cmd"><span class="cmd-name">search_*_jobs</span><span class="cmd-desc">tech careers &mdash; Microsoft, Apple, Meta, Amazon &hellip;</span></div>
                             </div>
                             <div class="hero-tagline">MCP server for Claude Code. No domain restrictions. Automatic site cleanup and no nagging permission prompts.</div>
                             <hr class="hero-separator">
@@ -1783,6 +1784,14 @@ claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp</pre>
       <span class="s">"mcp__fetchaller__search_reddit"</span>,
       <span class="s">"mcp__fetchaller__search_marketplace"</span>,
       <span class="s">"mcp__fetchaller__search_realtor"</span>,
+      <span class="s">"mcp__fetchaller__search_eightfold_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_workday_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_oracle_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_google_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_amazon_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_apple_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_meta_jobs"</span>,
+      <span class="s">"mcp__fetchaller__search_uber_jobs"</span>,
       <span class="s">"mcp__fetchaller__get_aliexpress_product"</span>,
       <span class="s">"mcp__fetchaller__search_aliexpress"</span>,
       <span class="s">"mcp__fetchaller__get_alibaba_product"</span>,
@@ -1822,6 +1831,9 @@ claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp</pre>
 - <span class="s">**browse_reddit**</span> / <span class="s">**search_reddit**</span> — Reddit listings and search
 - <span class="s">**search_marketplace**</span> — Search Kijiji + Craigslist + Facebook Marketplace
 - <span class="s">**search_realtor**</span> — Search realtor.ca real-estate listings
+- <span class="s">**search_eightfold_jobs**</span> / <span class="s">**search_workday_jobs**</span> — Any Eightfold or Workday board (Microsoft, Netflix, PayPal, Adobe, NVIDIA, Salesforce&hellip;)
+- <span class="s">**search_oracle_jobs**</span> — Any Oracle Recruiting Cloud board (Oracle, Uber&hellip;)
+- <span class="s">**search_amazon_jobs**</span> / <span class="s">**search_apple_jobs**</span> / <span class="s">**search_meta_jobs**</span> / <span class="s">**search_uber_jobs**</span> — Filter by job title and location
 - <span class="s">**get_aliexpress_product**</span> / <span class="s">**search_aliexpress**</span> — AliExpress products
 - <span class="s">**get_alibaba_product**</span> / <span class="s">**search_alibaba**</span> — Alibaba.com B2B products
 
@@ -1888,7 +1900,7 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                 <div class="winamp-playlist">
                     <div class="winamp-pl-header">
                         <span>FETCHALLER PLAYLIST</span>
-                        <span>10 sites</span>
+                        <span>11 sites</span>
                     </div>
                     <div class="winamp-track active">
                         <span class="winamp-track-num">1.</span>
@@ -1928,11 +1940,15 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                     </div>
                     <div class="winamp-track">
                         <span class="winamp-track-num">10.</span>
+                        <span class="winamp-track-info"><strong>Tech Careers</strong><span class="winamp-track-desc">Google, Microsoft, Apple, Meta, Amazon, Netflix, Uber, Adobe, Salesforce, NVIDIA, Cisco, PayPal, Oracle + any Workday, Eightfold or Oracle Recruiting board. Filter by title and location; Amazon pay bands included.</span></span>
+                    </div>
+                    <div class="winamp-track">
+                        <span class="winamp-track-num">11.</span>
                         <span class="winamp-track-info"><strong>Forums</strong><span class="winamp-track-desc">XenForo, vBulletin, phpBB, Discourse. Auto-detects threads.</span></span>
                     </div>
                     <div class="winamp-pl-footer">
                         <span>+ PDFs, JSON, XML, CSV, plain text</span>
-                        <span>10/10</span>
+                        <span>11/11</span>
                     </div>
                 </div>
             </div>
@@ -2006,6 +2022,10 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                                         <div class="winhelp-topic" data-topic="6">
                                             <span class="winhelp-pg-ico"></span>
                                             Does it bypass Cloudflare?
+                                        </div>
+                                        <div class="winhelp-topic" data-topic="10">
+                                            <span class="winhelp-pg-ico"></span>
+                                            Can it search job boards?
                                         </div>
                                     </div>
                                 </div>
@@ -2146,11 +2166,24 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                                 &bull; <strong>Any MCP client</strong> &mdash; Start it with <code>uv --directory /path/to/fetchaller-mcp run fetchaller-mcp</code>.</p>
                                 <p>The server exposes the same tools regardless of which client connects. Configuration (permissions, CLAUDE.md) is client-specific but the server itself is universal.</p>
                             </div>
+                            <div class="winhelp-page" data-topic="10">
+                                <h3>Can it search job boards?</h3>
+                                <p>Yes &mdash; the big-tech boards that normally need a browser. Each one is a JavaScript app whose HTML contains no jobs at all, so <code>fetch</code> alone returns an empty shell. fetchaller talks to the API behind each board instead, with no account:</p>
+                                <p>&bull; <code>search_eightfold_jobs</code> &mdash; Microsoft, Netflix, PayPal, or any Eightfold board by URL<br>
+                                &bull; <code>search_workday_jobs</code> &mdash; Adobe, NVIDIA, Salesforce, Autodesk, CrowdStrike, or any Workday board<br>
+                                &bull; <code>search_oracle_jobs</code> &mdash; Oracle, Uber, or any Oracle Recruiting Cloud board<br>
+                                &bull; <code>search_amazon_jobs</code> &mdash; amazon.jobs, including the pay bands Amazon publishes inline<br>
+                                &bull; <code>search_google_jobs</code> &mdash; Google&rsquo;s own board<br>
+                                &bull; <code>search_apple_jobs</code>, <code>search_meta_jobs</code>, <code>search_uber_jobs</code></p>
+                                <p><strong>Filter by job title and location.</strong> This matters more than it sounds: every one of these boards <em>ranks</em> rather than filters. Ask Amazon for a &quot;product designer&quot; in Toronto and it will happily return a Software Development Engineer. fetchaller re-checks the title and location against each posting and reports how many it dropped, so a short list means a short list &mdash; not a filter that quietly failed.</p>
+                                <p>Pasting a posting URL into <code>fetch</code> works too: Eightfold, Apple, Meta, Amazon, and Uber posting links all return the full description instead of an empty page.</p>
+                                <div class="see-also">See Also: <a class="winhelp-link" data-topic="4">What sites are optimized?</a></div>
+                            </div>
                         </div>
                     </div>
                     <div class="winhelp-status">
                         <span>fetchaller Help</span>
-                        <span>10 Topics</span>
+                        <span>11 Topics</span>
                     </div>
                 </div>
             </div>

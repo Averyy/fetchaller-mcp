@@ -232,3 +232,324 @@ threshold was deliberately never probed, so treat it as a floor.
 
 Modules: `src/fetchaller/linkedin/{api,parse,render,search,url}.py`.
 Full endpoint evidence: `.codex-dobby/linkedin_guest_api_spec.md`.
+
+## Big-tech career boards (Eightfold, Workday search, amazon.jobs, Apple, Meta, Uber)
+
+These are the SPA boards behind the large employers. Each is reachable
+anonymously, but none of them filters honestly on its own — every one ranks
+rather than filters, so a title query returns adjacent roles and a location
+query returns a radius. The shared rule for all six clients: **the board's
+filter is an optimisation, the client's filter is the guarantee.**
+`src/fetchaller/jobfilter.py` holds the matching used by all of them.
+
+| Board | Search endpoint | Detail | Location filter |
+|---|---|---|---|
+| Eightfold PCS-X | GET `{host}/api/pcsx/search?domain={groupId}` | GET `/api/pcsx/position_details` | `location=` free text |
+| Eightfold classic | GET `{host}/api/apply/v2/jobs?domain={groupId}` | GET `/api/apply/v2/jobs/{id}` | `location=` free text |
+| Workday | POST `/wday/cxs/{tenant}/{site}/jobs` | GET `/job{externalPath}` | `appliedFacets` (facet name is per-tenant) |
+| amazon.jobs | GET `/en/search.json` | via `search.json?base_query={id}` | `normalized_location[]` (exact) |
+| Apple | GET `/{locale}/search` (SSR hydration) | `/{locale}/details/{id}/{slug}` | `location={slug}-{CODE}` |
+| Meta | POST `/graphql` (persisted query) | SSR blob on `/jobs/{id}/` | `search_input.offices[]` (display name) |
+| Uber | POST `/api/loadSearchJobsResults` | none (metadata only) | `params.location[].{country,city}` |
+
+### Eightfold (`src/fetchaller/eightfold/`)
+
+Two generations are live and tenants are split across them, so the client
+probes and caches per tenant:
+
+- **PCS-X** (Microsoft, PayPal) — `/api/pcsx/search`. `count` is the real total.
+- **classic** (Netflix) — `/api/apply/v2/jobs`. `num` is capped at 10 and
+  `count` is only `start + len(positions)`, so the grand total is never known.
+
+A PCS-X-disabled tenant answers `/api/pcsx/search` with `403 {"message": "PCSX
+is not enabled for this user."}`; that exact 403 selects the classic path,
+while any *other* 403 is a real refusal and is raised. Classic records are
+renamed to the PCS-X field names before leaving the module so callers see one
+shape.
+
+The `domain` parameter is the Eightfold **group id**, published by every tenant
+page as `window._EF_GROUP_ID` (`microsoft.com`, `netflix.com`, `paypal.com`).
+It is read live rather than tabled, so a vanity host this repo has never seen
+works from its board URL alone. Page size is fixed at 10 on both generations —
+`num` and `pageSize` are ignored.
+
+### Workday search (`src/fetchaller/workday/`)
+
+`content/workday.py` owns transport and URL grammar; this package adds
+filtering. Two tenant-specific traps:
+
+- **`searchText` cannot be trusted.** On Adobe the Canada slice is 6 postings;
+  `searchText="engineer"` cuts it to 4, `searchText="ux"` to 0, and
+  `searchText="designer"` changes nothing at all — the same tenant filters,
+  over-filters, and ignores depending on the token. So when a location facet
+  pins the set down, the whole located set is pulled with **no** `searchText`
+  and the title is applied client-side, which is exact by construction. The
+  board's own search is only used when the located set exceeds one pull or no
+  location was given.
+- **Facet names and values are per-tenant.** The country facet is
+  `locationCountry` (Adobe, Autodesk, CrowdStrike, Motorola),
+  `locationHierarchy1` (NVIDIA), a 90-character `CF_-_REC_-_LRV_-_…` custom
+  field (Salesforce), or absent entirely (ServiceTitan). Values disagree too
+  for the same city: `Canada, Toronto` (NVIDIA), `Canada - Toronto`
+  (Salesforce), `Canada Ontario Remote` (ServiceTitan), `Toronto` (Adobe).
+
+Nothing is therefore keyed by facet name. Location facets are found
+structurally — the children of `locationMainGroup`, plus any top-level facet
+whose human descriptor reads like a place — and values are matched by token
+containment. When several facets match, the one with the **fewest** matching
+values wins, so "Canada" applies the single country value rather than the
+twelve city values that also contain the word.
+
+### amazon.jobs (`src/fetchaller/amazon_jobs/`)
+
+- `loc_query` **does not filter**. "Toronto" alone returns the whole global
+  board (6,641 reqs). The only real location filter is `normalized_location[]`,
+  which demands Amazon's exact spelling — `Toronto, Ontario, CAN` works;
+  `Toronto` and `Toronto, ON, CAN` both return zero. So the client samples the
+  vocabulary first (probing with the *place name* as the query, since Amazon's
+  free-text search matches location words) and then applies the exact values.
+  Repeated values are OR'd.
+- `category[]` takes a slugified `job_category` (`design`,
+  `software-development`). `job_category[]` and bare `category` are silently
+  ignored. This is the reliable way to find roles whose titles vary — Amazon's
+  only Design req in Canada is titled "Art Director", which no title search for
+  "product designer" will ever surface.
+- `facets` is always empty on this route, so category values are derived by
+  slugifying the `job_category` strings the postings carry.
+- **Pay bands.** Canadian and other disclosure-law reqs carry an inline band at
+  the tail of `preferred_qualifications`:
+  `CAN, ON, Toronto - 185,400.00 - 309,600.00 CAD annually`. These are lifted
+  into a `Pay` field. Cents are dropped only when both ends have none, so an
+  hourly `18.50 - 24.00` is not mangled into `18.50-24`.
+- The posting page is server-rendered HTML with no JSON-LD, and the `.json`
+  twin answers 406. A posting is therefore looked up through
+  `search.json?base_query={requisition id}`, which matches exactly and returns
+  the richer record anyway.
+
+### Apple (`src/fetchaller/apple_jobs/`)
+
+`POST /api/v1/search` **is** anonymous — no CSRF token, cookie, Referer, or
+Origin. What makes it look gated is that it answers `200` with
+`totalRecords: 0` when the request body omits **`format`**, which reads as "no
+jobs" rather than "malformed request". `format` only carries date-presentation
+strings, but it is part of the request contract; `format: {}` is enough. (The
+`/api/v1/refData/*` reference routes really do answer `401`, which is what
+sent the first investigation down the wrong path.) A test pins `format` into
+every request body so it cannot be tidied away.
+
+The API is primary. The SSR page remains the fallback and embeds the same
+result set in `window.__staticRouterHydrationData` — a JS string literal handed
+to `JSON.parse`, so it decodes twice (once as the JS literal, once as JSON),
+and the scan for the closing `")` must skip escaped quotes. An empty API
+result is cross-checked against the page once, because that is the single case
+where the silent-empty failure mode is indistinguishable from a genuinely
+empty search.
+
+The two surfaces disagree on how a location is named: the URL wants
+`toronto-TOR` and the API wants `postLocation-TOR`, so the forms are
+converted rather than discovered twice.
+
+Filters are all query-string: `?search=`, `?location={slug}-{CODE}`, `?page=`
+(1-indexed, 20 per page). Location codes come from the postings themselves —
+each carries `locations[].postLocationId` (`postLocation-TOR`) alongside the
+display name, so `toronto-TOR` is reconstructed rather than tabled. The locale
+sets the country scope: `en-ca` is Canadian postings, `en-us` American.
+
+### Meta (`src/fetchaller/meta_careers/`)
+
+`POST /graphql` with three things and no account: an `lsd` CSRF token
+(published in the page as `["LSD",[],{"token":"…"}]`), a `doc_id`, and
+`variables`.
+
+`doc_id` values rotate with Meta's deploys, so they are **not** constants. Each
+is published in a JS bundle as
+`__d("{Operation}_candidate_portalRelayOperation", … a.exports="{id}")`, and a
+known id that stops working triggers rediscovery from the bundles. Operations
+used: `CareersJobSearchResultsV2DataQuery` (search),
+`CareersJobSearchLocationFilterV3Query` (offices),
+`CareersJobSearchFiltersV3Query` (other facets).
+
+Job detail no longer depends on that internal object alone: posting pages at
+`/profile/job_details/{id}/` carry a schema.org `JobPosting` JSON-LD block,
+which is SEO-facing and therefore far less build-coupled. The client merges
+both from one request — JSON-LD for the standard fields, the internal
+`xcp_requisition_job_description` object for teams, sub-teams, and
+compensation, which JSON-LD omits.
+
+Search has no doc_id-free surface. Raw (non-persisted) GraphQL is disabled —
+posting a `query` document without a `doc_id` returns HTTP 500. The
+robots-advertised `/jobsearch/sitemap.xml` IS a complete, token-free inventory
+(its 789 ids matched the persisted query's inventory exactly), but it carries
+only URLs and a shared `lastmod`, so filtering by title or location through it
+would cost one page fetch per posting. That is fine as a correctness check and
+unusable for interactive search, so search keeps the persisted query with
+bundle rediscovery.
+
+**Rate limiting is a correctness concern here, not just politeness.** Meta
+throttles per path and answers a throttled search with `HTTP 200` carrying
+`{"errors":[{"message":"Rate limit exceeded","code":1675004}]}` — which is
+indistinguishable from a rotated `doc_id` unless the error is read. It used to
+be read as one, and rediscovery fetches the board page *and walks every JS
+bundle*, so being throttled triggered a bundle scan and made the throttle
+worse. Three rules now hold that off:
+
+- `_rate_limited()` reads the error and backs off instead of rediscovering.
+- `_check()` `defer()`s the shared limiter on a 429, honouring `Retry-After`.
+- `meta_careers_limiter` is 3.5s, not 2s: one search costs three requests (root
+  warm-up, board page for the `lsd`, then GraphQL).
+
+`_warm_origin()` fetches `/` once per session before `/jobs`. Measured
+directly: `/` answered 200 while `/jobs?q=…` raised `RateLimited` on the same
+session. A cold session landing straight on a deep path is the pattern Meta
+throttles. See `docs/spa-discovery.md`.
+
+Two silent-failure traps: `search_input` must carry Meta's full key set, and
+`offices[]` matches the **`location_display_name`** ("Vancouver, Canada"), not
+the `id` ("vancouver") and not "Vancouver, BC" — an unrecognised office returns
+the *unfiltered* board rather than an error. Responses are newline-delimited
+JSON; the first line is the complete payload. Search returns the whole matching
+set at once rather than paginating. Job detail is read from the
+`xcp_requisition_job_description` object in the page's `data-sjs` blobs, which
+avoids needing a second persisted-query id.
+
+### Uber (`src/fetchaller/uber_jobs/`)
+
+Uber migrated off its own ATS to **Oracle Recruiting Cloud**, so `uber_jobs/`
+is a thin adapter over `oracle_recruiting/` rather than a client in its own
+right. The SmartRecruiters `uber` tenant is an unrelated one-req stub. The
+legacy `POST /api/loadSearchJobsResults` endpoint is gone from this repo: it
+returned empty `description` fields and unreliable locations, while ORC answers
+anonymously with the full posting text.
+
+`uber.com/{region}/{lang}/careers/list/` redirects to
+`jobs.uber.com/{lang}/jobs/`; both forms route here.
+
+**The board itself is server-rendered and has no client-side data endpoint** —
+established three ways rather than assumed:
+
+- Driving it in a browser: pagination is plain
+  `<a href="/en/jobs?query=…&page=2&pagesize=10">` links, no XHR. `pagesize` is
+  capped at 10 server-side, so it is not tunable.
+- Its React Flight (`text/x-component`) prefetches decode cleanly but carry
+  navigation and i18n labels — the largest record set is a 16-entry menu,
+  byte-identical between the detail and list pages.
+- The real search runs server-side against Oracle Fusion.
+
+Discovery therefore reports "this board server-renders its results" rather than
+returning a plan; see `docs/spa-discovery.md`. Note the board's RSC prefetches
+are challenged by Cloudflare when requested by an *unhardened* browser, which
+is a property of the client, not of Uber — plain wafer gets 200.
+
+### Oracle Recruiting Cloud (`src/fetchaller/oracle_recruiting/`)
+
+ORC is Oracle Fusion's candidate-experience recruiting module. Uber migrated
+onto it (``uber.com/…/careers/list/{id}`` now redirects to ``jobs.uber.com``),
+and Oracle itself runs on it, so one client serves both. Two REST resources,
+both unauthenticated:
+
+- ``GET /hcmRestApi/resources/latest/recruitingCEJobRequisitions``
+  ``?onlyData=true&expand=requisitionList&finder=findReqs;siteNumber={site},limit=N``
+- ``GET /hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails``
+  ``?expand=all&onlyData=true&finder=ById;Id="{id}",siteNumber={site}``
+
+Three traps, all of which fail silently rather than erroring:
+
+- **``expand=requisitionList`` is mandatory.** Without it the response is still
+  HTTP 200 with a correct ``TotalJobsCount``, but the postings array is absent
+  entirely.
+- **``location`` filters on countries and ignores cities.**
+  ``location="Canada"`` narrows Uber's board from 640 to 13;
+  ``location="Toronto"`` returns all 640 while looking like a filter. Only the
+  country is sent; the city is matched against each posting afterwards, and
+  the fetch window widens when no country can be derived.
+- **``siteNumber`` is not constant.** Nearly every deployment uses ``CX_1``,
+  but Oracle's own site is ``CX_45001``, and the value appears nowhere in page
+  markup — so it is per-employer configuration with ``CX_1`` as the default.
+
+The Fusion hostname (``iaziqy.fa.ocs`` for Uber, ``eeho.fa.us2`` for Oracle) is
+deployment-controlled, so it is discovered from the employer's own careers page
+with the last-known host kept only as a fallback.
+
+The search response carries ``ShortDescriptionStr`` on every row and the detail
+resource carries ``ExternalDescriptionStr`` / ``ExternalResponsibilitiesStr`` /
+``ExternalQualificationsStr``. Uber's older in-house endpoint
+(``POST /api/loadSearchJobsResults``) still answers but returns an empty string
+for every ``description`` and all-null locations for many postings, so it was
+dropped rather than kept as a fallback.
+
+
+### Employers with no honest alias
+
+Some employers cannot be represented as an alias without implying a filter the
+board does not have.
+
+**Clearpath Robotics / OTTO Motors** are part of Rockwell Automation, and both
+brands' careers pages link to
+`rockwellautomation.wd1.myworkdayjobs.com/External_Rockwell_Automation`. That
+board's only facets are `jobFamilyGroup`, `timeType`, and location — there is
+no company, brand, subsidiary, or business-unit facet, and no separate
+Clearpath/OTTO site slug exists on any Workday cloud. `searchText` is not a
+brand filter either: "OTTO" returns three reqs, one of which is an unrelated
+Machine Operator. So a `clearpath` alias would return Rockwell-wide results
+under a name promising Clearpath ones, and is deliberately absent.
+
+Reach those roles by location instead: Cambridge, Kitchener, and Waterloo hold
+10 of the board's 15 Canadian reqs, and a Waterloo search surfaces the robotics
+postings directly.
+
+**Buildertrend** (6 reqs) and **GAF** (95 reqs) have no Canadian jobs at all —
+verified by paging every posting and dumping both boards' full location facets,
+not merely by the absence of a "Canada" descriptor. Their boards are US-only,
+so a Canada search there correctly reports the location filter was not applied.
+
+### Google (`src/fetchaller/google_jobs/`)
+
+`google.com/about/careers/applications` is server-rendered, so a plain fetch
+returns readable text. It is nonetheless worth a client, for one reason:
+**Google's own count cannot be used as the answer.** Its free-text matching is
+extremely loose — on a "product designer" search in Canada, Google reports 38
+matches, of which two have a title containing both words and *none* contain the
+literal word "designer". A nonsense query returns 0, so the query does filter;
+it just filters very generously.
+
+Underneath the page is Google's internal BOQ RPC:
+
+```
+POST /about/careers/applications/_/HiringCportalFrontendUi/data/batchexecute
+Content-Type: application/x-www-form-urlencoded;charset=UTF-8
+f.req=[[["<rpc>","<json-encoded args>",null,"generic"]]]
+```
+
+`r06xKb` searches, `sf9Qmf` returns one posting. Neither needs a cookie, token,
+or referer. The response is XSSI-guarded (`)]}'`) and doubly encoded: the
+payload is a JSON *string* at `outer[0][2]` of a `[["wrb.fr", ...]]` envelope.
+
+Everything is positional, so `api.py` pins every slot by index:
+
+- Search args (one array, wrapped in one more array): 0 query, 1 company,
+  2 degree, 3 employment type, 4 locale, 6 locations, 7 page (1-based),
+  8 skills, 9 remote flag, 10 sort, 16 target level.
+- Job record (21 elements): 0 id, 1 title, 2 apply URL, 3 responsibilities,
+  4 qualifications, 7 company, 9 locations, 10 description, 12/13 timestamps,
+  19 minimum qualifications.
+- A location entry is `[display, [display], city, null, region, country_code]`.
+
+Traps worth knowing:
+
+- **Multi-value filters must repeat**, as arrays. Comma-joining them
+  (`location=Canada, United States`) makes Google treat the whole string as one
+  fuzzy location and return unrelated radius results.
+- **Page size is fixed at 20**; `page_size`, `size`, and `limit` are ignored.
+  Past the last page the RPC returns a *null* job list rather than an empty
+  one — the same shape as a malformed request.
+- **City filters are radius-based.** A Toronto search returned 61 results of
+  which only 25 actually list Toronto, so the location is re-checked locally.
+  A bare city name is also geocoded loosely: "Waterloo" resolves to Waterloo,
+  Belgium. Pass a fully qualified city.
+- **Slots 12–14 are protobuf-style `[seconds, nanos]` pairs.** Slot 12 is
+  always ≤ 13/14, and all three are equal on postings that were never revised,
+  so 12 is rendered as posted and 13 as updated. That is inferred from
+  ordering, not documented, and is never presented as a deadline or a
+  freshness guarantee.
+- The posting page carries **no** JSON-LD; `sf9Qmf` is the structured detail
+  surface. The public permalink needs no slug — the id alone resolves.

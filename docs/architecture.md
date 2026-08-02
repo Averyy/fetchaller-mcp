@@ -15,6 +15,44 @@ challenge detection, or cookie management. It injects wafer's shared
 `BrowserSolver` into sessions and, when configured, launches it once during
 startup readiness preflight. All challenge behavior remains inside wafer.
 
+### Challenge fallback: `get()` then `render()`
+
+wafer solves WAF interstitials two ways and they do **not** have the same
+reach. `get()` runs the inline/native/solver path; `render()` navigates in the
+browser, solves in place with the same per-WAF handlers, then re-captures the
+page. So `tools/fetch.py` retries a `ChallengeDetected` GET through
+`session.render()` before reporting failure (`_render_after_challenge`).
+
+Measured on `support.lutron.com` (Imperva): `get()` raised even with a real
+system-Chrome solver attached, while `render()` returned 200 and the article.
+The underlying cause was a wafer bug — `imperva_embedder` sent the reese84
+solve to a *sibling* host (`www.lutron.com`, a different Imperva site that
+never challenges), so the solve earned useless cookies and failed while
+reporting success. Fixed in wafer 0.4.8, which solves in place when the
+challenged host serves the sensor itself.
+
+The fallback is kept regardless, because the asymmetry is general and not
+Imperva-specific. Constraints, each load-bearing:
+
+- **GET only.** A render is a navigation and cannot carry the caller's method,
+  body or headers, so replaying a POST would send something never asked for.
+- **Requires a browser solver**, and respects the remaining deadline.
+- **The final-host check still runs on the rendered response.** A solve can
+  surface a host that was never validated, so render's result is not trusted
+  any more than a normal one.
+- **Falls through to the original challenge error** when render does not help,
+  so a genuinely unsolvable site still reports the challenge rather than a
+  second, less useful error.
+
+**The converse rule**: escalate to wafer only when something is actively
+*blocked*. Working out an endpoint's shape — reading bundles, guessing a
+required field, telling one JSON blob from another — is content analysis, and
+belongs here. `src/fetchaller/discovery/` does it by observing a page in a
+browser and replaying what it saw. That package was first built inside wafer and
+discarded: 39% of it was content analysis, it added zero bypass code, and none of
+the seven boards it was validated against needed a challenge solved. See
+`docs/spa-discovery.md`, and `wafer-feedback.md` for the record.
+
 ### Reddit read path
 
 Mapped normal-URL `fetch` calls, `browse_reddit`, and `search_reddit` share the

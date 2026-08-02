@@ -294,6 +294,184 @@ async def fetch_workday_board(url: str, session) -> dict | None:
     }
 
 
+# ---------------------------------------------------------------------------
+# Facets — location and category filtering
+# ---------------------------------------------------------------------------
+#
+# Every tenant exposes its filters as a `facets` array on the /jobs response,
+# but they agree on almost nothing. The location facet is called
+# `locationCountry` on Adobe and CrowdStrike, `locationHierarchy1` on NVIDIA,
+# `locations` on ServiceTitan, and
+# `CF_-_REC_-_LRV_-_Job_Posting_Anchor_-_Country_from_Job_Posting_Location_Extended`
+# on Salesforce. The values disagree too, for the same city: "Canada, Toronto"
+# (NVIDIA), "Canada - Toronto" (Salesforce), "Toronto" (Adobe).
+#
+# So nothing here is keyed by facet name. Location facets are found
+# structurally (the children of `locationMainGroup`) plus any top-level facet
+# whose human descriptor reads like a place, and values are matched by token
+# containment rather than equality.
+
+_LOCATION_DESCRIPTOR_RE = re.compile(
+    r"countr|state|region|location|site|city|province|metro", re.IGNORECASE
+)
+_LOCATION_PARAM_RE = re.compile(r"location", re.IGNORECASE)
+_LOCATION_GROUP = "locationMainGroup"
+
+
+def _is_nested(facet: dict) -> bool:
+    values = facet.get("values") or []
+    return bool(values) and isinstance(values[0], dict) and "facetParameter" in values[0]
+
+
+def flatten_facets(facets) -> list[dict]:
+    """Return every leaf facet, including those nested under a group.
+
+    Each entry is ``{facetParameter, descriptor, values, isLocation}``.
+    """
+    out: list[dict] = []
+
+    def walk(items, in_location_group: bool) -> None:
+        for facet in items or []:
+            if not isinstance(facet, dict):
+                continue
+            parameter = facet.get("facetParameter") or ""
+            if _is_nested(facet):
+                walk(facet.get("values"), in_location_group or parameter == _LOCATION_GROUP)
+                continue
+            descriptor = facet.get("descriptor") or ""
+            is_location = (
+                in_location_group
+                or bool(_LOCATION_PARAM_RE.search(parameter))
+                or bool(_LOCATION_DESCRIPTOR_RE.search(descriptor))
+            )
+            out.append(
+                {
+                    "facetParameter": parameter,
+                    "descriptor": descriptor,
+                    "values": [v for v in (facet.get("values") or []) if isinstance(v, dict)],
+                    "isLocation": is_location,
+                }
+            )
+
+    walk(facets, False)
+    return out
+
+
+def resolve_location_facet(facets, location: str) -> tuple[str, list[str]] | None:
+    """Pick the facet and value ids that best express ``location``.
+
+    Returns ``(facetParameter, [ids])`` or None when nothing matches. When
+    several facets match, the one with the fewest matching values wins: asking
+    for "Canada" should apply the single country value rather than the twelve
+    city values that also contain the word.
+    """
+    from ..jobfilter import location_matches, tokens
+
+    wanted = tokens(location)
+    if not wanted:
+        return None
+
+    best: tuple[str, list[str]] | None = None
+    for facet in flatten_facets(facets):
+        if not facet["isLocation"] or not facet["facetParameter"]:
+            continue
+        ids = [
+            v["id"]
+            for v in facet["values"]
+            if v.get("id") and location_matches(str(v.get("descriptor") or ""), wanted)
+        ]
+        if not ids:
+            continue
+        if best is None or len(ids) < len(best[1]):
+            best = (facet["facetParameter"], ids)
+    return best
+
+
+async def fetch_workday_facets(url: str, session) -> list | None:
+    """Fetch just the facet definitions for a board."""
+    params = extract_workday_board_params(url)
+    if not params:
+        return None
+    tenant, _lang, site = params
+    try:
+        resp = await session.post(
+            _api_base(url, tenant, site) + "/jobs",
+            json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""},
+            headers={"accept": "application/json", "content-type": "application/json"},
+        )
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data.get("facets") or []
+
+
+async def search_workday_board(
+    url: str,
+    session,
+    *,
+    search_text: str = "",
+    applied_facets: dict | None = None,
+    limit: int = 200,
+) -> dict | None:
+    """Page a board with an optional search string and applied facets."""
+    params = extract_workday_board_params(url)
+    if not params:
+        return None
+    tenant, _lang, site = params
+    api = _api_base(url, tenant, site) + "/jobs"
+
+    all_jobs: list[dict] = []
+    total: int | None = None
+    max_pages = max(1, min(_BOARD_MAX_PAGES, -(-limit // _BOARD_PAGE_SIZE)))
+
+    for page in range(max_pages):
+        body = {
+            "appliedFacets": applied_facets or {},
+            "limit": _BOARD_PAGE_SIZE,
+            "offset": page * _BOARD_PAGE_SIZE,
+            "searchText": search_text or "",
+        }
+        try:
+            resp = await session.post(
+                api,
+                json=body,
+                headers={"accept": "application/json", "content-type": "application/json"},
+            )
+        except Exception:
+            return None
+        if resp.status_code != 200:
+            return None
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        postings = data.get("jobPostings") or []
+        if not isinstance(postings, list):
+            return None
+        if total is None:
+            page_total = data.get("total")
+            total = int(page_total) if isinstance(page_total, int) else len(postings)
+        all_jobs.extend(p for p in postings if isinstance(p, dict))
+        if len(postings) < _BOARD_PAGE_SIZE or len(all_jobs) >= total:
+            break
+
+    return {
+        "jobPostings": all_jobs[:limit],
+        "total": total or len(all_jobs),
+        "tenant": tenant,
+        "site": site,
+    }
+
+
 def render_workday_board(payload: dict, source_url: str | None = None) -> str:
     jobs = payload.get("jobPostings") or []
     total = payload.get("total") or len(jobs)
