@@ -144,14 +144,28 @@ class TestCountsLine:
         line = jobfilter.counts_line(6, dropped_by_title=34, board_total=72)[0]
         assert "6 jobs shown; dropped 34 by title" in line
 
-    def test_the_boards_number_gets_its_own_sentence(self):
+    def test_a_pool_built_from_two_queries_reports_what_was_examined(self):
+        # Measured on Microsoft: "designer" returned 7 and the broadened
+        # "design" returned 31 sharing 6 of them, so the pool was 32 while
+        # max(7, 31) said 31 — and "31 matches / dropped 32" read as an
+        # off-by-one. What was examined is known exactly; the board's count
+        # for one of several queries is not.
         lines = jobfilter.counts_line(
-            0, dropped_by_title=34, board_total=33, board_label="This board"
+            0, dropped_by_title=32, board_total=31, examined=32, board_label="This board"
         )
-        assert lines[0] == "_0 jobs shown; dropped 34 by title_"
-        assert "This board reported 33 loose matches" in lines[-1]
+        assert lines[0] == "_0 jobs shown; dropped 32 by title_"
+        assert "All 32 postings the board ranked" in lines[-1]
+        assert "31" not in "".join(lines)
         # The two numbers must never end up in one subtractable clause.
-        assert "of 33" not in "".join(lines)
+        assert "of 32" not in lines[0]
+
+    def test_a_board_that_reported_no_total_still_names_the_pool(self):
+        # GAF: the first query matched nothing, the retries found 41, and the
+        # count stayed 0 — which suppressed the summary line altogether.
+        lines = jobfilter.counts_line(
+            0, dropped_by_title=41, board_total=0, examined=41, board_label="This board"
+        )
+        assert "All 41 postings the board ranked" in lines[-1]
 
     def test_a_board_total_inside_the_examined_pool_is_not_repeated(self):
         # 33 shown + 0 dropped already accounts for the board's 33.

@@ -167,8 +167,14 @@ async def search_eightfold_jobs(
             if not positions and location and not fetched:
                 hint = _location_hint(facets)
                 if hint:
+                    # "Location spellings this board uses" reads as "you spelled
+                    # it wrong". PayPal's vocabulary genuinely holds no Canadian
+                    # value, so the honest statement is that the board hires
+                    # nowhere in Canada — not that the caller mistyped it.
                     markdown += (
-                        f"\nLocation spellings this board uses: {hint}\n"
+                        f"\n_No location on this board matches “{location}”, so it "
+                        "has no postings there at all — this is not a spelling "
+                        f"problem._\n\nLocations this board does use: {hint}\n"
                         "\n_(board-wide values, not counts for this search)_\n"
                     )
             return {"content": markdown, "content_type": "markdown"}

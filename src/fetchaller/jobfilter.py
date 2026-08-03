@@ -174,36 +174,47 @@ def counts_line(
     # query, and suppressing the board's figure whenever that happens would
     # drop it in precisely the case a caller most wants it — a search the board
     # says has results and the filter emptied.
-    if board_total > shown:
+    # A board's count describes the query it answered. When a pool is built
+    # from more than one query — a narrow title plus a broadened retry — no
+    # single count describes it, and the larger of the two still under-reports.
+    # Microsoft's "designer" returned 7 and "design" returned 31 sharing 6, so
+    # the pool was 32 while max() said 31 and "dropped 32" read as an
+    # off-by-one. GAF is the same defect inverted: its first query matched
+    # nothing, the retries found 41, and the count stayed 0. What was examined
+    # is always known exactly, so it is the floor for what gets reported.
+    ranked = max(board_total, examined)
+    if ranked > shown:
         where = f" {board_scope}" if board_scope else ""
         # A window smaller than the board's own count means the rest was never
         # looked at, and saying so is the difference between a partial answer
         # and a wrong one.
         partial = 0 < examined < board_total
-        if dropped:
-            fields = " and ".join(field for _, field in dropped)
-            checked = (
-                f"the first {examined} examined" if partial else "each posting's own"
+        lines.append("")
+        if not dropped:
+            lines.append(
+                f"_{board_label} has {ranked}{where} for this query; "
+                "raise `limit` to see more._"
             )
-            lines.append("")
+        elif partial:
+            fields = " and ".join(field for _, field in dropped)
             lines.append(
                 f"_{board_label} reported {board_total} loose "
                 f"match{'' if board_total == 1 else 'es'}{where} for this query; the "
-                f"count above is after re-checking {checked}"
-                + (f" {fields}._" if not partial else f" against {fields}._")
+                f"count above is after re-checking the first {examined} examined "
+                f"against {fields}._"
             )
-        else:
-            lines.append("")
-            lines.append(
-                f"_{board_label} has {board_total}{where} for this query; "
-                "raise `limit` to see more._"
-            )
-        if partial:
             lines.append("")
             lines.append(
                 f"_The remaining {board_total - examined} were not examined. "
                 "Narrow the query — a location, or a more specific title — to "
                 "bring them inside the window._"
+            )
+        else:
+            fields = " and ".join(field for _, field in dropped)
+            lines.append(
+                f"_All {ranked} posting{'' if ranked == 1 else 's'} the board "
+                f"ranked{where} for this query were re-checked against each "
+                f"posting's own {fields}._"
             )
     return lines
 

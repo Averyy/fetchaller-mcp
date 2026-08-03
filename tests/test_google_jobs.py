@@ -192,12 +192,23 @@ class TestRender:
         assert "Waterloo, ON, Canada" in out
 
     def test_googles_loose_count_is_labelled_not_presented_as_the_answer(self):
+        # Google ranks far more than one search can page through, so the
+        # window is stated alongside its count rather than implied.
         out = search._render_results(
             [_JOB], title="product designer", location="Canada",
-            google_total=38, title_filtered=22, location_filtered=0,
+            google_total=1326, title_filtered=22, location_filtered=0, examined=200,
         )
-        assert "38 loose matches" in out
-        assert "after re-checking each posting" in out
+        assert "1326 loose matches" in out
+        assert "after re-checking the first 200 examined" in out
+        assert "remaining 1126 were not examined" in out
+
+    def test_a_fully_examined_google_query_claims_no_window(self):
+        out = search._render_results(
+            [_JOB], title="product designer", location="Canada",
+            google_total=23, title_filtered=22, location_filtered=0, examined=23,
+        )
+        assert "All 23 postings the board ranked" in out
+        assert "not examined" not in out
 
     def test_no_loose_count_note_when_nothing_was_dropped(self):
         out = search._render_results(

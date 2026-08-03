@@ -256,6 +256,19 @@ than the window examined gets an explicit "the remaining N were not examined".
 Apple ranks 1510 for that query against a 100-posting window — a bare "13 jobs
 shown" reads as the answer when it is 6% of one page of it.
 
+**A board's count describes the query it answered, not the pool examined.**
+Every client merges a narrow title query with a broadened retry, and no single
+board count describes the union. Microsoft's `designer` returned 7 and `design`
+returned 31 sharing 6 of them, so the pool was 32 while `max()` reported 31 —
+rendering as "31 matches / dropped 32" and reading as an off-by-one. GAF is the
+same defect inverted: its first query matched nothing, the retries found 41,
+and `total` stayed 0, which suppressed the summary line entirely. What was
+examined is always known exactly, so `counts_line` takes `max(board_total,
+examined)` as the reported figure and says "All N postings the board ranked …
+were re-checked" whenever the examined pool covers the board's own count.
+Workday additionally widens `total` across its retry queries, which is where
+GAF's 0 came from.
+
 **A country is one constraint however a board spells it.** `location_matches`
 expands a country name to every alias in `COUNTRY_ALPHA3`, so `"United
 States"` matches Google's `"New York, NY, USA"`. Without it the behaviour was

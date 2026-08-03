@@ -207,6 +207,7 @@ def _render(
     location_applied: bool,
     location_hint: str,
     truncated_by_limit: int = 0,
+    examined: int = 0,
 ) -> str:
     scope = " · ".join(p for p in (f"“{_clean(title)}”" if title else "", _clean(location)) if p)
     lines = [f"# {_clean(employer)} jobs{': ' + scope if scope else ''}", ""]
@@ -220,6 +221,7 @@ def _render(
             # With a facet applied, `total` counts the located slice, not the board.
             board_scope=f"in {_clean(location)}" if location_applied and location else "",
             truncated_by_limit=truncated_by_limit,
+            examined=examined,
         )
     )
     if location and not location_applied:
@@ -362,6 +364,11 @@ async def search_workday_jobs(
                     )
                     if not extra:
                         continue
+                    # The retries widen the pool, so the count has to widen
+                    # with it. Without this, GAF — whose first query matched
+                    # nothing and whose retries found 41 — reported a total of
+                    # 0 and suppressed the summary line entirely.
+                    total = max(total, extra.get("total") or 0)
                     for posting in extra.get("jobPostings") or []:
                         key = posting.get("externalPath")
                         if key not in seen:
@@ -417,6 +424,7 @@ async def search_workday_jobs(
                     total=total,
                     dropped=dropped,
                     truncated_by_limit=matched - len(postings),
+                    examined=located,
                     location_applied=location_applied,
                     location_hint=hint,
                 ),
