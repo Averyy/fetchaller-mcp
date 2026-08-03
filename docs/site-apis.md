@@ -275,6 +275,28 @@ States"` matches Google's `"New York, NY, USA"`. Without it the behaviour was
 asymmetric — `"Canada"` matched `"Waterloo, ON, Canada"` while `"United
 States"` dropped all 60 US postings.
 
+**A subdivision implies its country, and the miss it fixes was biased.** A
+posting pinned to a bare province was invisible to a country query, and not at
+random: offices carry the country (`AMER - Canada - Ontario - Toronto`) while
+remote and offsite postings frequently do not. Measured across Workday
+tenants — Autodesk 11 province-only values, Motorola 9, Salesforce 3 — *every*
+one of Salesforce's ends `- Remote` and *every* one of Motorola's ends `Remote
+Work`. The values a country query silently dropped were disproportionately the
+remote ones. `_implied_countries` covers Canadian provinces and US states by
+full name and by the `City, ST` abbreviation, and `tokens()` now folds
+diacritics so `Québec` and `Quebec` are one place. Validated against the live
+facet vocabularies of four tenants: 76/76 Canadian values match.
+
+The abbreviations are the delicate part. `CA` is California *and* Canada's
+alpha-2, so each code resolves to the set of countries it could denote and the
+sets are intersected: `Vancouver, BC, CA` gives `{CAN} ∩ {USA,CAN} = {CAN}`,
+`San Jose, CA, US` gives `{USA}`. Anything other than a single survivor falls
+back to the subdivision reading — without that, `Los Angeles, CA` and `San
+Diego, CA` turned up in a Canada search, which unit tests passed and only an
+end-to-end run caught. Matching requires uppercase after a comma, so Motorola's
+`Vancouver on site (BRC06)` does not read `on` as Ontario, and the `ON`/`OR`/
+`IN` stopword collision never arises.
+
 | Board | Search endpoint | Detail | Location filter |
 |---|---|---|---|
 | Eightfold PCS-X | GET `{host}/api/pcsx/search?domain={groupId}` | GET `/api/pcsx/position_details` | `location=` free text |
@@ -343,10 +365,7 @@ filtering. Two tenant-specific traps:
   provinces, and in board order they sit past the display cap. A failed detail
   fetch keeps the summary — it may degrade the display, never the result.
 
-  Known limit: ordering matches on tokens, so a Canadian location named only
-  by province ("Alberta Remote Work") is not recognised for a `Canada` query.
-  Workday's own facet knows the hierarchy; `jobfilter` has no
-  subdivision→country gazetteer.
+  Province-only values are recognised — see the subdivision note below.
 - **`bulletFields` is not an id field.** It is a tenant-configured list of
   list-view columns. Motorola puts the location code first and the requisition
   second, so joining them rendered `Req ID: British Columbia Remote Work,

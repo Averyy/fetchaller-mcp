@@ -222,8 +222,12 @@ class TestCountryAliases:
         assert not jobfilter.location_matches("Toronto, ON, Canada", jobfilter.tokens("United States"))
 
     def test_a_short_code_does_not_match_a_longer_word(self):
-        # "us" must not hit "Houston" or similar.
-        assert not jobfilter.location_matches("Houston, Texas", jobfilter.tokens("US"))
+        # "us" must not hit "Houston" by prefix. The value carries no
+        # subdivision, so nothing legitimately implies the country either —
+        # "Houston, Texas" *does* match "US" now, correctly, via Texas.
+        assert not jobfilter.location_matches("Houston", jobfilter.tokens("US"))
+        assert not jobfilter.location_matches("Bus Depot, Ireland", jobfilter.tokens("US"))
+        assert jobfilter.location_matches("Houston, Texas", jobfilter.tokens("US"))
 
 
 class TestTruncationDisclosure:
@@ -256,3 +260,100 @@ class TestTruncationDisclosure:
         body = "\n".join(lines)
         assert "examined" not in body
         assert "each posting's own title" in body
+
+
+class TestSubdivisions:
+    """A subdivision implies its country.
+
+    Measured across four Workday tenants: Autodesk publishes 11 province-only
+    location values, Motorola 9, Salesforce 3. The miss is not random —
+    offices carry the country ("AMER - Canada - Ontario - Toronto") while
+    remote and offsite postings frequently do not. Every one of Salesforce's
+    province-only values ends "- Remote" and every one of Motorola's ends
+    "Remote Work", so a country query dropped the remote roles specifically.
+    """
+
+    CANADA = ["canada"]
+    US = ["united", "states"]
+
+    def test_bare_province_names(self):
+        for value in (
+            "Alberta Remote Work",
+            "British Columbia Remote Work",
+            "Ontario - Remote",
+            "Quebec - Remote",
+            "Manitoba, Canada - Remote",
+            "Prince Edward Island",
+            "Newfoundland",
+        ):
+            assert jobfilter.location_matches(value, self.CANADA), value
+
+    def test_the_accent_is_folded(self):
+        assert jobfilter.location_matches("Québec - Remote", self.CANADA)
+        assert jobfilter.location_matches("Montréal, QC", jobfilter.tokens("Montreal"))
+
+    def test_bare_state_names(self):
+        for value in ("Oregon, USA - Remote", "Texas", "District of Columbia", "New York"):
+            assert jobfilter.location_matches(value, self.US), value
+
+    def test_city_comma_abbreviations(self):
+        assert jobfilter.location_matches("Toronto, ON", self.CANADA)
+        assert jobfilter.location_matches("Boulder, CO", self.US)
+
+    def test_the_ca_ambiguity_resolves_both_ways(self):
+        # "CA" is California and Canada's alpha-2; the neighbouring code decides.
+        assert jobfilter.location_matches("Vancouver, BC, CA", self.CANADA)
+        assert not jobfilter.location_matches("Vancouver, BC, CA", self.US)
+        assert jobfilter.location_matches("San Jose, CA, US", self.US)
+        assert not jobfilter.location_matches("San Jose, CA, US", self.CANADA)
+
+    def test_a_lowercase_word_is_not_an_abbreviation(self):
+        # Motorola writes "Vancouver on site (BRC06)"; "on" is not Ontario.
+        # The uppercase-after-comma form is what carries the meaning.
+        assert not jobfilter.location_matches("Vancouver on site (BRC06)", self.CANADA)
+        assert not jobfilter.location_matches("work in office or remote", self.US)
+
+    def test_other_countries_are_unaffected(self):
+        for value in ("Bangalore, India", "Tokyo, Japan", "Helsinki, Finland"):
+            assert not jobfilter.location_matches(value, self.CANADA), value
+            assert not jobfilter.location_matches(value, self.US), value
+
+    def test_a_city_constraint_still_has_to_match(self):
+        # Implying the country must not weaken the rest of the query.
+        assert not jobfilter.location_matches(
+            "Ontario - Remote", jobfilter.tokens("Toronto, Canada")
+        )
+        assert jobfilter.location_matches("Toronto, ON", jobfilter.tokens("Toronto"))
+
+    def test_the_two_countries_do_not_leak_into_each_other(self):
+        assert not jobfilter.location_matches("Austin, TX, USA", self.CANADA)
+        assert not jobfilter.location_matches("Waterloo, ON, Canada", self.US)
+
+
+class TestAmbiguousCodeResolution:
+    """A lone "CA" must not imply Canada.
+
+    Caught end-to-end, not by unit tests: with only the intersection rule,
+    "Los Angeles, CA" and "San Diego, CA" appeared in a Canada search, because
+    a single ambiguous code intersects to both readings. "City, ST" is
+    overwhelmingly a subdivision — Canada writes "Vancouver, BC" and
+    "Toronto, ON", never "Vancouver, CA".
+    """
+
+    def test_a_lone_ca_is_california(self):
+        for value in ("Los Angeles, CA", "San Diego, CA", "Palo Alto, CA"):
+            assert not jobfilter.location_matches(value, ["canada"]), value
+            assert jobfilter.location_matches(value, ["united", "states"]), value
+
+    def test_a_neighbouring_province_makes_ca_the_country(self):
+        assert jobfilter.location_matches("Vancouver, BC, CA", ["canada"])
+        assert not jobfilter.location_matches("Vancouver, BC, CA", ["united", "states"])
+
+    def test_a_neighbouring_country_code_wins_over_the_state_reading(self):
+        assert jobfilter.location_matches("San Jose, CA, US", ["united", "states"])
+        assert not jobfilter.location_matches("San Jose, CA, US", ["canada"])
+
+    def test_other_colliding_codes_prefer_the_subdivision(self):
+        # CO is Colorado and Colombia's alpha-2; IN is Indiana and India's.
+        assert jobfilter.location_matches("Boulder, CO", ["united", "states"])
+        assert jobfilter.location_matches("Indianapolis, IN", ["united", "states"])

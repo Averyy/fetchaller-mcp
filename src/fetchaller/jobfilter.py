@@ -21,6 +21,7 @@ under a heading naming the place they asked for.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Words that carry no signal in a title or place name and would over-constrain.
 _STOPWORDS = frozenset(
@@ -31,9 +32,23 @@ _TOKEN_RE = re.compile(r"[a-z0-9+#]+")
 _MIN_PREFIX = 4
 
 
+def _fold(text: str) -> str:
+    """Strip diacritics so "Québec" and "Quebec" are the same place.
+
+    ``_TOKEN_RE`` matches ASCII only, so without this "québec" splits into
+    "qu" and "bec" and matches nothing. Boards are inconsistent about the
+    accent within a single tenant.
+    """
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
+
+
 def tokens(text: str) -> list[str]:
-    """Lowercase word tokens, stopwords removed."""
-    return [t for t in _TOKEN_RE.findall((text or "").casefold()) if t not in _STOPWORDS]
+    """Lowercase word tokens, stopwords removed, diacritics folded."""
+    return [
+        t for t in _TOKEN_RE.findall(_fold(text or "").casefold()) if t not in _STOPWORDS
+    ]
 
 
 def _token_hit(wanted: str, have: list[str]) -> bool:
@@ -72,12 +87,20 @@ def location_matches(value: str, wanted: list[str]) -> bool:
     ``location="United States"`` dropped all 60 of its US postings while
     ``location="Canada"`` matched "Waterloo, ON, Canada" fine. The asymmetry
     was the tell: the country name and its code are the same constraint.
+
+    A subdivision implies its country, so "Ontario - Remote" and "Toronto, ON"
+    both answer ``location="Canada"``. See ``_implied_countries``: without it
+    the values a country query dropped were disproportionately the remote
+    ones, which is the opposite of the bias anyone wants.
     """
     if not wanted:
         return True
     have = tokens(value)
     if not have:
         return False
+    for code in _implied_countries(value, have):
+        for alias in _COUNTRY_ALIASES.get(code, ()):
+            have.extend(alias)
     return any(
         all(_token_hit(token, have) for token in variant)
         for variant in _country_variants(wanted)
@@ -283,6 +306,122 @@ COUNTRY_ALPHA3 = {
 # Built once from the table above, so a country added there is matchable by
 # every one of its spellings without a second list to keep in step.
 _COUNTRY_ALIASES = _build_country_aliases()
+
+# Two-letter country codes, needed only to tell a country apart from a
+# subdivision sharing its abbreviation: "Vancouver, BC, CA" is Canada while
+# "San Jose, CA, US" is California.
+_COUNTRY_ALPHA2 = {
+    "ca": "CAN", "us": "USA", "gb": "GBR", "in": "IND", "de": "DEU",
+    "ie": "IRL", "au": "AUS", "jp": "JPN", "mx": "MEX", "br": "BRA",
+    "es": "ESP", "fr": "FRA", "it": "ITA", "pl": "POL", "nl": "NLD",
+    "sg": "SGP", "cn": "CHN", "il": "ISR", "kr": "KOR", "tw": "TWN",
+    "se": "SWE", "ch": "CHE", "dk": "DNK", "ro": "ROU", "pt": "PRT",
+    "ar": "ARG", "co": "COL", "cl": "CHL", "nz": "NZL", "gr": "GRC",
+    "th": "THA",
+}
+
+# A posting pinned to a bare subdivision is invisible to a country query, and
+# the miss is not random: office locations tend to carry the country
+# ("AMER - Canada - Ontario - Toronto") while remote and offsite ones
+# frequently do not. Measured across Workday tenants, every one of
+# Salesforce's province-only values ends in "- Remote" and every one of
+# Motorola's nine ends in "Remote Work" — so the values a country query
+# silently drops are disproportionately the remote ones.
+_SUBDIVISION_NAMES = {
+    # Canada
+    "Alberta": "CAN", "British Columbia": "CAN", "Manitoba": "CAN",
+    "New Brunswick": "CAN", "Newfoundland": "CAN",
+    "Newfoundland and Labrador": "CAN", "Northwest Territories": "CAN",
+    "Nova Scotia": "CAN", "Nunavut": "CAN", "Ontario": "CAN",
+    "Prince Edward Island": "CAN", "Quebec": "CAN", "Québec": "CAN",
+    "Saskatchewan": "CAN", "Yukon": "CAN",
+    # United States
+    "Alabama": "USA", "Alaska": "USA", "Arizona": "USA", "Arkansas": "USA",
+    "California": "USA", "Colorado": "USA", "Connecticut": "USA",
+    "Delaware": "USA", "District of Columbia": "USA", "Florida": "USA",
+    "Georgia": "USA", "Hawaii": "USA", "Idaho": "USA", "Illinois": "USA",
+    "Indiana": "USA", "Iowa": "USA", "Kansas": "USA", "Kentucky": "USA",
+    "Louisiana": "USA", "Maine": "USA", "Maryland": "USA",
+    "Massachusetts": "USA", "Michigan": "USA", "Minnesota": "USA",
+    "Mississippi": "USA", "Missouri": "USA", "Montana": "USA",
+    "Nebraska": "USA", "Nevada": "USA", "New Hampshire": "USA",
+    "New Jersey": "USA", "New Mexico": "USA", "New York": "USA",
+    "North Carolina": "USA", "North Dakota": "USA", "Ohio": "USA",
+    "Oklahoma": "USA", "Oregon": "USA", "Pennsylvania": "USA",
+    "Rhode Island": "USA", "South Carolina": "USA", "South Dakota": "USA",
+    "Tennessee": "USA", "Texas": "USA", "Utah": "USA", "Vermont": "USA",
+    "Virginia": "USA", "Washington": "USA", "West Virginia": "USA",
+    "Wisconsin": "USA", "Wyoming": "USA", "Puerto Rico": "USA",
+}
+
+_SUBDIVISION_ABBREV = {
+    "ab": "CAN", "bc": "CAN", "mb": "CAN", "nb": "CAN", "nl": "CAN",
+    "ns": "CAN", "nt": "CAN", "nu": "CAN", "on": "CAN", "pe": "CAN",
+    "qc": "CAN", "sk": "CAN", "yt": "CAN",
+    "al": "USA", "ak": "USA", "az": "USA", "ar": "USA", "ca": "USA",
+    "co": "USA", "ct": "USA", "dc": "USA", "de": "USA", "fl": "USA",
+    "ga": "USA", "hi": "USA", "ia": "USA", "id": "USA", "il": "USA",
+    "in": "USA", "ks": "USA", "ky": "USA", "la": "USA", "ma": "USA",
+    "md": "USA", "me": "USA", "mi": "USA", "mn": "USA", "mo": "USA",
+    "ms": "USA", "mt": "USA", "nc": "USA", "nd": "USA", "ne": "USA",
+    "nh": "USA", "nj": "USA", "nm": "USA", "nv": "USA", "ny": "USA",
+    "oh": "USA", "ok": "USA", "or": "USA", "pa": "USA", "pr": "USA",
+    "ri": "USA", "sc": "USA", "sd": "USA", "tn": "USA", "tx": "USA",
+    "ut": "USA", "va": "USA", "vt": "USA", "wa": "USA", "wi": "USA",
+    "wv": "USA", "wy": "USA",
+}
+
+# Tokenised through the same path as any value, so multi-word names and
+# stopwords ("District of Columbia" -> district, columbia) line up.
+_SUBDIVISION_BY_TOKENS = {
+    tuple(tokens(name)): code for name, code in _SUBDIVISION_NAMES.items()
+}
+_MAX_SUBDIVISION_TOKENS = max(len(k) for k in _SUBDIVISION_BY_TOKENS)
+# "Toronto, ON" / "Boulder, CO" — an uppercase pair after a comma. The case
+# and the comma are both load-bearing: without them "Vancouver on site"
+# reads "on" as Ontario, and "or"/"in" are stopwords besides.
+_ABBREV_RE = re.compile(r",\s*([A-Z]{2})(?![A-Za-z])")
+
+
+def _implied_countries(value: str, have: list[str]) -> set[str]:
+    """Alpha-3 codes implied by any subdivision named in ``value``.
+
+    A code can mean two things — "CA" is California and Canada's alpha-2 — so
+    each is resolved to the set of countries it could denote and the sets are
+    intersected. "Vancouver, BC, CA" gives {CAN} ∩ {USA, CAN} = {CAN}; "San
+    Jose, CA, US" gives {USA, CAN} ∩ {USA} = {USA}.
+
+    Anything other than a single survivor means the neighbours did not settle
+    it, and the subdivision reading wins. "Los Angeles, CA" has nothing to
+    intersect against and would otherwise imply Canada as readily as the
+    United States — which put Los Angeles and San Diego in a Canada search.
+    "City, ST" is overwhelmingly a subdivision; Canada writes its own postings
+    "Vancouver, BC" and "Toronto, ON", not "Vancouver, CA".
+    """
+    subdivision: list[set[str]] = []
+    either: list[set[str]] = []
+    for size in range(_MAX_SUBDIVISION_TOKENS, 0, -1):
+        for start in range(len(have) - size + 1):
+            code = _SUBDIVISION_BY_TOKENS.get(tuple(have[start : start + size]))
+            if code:
+                subdivision.append({code})
+                either.append({code})
+    for abbrev in _ABBREV_RE.findall(_fold(value)):
+        lowered = abbrev.casefold()
+        as_subdivision = _SUBDIVISION_ABBREV.get(lowered)
+        options = {
+            code for code in (as_subdivision, _COUNTRY_ALPHA2.get(lowered)) if code
+        }
+        if options:
+            either.append(options)
+        if as_subdivision:
+            subdivision.append({as_subdivision})
+    if not either:
+        return set()
+    resolved = set.intersection(*either)
+    if len(resolved) == 1:
+        return resolved
+    return set.intersection(*subdivision) if subdivision else set()
 
 
 def country_alpha3(text: str) -> str:
