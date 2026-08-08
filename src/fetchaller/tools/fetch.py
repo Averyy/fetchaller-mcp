@@ -11,10 +11,12 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
+from typing import NamedTuple
 from urllib.parse import urljoin, urlparse
 
 import wafer
 
+from ..aartech.api import is_aartech_catalogue_url as _is_aartech_catalogue
 from ..cache.response_cache import ResponseCache
 from ..config import Config, get_wafer_cache_dir
 from ..content import js_render
@@ -467,6 +469,86 @@ def _reject_nonstandard_json_constant(_value: str) -> object:
 _JSON_TRUNCATION_KEY = "_fetchaller_truncated"
 _JSON_BUDGET_ERROR = "JSON exceeds maxTokens; increase maxTokens to return a useful whole-value prefix."
 
+# A truncated JSON document that fails to parse is a loud error; one that parses
+# is a quiet wrong answer. Since this encoder deliberately emits valid JSON, the
+# marker is the ONLY thing standing between a caller and "the board has 7 jobs".
+# So it carries counts, not just a boolean: `total` is what turns a believable
+# answer into an obviously incomplete one. Never regress this to a bare flag.
+#
+# Bounded so the marker's own size stays predictable enough to reserve for.
+_MAX_TRUNCATION_PATH_CHARS = 120
+
+# Re-encode attempts allowed while the reserve converges on the real marker
+# width. Two suffice for every shape tested; the extras are slack, and running
+# out means falling back to the budget error rather than overrunning max_chars.
+_MAX_TRUNCATION_MARKER_PASSES = 4
+
+
+class _TruncationPoint(NamedTuple):
+    """Where a structural prefix stopped, and how much of that container it kept.
+
+    ``path`` is addressed from the document root outward; ``included``/``total``
+    count the immediate children of the container that was cut, not leaves.
+    """
+
+    path: tuple[str | int, ...]
+    included: int
+    total: int
+
+    @property
+    def dropped(self) -> int:
+        """Immediate children the prefix could not reach."""
+        return self.total - self.included
+
+    def under(self, segment: str | int) -> "_TruncationPoint":
+        """Re-root this point one level up, beneath ``segment``."""
+        return self._replace(path=(segment, *self.path))
+
+
+def _worst_truncation(
+    own: _TruncationPoint,
+    child: _TruncationPoint | None,
+) -> _TruncationPoint:
+    """Pick the container whose loss a caller most needs to hear about.
+
+    Neither the innermost nor the outermost container is the right answer.
+    Cutting a 734-job board mid-record leaves three candidates: the root dict
+    (kept its 1 key of 1), the ``jobs`` array (112 of 734), and the half-written
+    record at ``jobs[111]`` (1 field of 4). Only the middle one answers the
+    question the caller is actually asking, and it is distinguished by having
+    dropped the most children — so that, not depth, is the ranking. Ties go to
+    the outer container, whose path is the more general description of the loss.
+    """
+    if child is None or child.dropped <= own.dropped:
+        return own
+    return child
+
+
+# A key safe to render bare after a dot. Anything else gets bracket-quoted, so
+# the path stays unambiguous when resolved against the source document: a key
+# literally named "data.results" must not render the same as data -> results.
+_PLAIN_JSON_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _render_truncation_path(path: tuple[str | int, ...]) -> str:
+    """Render a container path as ``jobs``, ``jobs[3].tags``, or ``""`` for the root.
+
+    Keys that are not plain identifiers are quoted as ``["a.b"]`` so the result
+    can be walked back to exactly one container.
+    """
+    rendered: list[str] = []
+    for segment in path:
+        if isinstance(segment, int):
+            rendered.append(f"[{segment}]")
+        elif _PLAIN_JSON_KEY_RE.match(segment):
+            rendered.append(("." if rendered else "") + segment)
+        else:
+            rendered.append("[" + _compact_json(segment) + "]")
+    text = "".join(rendered)
+    if len(text) > _MAX_TRUNCATION_PATH_CHARS:
+        text = text[: _MAX_TRUNCATION_PATH_CHARS - 3] + "..."
+    return text
+
 
 class _JsonBudgetExceededError(ValueError):
     pass
@@ -479,21 +561,28 @@ class _JsonProcessingError(ValueError):
 def _encode_json_prefix(
     value: object,
     max_chars: int,
-) -> tuple[str, bool, bool]:
+) -> tuple[str, bool, bool, _TruncationPoint | None]:
     """Encode one structural prefix in one pass.
 
-    Returns ``(encoded, complete, contains_source_value)``. Each scalar/key is
-    serialized once; unlike the old candidate-dump loop, a flat array is
-    linear rather than quadratic.
+    Returns ``(encoded, complete, contains_source_value, truncation_point)``.
+    Each scalar/key is serialized once; unlike the old candidate-dump loop, a
+    flat array is linear rather than quadratic.
+
+    ``truncation_point`` is None when ``complete``. Otherwise it names the
+    innermost container the encoder had to cut, which for the listing APIs this
+    mostly meets is the array a caller is actually counting. An ancestor that
+    stopped only because its child did defers to that child's point rather than
+    reporting itself, so the path leads to the array rather than to the wrapper.
     """
 
     if isinstance(value, dict):
         if max_chars < 2:
-            return "", False, False
+            return "", False, False, None
         pieces = ["{"]
         length = 1
-        included = False
+        included = 0
         complete = True
+        point: _TruncationPoint | None = None
         for key, child in value.items():
             key_text = _compact_json(key)
             separator = "" if length == 1 else ","
@@ -502,7 +591,7 @@ def _encode_json_prefix(
             if child_budget < 0:
                 complete = False
                 break
-            child_text, child_complete, child_included = _encode_json_prefix(
+            child_text, child_complete, child_included, child_point = _encode_json_prefix(
                 child,
                 child_budget,
             )
@@ -511,27 +600,31 @@ def _encode_json_prefix(
                 break
             pieces.extend((separator, key_text, ":", child_text))
             length += fixed_cost + len(child_text)
-            included = True
+            included += 1
             if not child_complete:
                 complete = False
+                point = child_point.under(key) if child_point is not None else None
                 break
         pieces.append("}")
-        return "".join(pieces), complete, included or not value
+        if not complete:
+            point = _worst_truncation(_TruncationPoint((), included, len(value)), point)
+        return "".join(pieces), complete, bool(included) or not value, point
 
     if isinstance(value, list):
         if max_chars < 2:
-            return "", False, False
+            return "", False, False, None
         pieces = ["["]
         length = 1
-        included = False
+        included = 0
         complete = True
-        for child in value:
+        point = None
+        for index, child in enumerate(value):
             separator = "" if length == 1 else ","
             child_budget = max_chars - length - len(separator) - 1
             if child_budget < 0:
                 complete = False
                 break
-            child_text, child_complete, child_included = _encode_json_prefix(
+            child_text, child_complete, child_included, child_point = _encode_json_prefix(
                 child,
                 child_budget,
             )
@@ -540,17 +633,57 @@ def _encode_json_prefix(
                 break
             pieces.extend((separator, child_text))
             length += len(separator) + len(child_text)
-            included = True
+            included += 1
             if not child_complete:
                 complete = False
+                point = child_point.under(index) if child_point is not None else None
                 break
         pieces.append("]")
-        return "".join(pieces), complete, included or not value
+        if not complete:
+            point = _worst_truncation(_TruncationPoint((), included, len(value)), point)
+        return "".join(pieces), complete, bool(included) or not value, point
 
     encoded = _compact_json(value)
     if len(encoded) > max_chars:
-        return "", False, False
-    return encoded, True, True
+        return "", False, False, None
+    return encoded, True, True, None
+
+
+def _truncation_marker_value(
+    point: _TruncationPoint | None,
+    source_bytes: int,
+) -> object:
+    """The value stored under ``_JSON_TRUNCATION_KEY``.
+
+    An object rather than the old bare ``true`` so a caller can tell 7-of-734
+    from a genuinely 7-element board. It stays truthy, so existing
+    ``if data.get(_fetchaller_truncated)`` checks keep working unchanged.
+
+    ``path`` is the cut container, empty for the document root. ``included`` and
+    ``total`` count that container's immediate children. ``bytes_total`` is the
+    UTF-8 size of the whole source document — a size indication, deliberately
+    NOT a budget calculation: ``maxTokens`` is spent in characters, and for
+    non-Latin or emoji-heavy bodies (much of Reddit) the byte count runs ahead
+    of the character count by up to 4x. Compare it against ``included``/``total``
+    for scale, not against ``maxTokens`` for arithmetic.
+    """
+    if point is None:
+        return True
+    return {
+        "path": _render_truncation_path(point.path),
+        "included": point.included,
+        "total": point.total,
+        "bytes_total": source_bytes,
+    }
+
+
+def _truncation_marker_cost(marker_value: object, container_is_dict: bool) -> int:
+    """Characters the marker costs inside its container, separator included."""
+    if container_is_dict:
+        # Inserted as one more member: `"key":<value>` plus a comma.
+        return len(_compact_json({_JSON_TRUNCATION_KEY: marker_value})) - len("{}") + 1
+    # Appended as one more element: a whole `{"key":<value>}` object plus a comma.
+    return len(_compact_json([{_JSON_TRUNCATION_KEY: marker_value}])) - len("[]") + 1
 
 
 def _match_job_board_url(url: str) -> tuple[str, str, dict] | None:
@@ -735,37 +868,54 @@ def truncate_json(text: str, max_tokens: int, chars_per_token: int = 4) -> str |
     max_chars = max(0, max_tokens * chars_per_token)
     if len(text) <= max_chars:
         return text
-    compact, complete, _ = _encode_json_prefix(value, max_chars)
+    compact, complete, _, _ = _encode_json_prefix(value, max_chars)
     if complete:
         return compact
-    if isinstance(value, dict):
+    is_dict = isinstance(value, dict)
+    if is_dict:
         if _JSON_TRUNCATION_KEY in value:
             # The reserved top-level key already belongs to the source. Never
             # overwrite caller data or misclassify valid JSON as malformed;
             # the representation cannot be safely marked within this budget.
             raise _JsonBudgetExceededError
-        marker_cost = len(_compact_json({_JSON_TRUNCATION_KEY: True})) - len("{}") + 1
-    elif isinstance(value, list):
-        marker_cost = len(_compact_json([{_JSON_TRUNCATION_KEY: True}])) - len("[]") + 1
-    else:
+    elif not isinstance(value, list):
         # A top-level scalar cannot be shortened without changing its value.
         raise _JsonBudgetExceededError
-    if max_chars < marker_cost + 2:
+
+    source_bytes = len(text.encode("utf-8", "surrogatepass"))
+
+    # The marker names the container it cut, so its own width is not known until
+    # the encode has run — but the encode needs the width reserved up front.
+    # Reserving the worst case instead would spend ~200 characters on a padded
+    # path that is usually a single word, which at a small maxTokens is the
+    # difference between a usable prefix and a budget error. So start from the
+    # cheapest possible marker and re-encode until the reserve covers the real
+    # one. A larger reserve only ever removes elements, which shrinks the counts
+    # and hence the marker, so this settles rather than oscillates.
+    reserve_cost = _truncation_marker_cost(True, is_dict)
+    for _ in range(_MAX_TRUNCATION_MARKER_PASSES):
+        if max_chars < reserve_cost + 2:
+            raise _JsonBudgetExceededError
+        bounded, _, included, point = _encode_json_prefix(
+            value,
+            max_chars - reserve_cost,
+        )
+        if not bounded or not included:
+            raise _JsonBudgetExceededError
+        marker_value = _truncation_marker_value(point, source_bytes)
+        marker_cost = _truncation_marker_cost(marker_value, is_dict)
+        if marker_cost <= reserve_cost:
+            break
+        reserve_cost = marker_cost
+    else:
         raise _JsonBudgetExceededError
-    bounded, _, included = _encode_json_prefix(
-        value,
-        max_chars - marker_cost,
-    )
-    if not bounded or not included:
-        raise _JsonBudgetExceededError
-    marker = _compact_json({_JSON_TRUNCATION_KEY: True})[1:-1]
-    if isinstance(value, dict):
-        inner = bounded[1:-1]
+
+    marker = _compact_json({_JSON_TRUNCATION_KEY: marker_value})[1:-1]
+    inner = bounded[1:-1]
+    if is_dict:
         bounded = "{" + inner + ("," if inner else "") + marker + "}"
     else:
-        inner = bounded[1:-1]
-        marker_object = "{" + marker + "}"
-        bounded = "[" + inner + ("," if inner else "") + marker_object + "]"
+        bounded = "[" + inner + ("," if inner else "") + "{" + marker + "}" + "]"
     if len(bounded) > max_chars:
         raise _JsonBudgetExceededError
     return bounded
@@ -1422,6 +1572,26 @@ async def _fetch_url_impl(
                 )
                 return {"content": content, "content_type": "markdown", "url": url}
             return _board_result
+
+    # aartech.ca — listing pages mount a React app over an empty container and
+    # product pages fill empty <template> elements from a script, so on both the
+    # HTML carries no price at all. The client reads the page once and decides
+    # which it is, returning None for anything that is neither so it falls
+    # through to the ordinary HTML path rather than erroring.
+    if structured and _is_aartech_catalogue(url):
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
+        from ..aartech.search import search_aartech
+
+        result = await search_aartech(url, timeout=float(timeout))
+        if result is not None:
+            if "content" in result:
+                _intercept_cache_set(url, result["content"], "markdown")
+                content = truncate(result["content"], max_tokens)
+                _log(f"FETCH {url} -> Aartech ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "markdown", "url": url}
+            return result
 
     # Costco search/category pages — CSR, use search API when available
     _costco_redirect_fallback = False

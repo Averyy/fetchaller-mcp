@@ -826,8 +826,17 @@ class TestRedditUrlTransform:
         assert elapsed < 1.0
         assert bounded is not None
         decoded = json.loads(bounded)
-        assert decoded[-1] == {"_fetchaller_truncated": True}
         assert decoded[:-1] == list(range(len(decoded) - 1))
+
+        # The marker has to say how much of the array is missing: a valid,
+        # plausible-looking prefix is otherwise indistinguishable from the whole
+        # thing. "" is the path of the root container itself.
+        marker = decoded[-1]["_fetchaller_truncated"]
+        assert marker["path"] == ""
+        assert marker["total"] == 20_000
+        assert marker["included"] == len(decoded) - 1
+        assert marker["included"] < marker["total"]
+        assert marker["bytes_total"] == len(payload)
 
     @_PATCH_SSRF
     async def test_explicit_json_over_budget_is_parseable_uncached(self, _mock_ssrf):
@@ -848,9 +857,12 @@ class TestRedditUrlTransform:
         assert result["content_type"] == "json"
         assert len(result["content"]) <= 80 * 4
         decoded = json.loads(result["content"])
-        assert decoded["_fetchaller_truncated"] is True
         assert decoded["nested"]["items"][0]["title"] == "x" * 200
         assert len(decoded["nested"]["items"]) == 1
+
+        marker = decoded["_fetchaller_truncated"]
+        assert marker["included"] < marker["total"]
+        assert marker["bytes_total"] == len(json.dumps(payload))
 
     async def test_explicit_json_over_budget_is_parseable_from_cache(self):
         from types import SimpleNamespace
@@ -879,9 +891,11 @@ class TestRedditUrlTransform:
         assert result["content_type"] == "application/json"
         assert len(result["content"]) <= 80 * 4
         decoded = json.loads(result["content"])
-        assert decoded["_fetchaller_truncated"] is True
         assert decoded["nested"]["items"][0]["title"] == "x" * 200
         assert len(decoded["nested"]["items"]) == 1
+
+        marker = decoded["_fetchaller_truncated"]
+        assert marker["included"] < marker["total"]
 
     @_PATCH_SSRF
     async def test_valid_json_too_small_for_marker_returns_budget_error(
@@ -1280,6 +1294,98 @@ class TestRedditUrlTransform:
         assert result["content"].endswith("GENERIC OUTPUT")
         assert markdown.await_args.kwargs["is_reddit"] is False
         assert session.calls == [start, external]
+
+
+class TestJsonTruncationIsSelfDescribing:
+    """A truncated listing must not read as a complete short one.
+
+    The encoder emits valid JSON on purpose, which is exactly what makes the
+    loss invisible: a board cut to 7 of 747 jobs parses cleanly and looks like a
+    company with 7 openings. The marker is the only thing that distinguishes
+    them, so it carries counts rather than a bare flag.
+    """
+
+    @staticmethod
+    def _marker(text, max_tokens, chars_per_token=4):
+        from fetchaller.tools.fetch import truncate_json
+
+        bounded = truncate_json(text, max_tokens=max_tokens, chars_per_token=chars_per_token)
+        assert bounded is not None
+        assert len(bounded) <= max_tokens * chars_per_token
+        decoded = json.loads(bounded)  # never emit unparseable JSON
+        # A dict carries the marker as a member; an array as a trailing element.
+        holder = decoded if isinstance(decoded, dict) else decoded[-1]
+        return decoded, holder["_fetchaller_truncated"]
+
+    def test_marker_counts_the_records_that_were_dropped(self):
+        payload = json.dumps(
+            {"jobs": [{"id": i, "title": f"Job {i}", "location": "SF"} for i in range(747)]}
+        )
+        decoded, marker = self._marker(payload, max_tokens=2000)
+
+        assert marker["path"] == "jobs"
+        assert marker["total"] == 747
+        assert marker["included"] == len(decoded["jobs"])
+        assert marker["included"] < 747
+        assert marker["bytes_total"] == len(payload)
+
+    def test_marker_blames_the_array_not_the_half_written_record(self):
+        """The innermost cut container is the wrong one to report.
+
+        Stopping mid-record leaves a partly-serialized job object as the
+        innermost truncation. Reporting that ("1 of 4 fields") hides the only
+        number that matters — that the array lost hundreds of records.
+        """
+        payload = json.dumps({"jobs": [{"a": 1, "b": 2, "c": 3, "d": 4} for _ in range(500)]})
+        _decoded, marker = self._marker(payload, max_tokens=200)
+
+        assert marker["path"] == "jobs"
+        assert marker["total"] == 500
+
+    def test_marker_stays_truthy_for_callers_that_only_check_presence(self):
+        payload = json.dumps({"jobs": [{"id": i} for i in range(400)]})
+        _decoded, marker = self._marker(payload, max_tokens=100)
+
+        assert marker  # `if data.get("_fetchaller_truncated"):` still works
+
+    def test_top_level_array_reports_the_root_container(self):
+        payload = json.dumps([{"id": i, "name": f"item {i}"} for i in range(500)])
+        decoded, marker = self._marker(payload, max_tokens=200)
+
+        assert marker["path"] == ""  # the document root itself
+        assert marker["total"] == 500
+        assert marker["included"] == len(decoded) - 1  # the marker is the last element
+
+    def test_nested_container_path_locates_the_cut(self):
+        payload = json.dumps({"data": {"results": [{"x": i} for i in range(400)]}, "meta": {"p": 1}})
+        _decoded, marker = self._marker(payload, max_tokens=200)
+
+        assert marker["path"] == "data.results"
+        assert marker["total"] == 400
+
+    def test_awkward_keys_are_quoted_so_the_path_stays_unambiguous(self):
+        """A key named "data.results" must not render like data -> results."""
+        payload = json.dumps({"data.results": [{"x": i} for i in range(400)]})
+        _decoded, marker = self._marker(payload, max_tokens=200)
+
+        assert marker["path"] == '["data.results"]'
+        assert marker["total"] == 400
+
+    def test_complete_json_is_never_marked(self):
+        from fetchaller.tools.fetch import truncate_json
+
+        payload = json.dumps({"jobs": [{"id": 1}, {"id": 2}]})
+        bounded = truncate_json(payload, max_tokens=25_000)
+
+        assert bounded == payload
+        assert "_fetchaller_truncated" not in json.loads(bounded)
+
+    def test_source_owning_the_reserved_key_is_never_overwritten(self):
+        from fetchaller.tools.fetch import _JsonBudgetExceededError, truncate_json
+
+        payload = json.dumps({"_fetchaller_truncated": "mine", "jobs": [{"id": i} for i in range(400)]})
+        with pytest.raises(_JsonBudgetExceededError):
+            truncate_json(payload, max_tokens=100)
 
 
 class TestURLValidation:
