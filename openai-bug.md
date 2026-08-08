@@ -1,5 +1,34 @@
 # Bug: JSON truncation is undetectable at the semantic layer
 
+> **STATUS: primary defect FIXED in 3.5.3.** Everything below is the report as
+> filed against 3.5.2 and is left in past-tense-by-context, not rewritten. What
+> actually changed, and what did not:
+>
+> - **Fix 1 (quantitative flag) — DONE.** `_fetchaller_truncated` is no longer a
+>   boolean. The same OpenAI fetch now returns
+>   `{"path": "jobs", "included": 7, "total": 747, "bytes_total": 12701660}`.
+>   The marker names whichever container dropped the most children, so it
+>   reports the `jobs` array rather than the half-written record inside it or
+>   the one-key root wrapper. It stays truthy, so presence checks still work.
+> - **Fix 2 (continuation / `offset`) — NOT DONE.** Paging a large array through
+>   this tool is still not possible. For Ashby specifically the structured route
+>   makes it moot: `https://jobs.ashbyhq.com/openai` renders all 747 postings
+>   grouped by team. The raw `api.ashbyhq.com` URL is the unstructured path.
+> - **Fix 3 (skip truncation when the host spills to a file) — NOT DONE.** The
+>   spill is the MCP host's, not this server's; nothing here can see it.
+> - **Fix 4 (error instead of truncating) — NOT DONE**, and deliberately: with
+>   counts in the marker, a truncated array is now loud enough to act on, so
+>   refusing to answer would lose data for no gain.
+> - **The cache-collision lead (last section) — UNRESOLVED, no mechanism found.**
+>   Checked and ruled out: `normalize_url` discriminates fully on
+>   scheme/host/port/path/query; each `run_isolated` call gets its own process
+>   and pipes, so there is no shared pool to cross payloads in; `ashby.py` holds
+>   no module-level mutable state. Left open rather than closed.
+>
+> The operational rule at the bottom of this report can be relaxed but not
+> dropped: element counts are now self-reporting, so "check the returned count
+> against the source's own total" is something the response does for you.
+
 Filed 2026-08-06. Found while sweeping ATS job boards; reproduced deliberately for this report.
 
 ## Summary
