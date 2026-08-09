@@ -15,6 +15,7 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 - **`search_marketplace`**: Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range)
 - **`search_realtor`**: Search Canadian homes on realtor.ca for sale or rent with full filters (location, price, beds, baths, property/building type, ownership)
 - **`search_linkedin_jobs`** / **`get_linkedin_job`**: Search LinkedIn's public logged-out job board (keywords, location, date posted, remote/hybrid/on-site, experience, job type, salary) and read full postings — no account needed
+- **`get_unifi_manual`**: Download a Ubiquiti UniFi installation guide as a PDF or per-page PNGs. Ubiquiti publishes no PDF and draws these guides as vector artwork, so they carry no readable text — this rebuilds the pages into a real document
 - **`get_aliexpress_product`**: AliExpress product details (price, specs, ratings, reviews)
 - **`search_aliexpress`**: Search AliExpress products with price filters and sorting
 - **`get_alibaba_product`**: Alibaba.com B2B product details (tiered pricing, MOQ, lead times, supplier info)
@@ -52,6 +53,7 @@ Add permissions to `~/.claude/settings.json`:
       "mcp__fetchaller__search_realtor",
       "mcp__fetchaller__search_linkedin_jobs",
       "mcp__fetchaller__get_linkedin_job",
+      "mcp__fetchaller__get_unifi_manual",
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
       "mcp__fetchaller__get_alibaba_product",
@@ -80,6 +82,7 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 - `mcp__fetchaller__search_realtor(location, transaction?, property_type?, building_type?, min_price?, max_price?, min_beds?, min_baths?, ownership?, sort?, page?)` — Search realtor.ca homes
 - `mcp__fetchaller__search_linkedin_jobs(keywords, location?, date_posted?, workplace?, experience?, job_type?, min_salary?, sort?, start?, limit?)` — Search LinkedIn public jobs
 - `mcp__fetchaller__get_linkedin_job(job_id)` — Full public detail for one LinkedIn posting
+- `mcp__fetchaller__get_unifi_manual(url, format?)` — Rebuild a UniFi installation guide as `pdf`/`png`/`svg`. Writes into the server's `DATA_DIR`, so on a containerised deployment the files land inside the container
 - `mcp__fetchaller__get_aliexpress_product(product_id, timeout?)` — AliExpress product details
 - `mcp__fetchaller__search_aliexpress(query, page?, sort?, min_price?, max_price?, timeout?)` — Search AliExpress
 - `mcp__fetchaller__get_alibaba_product(product_id, timeout?)` — Alibaba.com product details
@@ -536,6 +539,7 @@ CSR sites where HTML scraping produces garbage are intercepted in `fetch_url()` 
 - **eBay** — SSR search results extracted from `.s-item` DOM elements, formatted as numbered list.
 - **Mouser** (`src/fetchaller/mouser/`) — Search API client. Requires `MOUSER_API_KEY`.
 - **DigiKey** (`src/fetchaller/digikey/`) — OAuth2 client_credentials API. Requires `DIGIKEY_CLIENT_ID` + `DIGIKEY_CLIENT_SECRET`.
+- **Ubiquiti / UniFi** (`src/fetchaller/ubiquiti/`) — `*.store.ui.com`, `techspecs.ui.com`, and `ui.com/qig/<slug>` installation guides. Store pages carry the price in their HTML but none of the technical specifications, which render client-side from `__NEXT_DATA__`; dispatch is by Next.js route, not URL shape. Guides are JS page assets of outlined vector art with no readable text, rebuilt into a PDF/PNG by `get_unifi_manual`.
 - **Marketplace Search** (`src/fetchaller/marketplace/`) — Unified orchestrator searching Kijiji, Craigslist, and Facebook Marketplace concurrently. Human-readable params mapped to platform-specific values. Auto-skips Kijiji for non-Canadian locations.
 - **Dayforce HCM** (`src/fetchaller/content/dayforce.py`) — Posting detail from SSR'd `__NEXT_DATA__`. Board listing via CSRF-protected POST to `/api/geo/{namespace}/jobposting/search` (NextAuth `/api/auth/csrf` round-trip required). White-label deployments on company domains are detected via `__NEXT_DATA__.runtimeConfig.BASE_URL` and rewritten to the canonical `jobs.dayforcehcm.com` board URL.
 - **Cornerstone OnDemand** (`src/fetchaller/content/cornerstone.py`) — SPA shell carries a JWT in `csod.context`. Posting from `services/x/job-requisition/v2/requisitions/{reqid}/jobDetails`; board listing POSTed to `rec-job-search/external/jobs` on the regional cloud host (`us|eu|uk|au.api.csod.com`).
@@ -688,6 +692,7 @@ fetchaller-mcp/
 │   ├── kijiji/              # Kijiji GraphQL API client + location resolution
 │   ├── facebook_marketplace/# Facebook Marketplace GraphQL client
 │   ├── marketplace/         # Unified marketplace search orchestrator
+│   ├── ubiquiti/            # UniFi store/techspecs specs + installation guides
 │   ├── digikey/             # DigiKey API client (OAuth2 + product/search)
 │   ├── cache/               # Response caching
 │   ├── queue/               # Reddit rate limiting

@@ -38,6 +38,38 @@ verification parser into this repo. Explicit `.json` stays raw JSON and
 a score (not an upvote count); show `upvote_ratio` only when returned, and never
 invent separate up/down vote counts.
 
+### Ubiquiti (ui.com)
+
+A UniFi store page ships its price in the HTML but **none of its
+specifications** — those render client-side from `__NEXT_DATA__` — so the plain
+HTML path returns a product page that looks complete and silently has no specs
+on it. Dispatch on the Next.js route (`__NEXT_DATA__["page"]`), never on URL
+shape, because the store rewrites `/pro/category/...` onto the same route.
+Two route traps, both of which fail by rendering something plausible: door
+access and cameras file products under a **collection** route, and missing it
+drops every spec section while still producing a page; and an unknown category
+is a **soft 404** — the store answers 200 and rewrites onto its home route, so
+falling through renders the storefront under a heading the caller supplied.
+Report that instead. Quote
+`minDisplayPriceWithSurcharges` as the price, since that is what the store
+charges and displays; name the base only when it differs. Money is in minor
+units scaled by the **currency's** exponent, not a flat 1/100 — the JP store
+prices in whole yen, so dividing by 100 there is a silent 100x error with no
+symptom. Both `minDisplay*` fields are the minimum across variants, so say
+"from" when the variants disagree rather than presenting the cheapest as the
+price. A spec section's
+features are a flat list — group children are linked by `feature.parentId`, not
+nesting — and an absent capability flag renders as `—` rather than vanishing,
+because "no 6 GHz radio" and "unstated" must not look alike.
+
+Installation guides carry **no readable text**: every word is outlined vector
+art. Never render one as though it had been read — say what it is and reproduce
+the pages via `get_unifi_manual`, which rebuilds them with PyMuPDF (already a
+dependency; add none). `dl.ui.com` returns **200 with an app shell** for a slug
+that has no guide, so a status code proves nothing — detect the bootstrap
+markers, and report a missing guide against the URL the caller asked for, not
+the redirect target. fetchaller has NO credentialed path to any ui.com property.
+
 ### Job boards
 
 Every job board ranks rather than filters: a title query returns adjacent roles
@@ -109,6 +141,6 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber.
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber.
 - `docs/spa-discovery.md` — SPA API discovery (`src/fetchaller/discovery/`): observing a page in a browser and replaying what it made, so an endpoint's shape never needs bundle archaeology again. Ranking (why coverage and record count are directly opposed), the oracle (why a 200 that means "malformed" is the core problem), minimization, mint steps, and the measured per-board results
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

@@ -374,6 +374,11 @@ async def cleanup_server(server) -> None:
         cleanup_fns.append(close_linkedin_session)
     except ImportError:
         pass
+    try:
+        from .ubiquiti.api import close_session as close_ubiquiti_session
+        cleanup_fns.append(close_ubiquiti_session)
+    except ImportError:
+        pass
 
     for fn in cleanup_fns:
         try:
@@ -507,6 +512,11 @@ def _summarize_args(tool_name: str, args: dict) -> str:
             f"location_len={len(str(args.get('location', '')))} "
             f"platform_count={len(args.get('platforms') or []) or 'all'}"
         )
+    elif tool_name == "get_unifi_manual":
+        return (
+            f"url={redact_secrets_for_log(args.get('url', '?'))} "
+            f"format={sanitize_for_log(str(args.get('format', 'pdf')), 8)}"
+        )
     elif tool_name == "search_realtor":
         return (
             f"location_len={len(str(args.get('location', '')))} "
@@ -573,6 +583,7 @@ _TOOL_ARGUMENTS: dict[str, set[str]] = {
         "limit",
     },
     "get_linkedin_job": {"job_id"},
+    "get_unifi_manual": {"url", "format"},
     "search_eightfold_jobs": {
         "employer",
         "title",
@@ -646,6 +657,7 @@ _TOOL_REQUIRED = {
     "search_realtor": {"location"},
     "search_linkedin_jobs": {"keywords"},
     "get_linkedin_job": {"job_id"},
+    "get_unifi_manual": {"url"},
     # The board-search tools all default to "the whole board", so nothing is
     # required: search_eightfold_jobs/search_workday_jobs need only `employer`
     # to be meaningful, and that is validated in the client.
@@ -733,6 +745,7 @@ _ENUMS = {
 }
 _TOOL_ENUMS = {
     ("browse_reddit", "sort"): {"hot", "new", "top", "rising"},
+    ("get_unifi_manual", "format"): {"pdf", "png", "svg"},
     ("search_eightfold_jobs", "sort"): {"relevance", "recent"},
     ("search_amazon_jobs", "sort"): {"relevant", "recent"},
     ("search_google_jobs", "sort"): {"relevance", "date"},
@@ -1623,6 +1636,43 @@ def create_server(
                 },
             ),
             Tool(
+                name="get_unifi_manual",
+                description=(
+                    "Download a Ubiquiti UniFi installation guide (ui.com/qig/<slug>) as a "
+                    "readable document. Ubiquiti publishes no PDF and draws every word of "
+                    "these guides as vector artwork, so the guide cannot be read as text — "
+                    "this rebuilds its pages and writes them to disk. Use 'pdf' for one "
+                    "combined file, or 'png' to get one image per page that can be viewed "
+                    "directly. For a device's specifications or price, fetch its store or "
+                    "techspecs.ui.com page instead."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": (
+                                "Installation guide URL, e.g. "
+                                "https://ui.com/qig/u7-pro-wall or "
+                                "https://dl.ui.com/qig/u7-pro-wall/"
+                            ),
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["pdf", "png", "svg"],
+                            "default": "pdf",
+                            "description": (
+                                "pdf: one vector file with every page. png: one raster "
+                                "image per page, readable by a vision-capable client. "
+                                "svg: the reconstructed vector source per page."
+                            ),
+                        },
+                    },
+                    "required": ["url"],
+                },
+            ),
+            Tool(
                 name="search_eightfold_jobs",
                 description=(
                     "Search a company career site hosted by Eightfold AI — Microsoft, "
@@ -2486,6 +2536,24 @@ def create_server(
                     limit=arguments.get("limit", 25),
                     browser_solver=browser_solver,
                 )
+                return _format_result(name, result, start_time)
+
+            elif name == "get_unifi_manual":
+                from .ubiquiti.api import is_ui_guide
+                from .ubiquiti.manual import download_manual
+
+                if not is_ui_guide(arguments["url"]):
+                    result = {
+                        "error": (
+                            "url must be a Ubiquiti installation guide, e.g. "
+                            "https://ui.com/qig/u7-pro-wall"
+                        )
+                    }
+                else:
+                    result = await download_manual(
+                        arguments["url"],
+                        fmt=arguments.get("format", "pdf"),
+                    )
                 return _format_result(name, result, start_time)
 
             elif name == "search_realtor":

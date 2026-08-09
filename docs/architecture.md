@@ -259,6 +259,7 @@ location; it is a mounted volume and `entrypoint.sh` chowns it to `appuser`.
 |---|---|---|
 | OAuth clients + refresh token hashes | `/app/data/oauth_clients.json` | Yes |
 | wafer cookie cache | `${WAFER_CACHE_DIR:-/app/data/wafer}` | Yes |
+| Downloaded UniFi manuals (`get_unifi_manual`) | `${DATA_DIR}/manuals/<slug>/` | Yes — but see below |
 | Exact Chrome for Testing used by BrowserSolver | `${BROWSER_EXECUTABLE_PATH:-/opt/google/chrome/chrome}` (baked into amd64 image) | Yes |
 | Pinned reCAPTCHA ONNX models | `/app/model-cache` (baked into image, read-only) | Yes |
 | OAuth access tokens | none — stateless JWTs signed with `JWT_SECRET` | Yes, **if `JWT_SECRET` is set** |
@@ -280,3 +281,10 @@ Three rules follow from this, each learned from a production bug:
 3. **Import success is not availability.** `BrowserSolver` importing proves only that the Python
    package exists. Startup loads both pinned models and launches the exact configured Chrome
    executable before authenticated HTTP readiness can pass.
+
+`get_unifi_manual` is the one tool whose output is a *file* rather than text, which puts it on
+the wrong side of this boundary in HTTP mode: it returns paths under `DATA_DIR`, and those are
+paths inside the container, reachable by the server but not by the client that asked. In stdio
+mode — the server running on the caller's own machine — they are ordinary local paths and work
+as expected. The destination is never caller-supplied; only the guide slug varies, and it is
+sanitized, so no request can steer a write outside that tree.

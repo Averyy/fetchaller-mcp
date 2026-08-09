@@ -44,6 +44,7 @@ EXPECTED_TOOLS = [
     "search_marketplace",
     "search_linkedin_jobs",
     "get_linkedin_job",
+    "get_unifi_manual",
     "search_eightfold_jobs",
     "search_workday_jobs",
     "search_oracle_jobs",
@@ -335,6 +336,16 @@ def _validate_realtor(text: str) -> str | None:
     return None
 
 
+def _validate_unifi_manual(text: str) -> str | None:
+    if not re.search(r"(?m)^Format: pdf \| Pages written: [1-9]", text):
+        return "no manual pages were written"
+    if not re.search(r"(?m)^- .*/manuals/u7-pro-wall/u7-pro-wall\.pdf$", text):
+        return "missing written PDF path"
+    if "could not be reconstructed" in text:
+        return "some guide pages failed to rebuild"
+    return None
+
+
 async def _call(
     session: ClientSession,
     name: str,
@@ -582,6 +593,16 @@ async def run_live_tool_suite(
                 semantic_check=_validate_linkedin_job,
             )
         )
+
+    results.append(
+        await _call(
+            session,
+            "get_unifi_manual",
+            {"url": "https://ui.com/qig/u7-pro-wall", "format": "pdf"},
+            minimum_chars=100,
+            semantic_check=_validate_unifi_manual,
+        )
+    )
 
     results.append(
         await _call(

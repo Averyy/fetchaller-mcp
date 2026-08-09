@@ -70,6 +70,7 @@ async def test_exact_tool_surface_has_strict_schemas(server):
         "search_marketplace",
         "search_linkedin_jobs",
         "get_linkedin_job",
+        "get_unifi_manual",
         "search_eightfold_jobs",
         "search_workday_jobs",
         "search_oracle_jobs",

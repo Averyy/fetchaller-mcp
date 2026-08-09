@@ -156,6 +156,7 @@ from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..realtor.api import is_realtor as _is_realtor
 from ..security.ssrf import check_host
 from ..security.xss import redact_secrets_for_log
+from ..ubiquiti.api import is_ubiquiti as _is_ubiquiti
 from ..wellfound.api import is_wellfound as _is_wellfound
 
 MAX_RESPONSE_SIZE = 50 * 1024 * 1024  # Config permits PDFs up to 50MB.
@@ -1590,6 +1591,28 @@ async def _fetch_url_impl(
                 _intercept_cache_set(url, result["content"], "markdown")
                 content = truncate(result["content"], max_tokens)
                 _log(f"FETCH {url} -> Aartech ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "markdown", "url": url}
+            return result
+
+    # ui.com — storefronts, techspecs.ui.com, and installation guides. The store
+    # is the dangerous one: its HTML carries the marketing copy and the price, so
+    # the generic path returns a product page that looks complete while every
+    # technical specification is missing, because the "Technical" tab renders
+    # client-side from __NEXT_DATA__. A guide is worse still — a 7KB shell whose
+    # only visible text is a copyright line. Returns None for any other ui.com
+    # page (blog, help centre, downloads), which HTML handles perfectly well.
+    if structured and _is_ubiquiti(url):
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
+        from ..ubiquiti.page import get_ubiquiti
+
+        result = await get_ubiquiti(url, timeout=float(timeout))
+        if result is not None:
+            if "content" in result:
+                _intercept_cache_set(url, result["content"], "markdown")
+                content = truncate(result["content"], max_tokens)
+                _log(f"FETCH {url} -> Ubiquiti ({len(content)} chars, {time.monotonic() - start:.1f}s)")
                 return {"content": content, "content_type": "markdown", "url": url}
             return result
 

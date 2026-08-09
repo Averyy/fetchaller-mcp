@@ -385,6 +385,7 @@ async def test_shared_live_suite_calls_every_tool_and_uses_search_ids() -> None:
         "search_marketplace",
         "search_linkedin_jobs",
         "get_linkedin_job",
+        "get_unifi_manual",
         "search_realtor",
     ]
     # Every registered tool must get a live call except the explicitly

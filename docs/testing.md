@@ -187,6 +187,7 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_jazzhr.py` — JazzHR URL detection (board + posting, with/without slug, hyphenated tenants, short ID rejection), multi-tenant embed extraction (dedupe + order), posting render (JSON-LD field passthrough, @context/@type top-level skip), board render (department grouping), multi-board render (per-tenant `##` sections)
 - `test_ashby_embed_script.py` — Ashby script-tag embed detection (`<script src="https://jobs.ashbyhq.com/{org}/embed">`): basic match, embed-with-query, no-match cases, and the `/api`/`/embed`/`/_next` slug blocklist
 - `test_realtor.py` — realtor.ca: URL detection (listing/SEO/map, EN `/real-estate/` + FR `/immobilier/`), filter encodings (range, sort/property/building/ownership inversion, place-from-slug), `/map` kwarg parsing (bbox + hash, rent params), agent/brokerage extraction (EN "Brokerage" / FR "Bureau de courtage" / no-keyword fallback), listing-HTML parsing (price/address/beds/rooms/agent/MLS/coords), search + listing-detail rendering
+- `test_ubiquiti.py` — ui.com: URL detection (locale store subdomains, techspecs, guides, lookalike-domain rejection), Next.js route dispatch incl. the collection product routes and the unknown-category soft 404 (the store answers 200 with its home page), spec-tree rendering (group nesting via `parentId`, absent flags as `—`, multi-line values, compare-grid skipped on products / used as badges on categories), price (currency exponent — JPY is not /100 — surcharge naming, `from` for multi-variant), availability with sold-out/restock dates, guide discovery for both runtime generations, the JS-literal asset parser (bare identifier keys, `\xNN`/surrogate escapes), SVG reconstruction (CSS class inlining, gradient flattening, dangling paint refs → `none` per SVG 1.1, structural `clip-path` left alone), per-page failure isolation, and slug path-traversal safety
 - `test_wellfound.py` — wellfound.com: URL detection (job/company/search, jobs-feed-vs-job), Apollo helpers (deref/entities/connection with arg-qualified keys), format helpers (money/size/date/url-clean, salary with decimal-string bounds), search title, job/company/search rendering (Open Jobs total from resolved connection), JobPosting JSON-LD extraction + soft-404 "Page not found" detection
 - `test_jobfilter.py` — Shared job matching (`src/fetchaller/jobfilter.py`): tokenisation, title matching (prefix forms so "designer" matches "Design", exact match required below 4 chars so "ux" cannot match loosely), location matching across board-specific formats (`Canada, Toronto` / `Canada - Toronto` / `Toronto, Ontario, CAN`), query broadening (the "product designer" → "product design" case that recovers postings a literal match drops), country alpha-3 resolution, country-token stripping
 - `test_eightfold.py` — Eightfold: URL detection (`*.eightfold.ai` + vanity hosts, `/careers/job/{id}` and `?pid=`, lookalike-host and non-HTTP rejection), employer alias resolution, classic→PCS-X field normalisation (incl. `Vancouver,Canada` spacing repair), render (links, reported title-filter drop counts, tenant `efcustomText*` fields, markdown escaping)
@@ -215,6 +216,18 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
   directory, make one bounded request, recreate the shared Reddit session with
   the same directory, and repeat. Assert no requested/generated URL contains
   `old.reddit.com`; never print cookie values.
+- ui.com — each of these exercises a distinct shape, and every one of them has
+  already hidden a bug:
+  - store product: `https://ca.store.ui.com/ca/en/category/wifi-wall/products/u7-pro-wall`
+  - **collection**-routed product (door access / cameras): `https://ca.store.ui.com/ca/en/category/all-door-access/products/ua-g3-pro`
+  - zero-decimal currency: `https://jp.store.ui.com/jp/en/category/wifi-wall/products/u7-pro-wall` (¥36,391, must not render as 363.91)
+  - multi-variant price: `https://ca.store.ui.com/ca/en/category/switching-utility/products/usw-flex-mini` (must say "from")
+  - unknown category soft 404: `https://ca.store.ui.com/ca/en/category/all-cameras` (200 + home page)
+  - techspecs product/listing: `https://techspecs.ui.com/unifi/wifi/u7-pro-wall`, `https://techspecs.ui.com/unifi/wifi`
+  - guides, all three generations: `https://ui.com/qig/u7-pro-wall` (modern),
+    `https://ui.com/qig/u6-pro` (legacy multi-page, heavy gradients),
+    `https://ui.com/qig/udm-pro` (legacy single-page), and
+    `https://dl.ui.com/qig/definitely-not-real/` (must report "no guide", not an empty one)
 - Scrapers often blocked: `https://news.ycombinator.com/`, `https://www.nytimes.com/`
 - Simple: `https://example.com/`, `https://httpbin.org/html`
 - Cloudflare protected: `https://apollomapping.com`, `https://www.miata.net/`, `https://beyond.ca/`
