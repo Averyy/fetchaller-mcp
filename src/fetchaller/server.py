@@ -24,7 +24,10 @@ from .apple_jobs.search import search_apple_jobs
 from .cache.response_cache import ResponseCache
 from .config import Config, load_config, set_wafer_cache_dir
 from .eightfold.search import search_eightfold_jobs
+from .gojobs.search import get_gojobs_job, search_gojobs
 from .google_jobs.search import search_google_jobs
+from .indeed.search import get_indeed_job, search_indeed
+from .jobbank.search import search_jobbank
 from .linkedin.search import get_linkedin_job, search_linkedin_jobs
 from .marketplace.search import search_marketplace
 from .meta_careers.search import search_meta_jobs
@@ -379,6 +382,21 @@ async def cleanup_server(server) -> None:
         cleanup_fns.append(close_ubiquiti_session)
     except ImportError:
         pass
+    try:
+        from .gojobs.api import close_session as close_gojobs_session
+        cleanup_fns.append(close_gojobs_session)
+    except ImportError:
+        pass
+    try:
+        from .indeed.api import close_session as close_indeed_session
+        cleanup_fns.append(close_indeed_session)
+    except ImportError:
+        pass
+    try:
+        from .jobbank.api import close_session as close_jobbank_session
+        cleanup_fns.append(close_jobbank_session)
+    except ImportError:
+        pass
 
     for fn in cleanup_fns:
         try:
@@ -568,6 +586,7 @@ _TOOL_ARGUMENTS: dict[str, set[str]] = {
         "max_price",
     },
     "search_linkedin_jobs": {
+        "strict_location",
         "keywords",
         "location",
         "geo_id",
@@ -613,6 +632,36 @@ _TOOL_ARGUMENTS: dict[str, set[str]] = {
         "limit",
     },
     "search_apple_jobs": {"title", "location", "locale", "strict_title", "limit"},
+    # `job_category`, not `category`: the validator falls back to a global
+    # by-name enum, and `category` is already bound to the marketplace
+    # vocabulary (cars, electronics, …), which would reject every real OPS
+    # category. Matches search_amazon_jobs' spelling too.
+    "search_gojobs": {
+        "title",
+        "location",
+        "job_category",
+        "career_level",
+        "min_salary",
+        "strict_title",
+        "limit",
+    },
+    "get_gojobs_job": {"job_id"},
+    "search_indeed": {
+        "title",
+        "location",
+        "radius_km",
+        "strict_title",
+        "strict_location",
+        "limit",
+    },
+    "search_jobbank": {
+        "title",
+        "location",
+        "radius_km",
+        "strict_title",
+        "strict_location",
+        "limit",
+    },
     "search_google_jobs": {
         "title",
         "location",
@@ -665,17 +714,40 @@ _TOOL_REQUIRED = {
     "search_workday_jobs": {"employer"},
     "search_oracle_jobs": {"employer"},
     "search_apple_jobs": {"title"},
+    "get_gojobs_job": {"job_id"},
     "search_meta_jobs": {"title"},
     "search_uber_jobs": {"title"},
     "search_google_jobs": {"title"},
     # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
     "search_amazon_jobs": set(),
+    # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
+    "search_gojobs": set(),
+    # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
+    "search_jobbank": set(),
+    # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
+    "search_indeed": set(),
+    "get_indeed_job": {"job_key"},
 }
 # Tools where at least one of several arguments must be present, but no single
 # one can be mandatory. Mirrors the `anyOf` in the published schema so the MCP
 # boundary enforces it too rather than trusting the client to read the schema.
+# (min_digits, max_digits, what to call it) per tool that takes a `job_id`.
+_DEFAULT_JOB_ID_RULE = (6, 20, "LinkedIn job ID")
+_JOB_ID_RULES: dict[str, tuple[int, int, str]] = {
+    "get_linkedin_job": _DEFAULT_JOB_ID_RULE,
+    "get_gojobs_job": (1, 12, "Ontario Public Service Job ID"),
+}
 _TOOL_ANY_REQUIRED: dict[str, set[str]] = {
     "search_amazon_jobs": {"title", "location", "job_category"},
+    "search_gojobs": {
+        "title",
+        "location",
+        "job_category",
+        "career_level",
+        "min_salary",
+    },
+    "search_jobbank": {"title", "location"},
+    "search_indeed": {"title", "location"},
 }
 _STRING_LIMITS = {
     "url": 8192,
@@ -686,7 +758,9 @@ _STRING_LIMITS = {
     "location": 256,
     "employer": 512,
     "title": 256,
+    "job_key": 32,
     "job_category": 64,
+    "career_level": 64,
     "locale": 16,
     "country": 64,
     "subreddit": 100,
@@ -700,6 +774,12 @@ _STRING_LIMITS = {
     "property_type": 32,
     "building_type": 32,
     "ownership": 16,
+}
+_TOOL_STRING_LIMITS = {
+    # LinkedIn uses the same public argument name for an integer enum. Keeping
+    # this in the global by-name table made every valid LinkedIn salary fail as
+    # "must be a string" before its own enum validator could run.
+    ("search_gojobs", "min_salary"): 16,
 }
 _ENUMS = {
     "time": {"hour", "day", "week", "month", "year", "all"},
@@ -821,9 +901,23 @@ _TOOL_INTEGER_RANGES = {
     ("search_amazon_jobs", "limit"): (1, 100),
     ("search_google_jobs", "limit"): (1, 100),
     ("search_apple_jobs", "limit"): (1, 100),
+    ("search_gojobs", "limit"): (1, 100),
+    ("search_jobbank", "limit"): (1, 100),
+    ("search_indeed", "limit"): (1, 100),
+    ("search_indeed", "radius_km"): (0, 100),
+    ("search_jobbank", "radius_km"): (10, 500),
     ("search_meta_jobs", "limit"): (1, 100),
     ("search_uber_jobs", "limit"): (1, 100),
 }
+
+
+# Every argument any tool publishes as `"type": "boolean"`. Validated by TYPE,
+# not truthiness: the schema says boolean and the boundary must mean it.
+# Measured before this existed — `strict_title="false"` was accepted and is
+# Python-truthy, so writing "false" turned the filter ON; `0`, `[]` and `None`
+# were accepted and turned it OFF. Every one of those silently inverted or
+# ignored the caller's intent against the published contract.
+_BOOLEAN_ARGS = frozenset(['easy_apply', 'include_remote', 'raw', 'remote_only', 'strict_location', 'strict_title', 'under_10_applicants'])
 
 
 def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
@@ -841,16 +935,49 @@ def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
     if missing:
         return f"missing required argument: {sorted(missing)[0]}"
     any_required = _TOOL_ANY_REQUIRED.get(tool_name)
-    if any_required and not (any_required & set(arguments)):
-        return f"provide at least one of: {', '.join(sorted(any_required))}"
+    if any_required:
+        supplied = any_required & set(arguments)
+        # Presence is not enough if every one supplied is blank — that is the
+        # zero-argument board dump the anyOf exists to prevent, spelled ""ured.
+        if not supplied or not any(
+            str(arguments.get(name) or "").strip() for name in supplied
+        ):
+            return f"provide at least one of: {', '.join(sorted(any_required))}"
+
+    # An OPTIONAL string argument may be empty, and empty means "no filter".
+    # Rejecting it made `search_workday_jobs(employer=..., title="")` fail with
+    # a validation error while omitting `title` entirely worked — the same
+    # request expressed two ways, one of them an error, and the tool's stated
+    # constraint only ever mentions `employer`. A required field is still not
+    # allowed to be blank.
+    # Only the flat `required` list forces a non-blank value. An anyOf member
+    # must NOT: the schema is presence-based, so `{title: "nurse", location: ""}`
+    # satisfies it, and rejecting the blank one broke exactly the partial-filter
+    # call that clients send when a field is unfilled. The anyOf itself is still
+    # enforced above — at least one member must be present.
+    mandatory = set(_TOOL_REQUIRED[tool_name])
 
     for name, value in arguments.items():
-        if name in _STRING_LIMITS:
+        if name in _BOOLEAN_ARGS and not isinstance(value, bool):
+            return f"{name} must be a boolean (true or false), not a string or number"
+        string_limit = _TOOL_STRING_LIMITS.get(
+            (tool_name, name), _STRING_LIMITS.get(name)
+        )
+        if string_limit is not None:
             if not isinstance(value, str):
                 return f"{name} must be a string"
+            if not value.strip() and name not in mandatory:
+                # Blank free-text optionals mean "no filter", but an enum has
+                # no blank member in its published schema. Letting `sort=""`
+                # skip the enum check accepted the call here only for the tool
+                # implementation to reject it later instead of using a default.
+                allowed_enum = _TOOL_ENUMS.get((tool_name, name), _ENUMS.get(name))
+                if allowed_enum is not None:
+                    return f"unsupported {name}"
+                continue
             if (
                 not value.strip()
-                or len(value) > _STRING_LIMITS[name]
+                or len(value) > string_limit
                 or any(ord(char) < 32 or ord(char) == 127 for char in value)
             ):
                 return f"{name} must be a bounded non-empty string without control characters"
@@ -896,8 +1023,15 @@ def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
                 return header_error
         if name == "body" and not isinstance(value, str):
             return "body must be a string"
-        if name == "job_id" and not (value.isdigit() and 6 <= len(value) <= 20):
-            return "job_id must be a numeric LinkedIn job ID (6-20 digits)"
+        if name == "job_id":
+            # Per board, because the ranges genuinely differ and the shared
+            # rule was LinkedIn's. Ontario Public Service Job IDs are short —
+            # 2799 and 13473 are both live postings — so LinkedIn's 6-digit
+            # floor rejected valid gojobs ids at the boundary, before the tool
+            # ever saw them.
+            low, high, label = _JOB_ID_RULES.get(tool_name, _DEFAULT_JOB_ID_RULE)
+            if not (value.isdigit() and low <= len(value) <= high):
+                return f"job_id must be a numeric {label} ({low}-{high} digits)"
         if name == "geo_id" and not (value.isdigit() and len(value) <= 20):
             return "geo_id must be a numeric LinkedIn geo ID"
         if name == "platforms":
@@ -930,6 +1064,28 @@ def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
     if tool_name == "search_realtor" and arguments.get("page", 1) > 30:
         return "page must be an integer from 1 to 30"
     return None
+
+
+def _normalize_optional_string_arguments(
+    tool_name: str, arguments: dict
+) -> dict:
+    """Canonicalize accepted whitespace-only free text to "no filter".
+
+    Validation deliberately accepts blank optional strings because clients
+    commonly send every form field, including unfilled ones.  Preserve that
+    contract while ensuring a value such as ``"   "`` cannot become a truthy
+    downstream filter or an empty rendered heading.  Request bodies and other
+    unconstrained strings are not touched.
+    """
+
+    mandatory = _TOOL_REQUIRED.get(tool_name, set())
+    normalized = dict(arguments)
+    for name, value in arguments.items():
+        if name in mandatory or not isinstance(value, str) or value.strip():
+            continue
+        if (tool_name, name) in _TOOL_STRING_LIMITS or name in _STRING_LIMITS:
+            normalized[name] = ""
+    return normalized
 
 
 def create_server(
@@ -1536,6 +1692,16 @@ def create_server(
                                 "Resolved to a LinkedIn geo ID automatically."
                             ),
                         },
+                        "strict_location": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Re-check each posting's own location against "
+                                "`location`. LinkedIn filters by radius, so a "
+                                "St. Catharines search returns GTA postings; with "
+                                "this on they are dropped and counted."
+                            ),
+                        },
                         "geo_id": {
                             "type": "string",
                             "pattern": "^[0-9]{1,20}$",
@@ -2055,6 +2221,225 @@ def create_server(
                 },
             ),
             Tool(
+                name="search_gojobs",
+                description=(
+                    "Search gojobs.gov.on.ca, the Ontario Public Service (OPS) "
+                    "careers board. Every posting is an Ontario government job. "
+                    "The board has NO keyword search of its own — its only text "
+                    "input is an exact Job ID — so `title` is matched here "
+                    "against each posting's own title. Region, city, job "
+                    "category, career level and minimum salary are real board "
+                    "filters. Give at least one filter — an unfiltered listing "
+                    "is a dozen sequential postbacks."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": 'Job title, e.g. "policy advisor"',
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                'Ontario city or region, e.g. "Toronto", '
+                                '"Thunder Bay", "North". "Ontario" and "Canada" '
+                                "cover the whole board and are treated as no filter."
+                            ),
+                        },
+                        "job_category": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "description": (
+                                'OPS job category, e.g. "Information Technology", '
+                                '"Corrections and Enforcement"'
+                            ),
+                        },
+                        "career_level": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "description": (
+                                'One of: Student, Entry level, Experienced, '
+                                "Management, Executive"
+                            ),
+                        },
+                        "min_salary": {
+                            "type": "string",
+                            "maxLength": 16,
+                            "description": (
+                                'Minimum annual salary the board offers as a step, '
+                                'e.g. "70000", "100000"'
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    # No single field is required — browsing by category or by
+                    # career level alone is a real use of this board, and the
+                    # board has no keyword search to make `title` the natural
+                    # mandatory one. At least one filter must still be present:
+                    # an unfiltered listing is a dozen sequential postbacks.
+                    "anyOf": [
+                        {"required": ["title"]},
+                        {"required": ["location"]},
+                        {"required": ["job_category"]},
+                        {"required": ["career_level"]},
+                        {"required": ["min_salary"]},
+                    ],
+                },
+            ),
+            Tool(
+                name="get_gojobs_job",
+                description=(
+                    "Full detail for one Ontario Public Service posting by its "
+                    "numeric Job ID. Reports the competition status, which can "
+                    "say a job is filled while the posting still reads as open."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "maxLength": 32,
+                            "description": 'Numeric Job ID, e.g. "232882"',
+                        },
+                    },
+                    "required": ["job_id"],
+                },
+            ),
+            Tool(
+                name="search_indeed",
+                description=(
+                    "Search ca.indeed.com. Carries salary bands on most result "
+                    "cards, and get_indeed_job will read the full body of any "
+                    "result — including postings a UKG or PeopleSoft careers site "
+                    "will not serve. Returns one page (~15 postings) per query: "
+                    "every deeper offset returns Indeed's sign-in wall, so refining "
+                    "the query changes which postings appear rather than how many."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {"type": "string", "maxLength": 256,
+                                  "description": 'Job title or keywords, e.g. "administrative assistant"'},
+                        "location": {"type": "string", "maxLength": 256,
+                                     "description": 'City, e.g. "St. Catharines, ON"'},
+                        "radius_km": {"type": "integer", "minimum": 0, "maximum": 100,
+                                      "description": "Search radius in km (0 = Indeed's default 25)"},
+                        "strict_title": {"type": "boolean", "default": True,
+                                         "description": "Require the title words in the posting's own title"},
+                        "strict_location": {"type": "boolean", "default": False,
+                                            "description": "Require the posting's own city to match; off by default since Indeed searches a radius"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100,
+                                  "description": "Jobs to return (default: 25)"},
+                    },
+                    "anyOf": [{"required": ["title"]}, {"required": ["location"]}],
+                },
+            ),
+            Tool(
+                name="get_indeed_job",
+                description=(
+                    "Full detail for one Indeed posting: description, salary band, "
+                    "and the listing's expiry date — the only expiry any indexed "
+                    "board publishes, which distinguishes a live posting from a "
+                    "stale index entry. Use this to read a body that a UKG or "
+                    "PeopleSoft careers site gates behind a session."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "job_key": {"type": "string", "maxLength": 32,
+                                    "description": 'Alphanumeric key from a ?jk= URL, e.g. "2a12ebab7a985a08"'},
+                    },
+                    "required": ["job_key"],
+                },
+            ),
+            Tool(
+                name="search_jobbank",
+                description=(
+                    "Search jobbank.gc.ca, the federal Job Bank — the highest-volume "
+                    "Canadian board, with salary published on most listings. A place "
+                    "name is resolved to Job Bank's own numeric city id first, "
+                    "because the board silently ignores an unresolved location and "
+                    "returns the whole country (64,000+ postings) as an ordinary "
+                    "successful search. Job Bank searches a RADIUS around a city, so "
+                    "nearby towns are included by design and the radius used is "
+                    "always reported."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": 'Job title or keywords, e.g. "truck driver"',
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                'Canadian city, ideally with province, e.g. '
+                                '"St. Catharines, ON". Ambiguous names resolve to the '
+                                "province given."
+                            ),
+                        },
+                        "radius_km": {
+                            "type": "integer",
+                            "minimum": 10,
+                            "maximum": 500,
+                            "description": (
+                                "Search radius around the city in km (default: 50, "
+                                "Job Bank's own). Measured from St. Catharines: 10 km "
+                                "gives 152 postings, 25 km 424, 50 km 1036, 100 km 10327."
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "strict_location": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Require the posting's own location to match the city. "
+                                "Off by default because a radius search is the point."
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    "anyOf": [
+                        {"required": ["title"]},
+                        {"required": ["location"]},
+                    ],
+                },
+            ),
+            Tool(
                 name="search_meta_jobs",
                 description=(
                     "Search metacareers.com by title and office. Meta spells its "
@@ -2297,6 +2682,7 @@ def create_server(
                 ],
                 isError=True,
             )
+        arguments = _normalize_optional_string_arguments(name, arguments)
         tool_args_summary = _summarize_args(name, arguments)
         _log(f"TOOL START: {name} {tool_args_summary}")
 
@@ -2418,6 +2804,7 @@ def create_server(
                 result = await search_linkedin_jobs(
                     keywords=arguments.get("keywords", ""),
                     location=arguments.get("location", ""),
+                    strict_location=arguments.get("strict_location", True),
                     geo_id=arguments.get("geo_id"),
                     date_posted=arguments.get("date_posted", "any"),
                     workplace=arguments.get("workplace"),
@@ -2511,6 +2898,56 @@ def create_server(
                     location=arguments.get("location", ""),
                     locale=arguments.get("locale", "en-ca"),
                     strict_title=arguments.get("strict_title", True),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_gojobs":
+                result = await search_gojobs(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    category=arguments.get("job_category", ""),
+                    career_level=arguments.get("career_level", ""),
+                    min_salary=arguments.get("min_salary", ""),
+                    strict_title=arguments.get("strict_title", True),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "get_gojobs_job":
+                result = await get_gojobs_job(
+                    arguments.get("job_id", ""),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_indeed":
+                result = await search_indeed(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    radius_km=arguments.get("radius_km", 0),
+                    strict_title=arguments.get("strict_title", True),
+                    strict_location=arguments.get("strict_location", False),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "get_indeed_job":
+                result = await get_indeed_job(
+                    arguments.get("job_key", ""), browser_solver=browser_solver
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_jobbank":
+                result = await search_jobbank(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    radius_km=arguments.get("radius_km", 50),
+                    strict_title=arguments.get("strict_title", True),
+                    strict_location=arguments.get("strict_location", False),
                     limit=arguments.get("limit", 25),
                     browser_solver=browser_solver,
                 )

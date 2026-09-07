@@ -2,7 +2,7 @@
 
 This is intentionally not a direct-Python component test. It starts the same
 ``fetchaller-mcp`` process clients use, initializes MCP, verifies the exact tool
-surface/version, and calls all ten tools. A blocked browser/challenge response,
+surface/version, and calls every non-exempt tool. A blocked browser/challenge response,
 thin/empty payload, protocol error, or tool ``isError`` is a failed gate.
 
 Run from the repository root:
@@ -51,6 +51,11 @@ EXPECTED_TOOLS = [
     "search_amazon_jobs",
     "search_google_jobs",
     "search_apple_jobs",
+    "search_gojobs",
+    "get_gojobs_job",
+    "search_indeed",
+    "get_indeed_job",
+    "search_jobbank",
     "search_meta_jobs",
     "search_uber_jobs",
     "search_realtor",
@@ -77,7 +82,25 @@ LIVE_SUITE_EXEMPT = frozenset(
         "search_apple_jobs",
         "search_meta_jobs",
         "search_uber_jobs",
-    }
+        # gojobs pages by ASP.NET postback, ten rows at a time, and each
+        # request is signed by the previous response — a listing is a dozen
+        # sequential POSTs against a Radware-fronted government site, which is
+        # not something to do on every container build.
+        "search_gojobs",
+        # get_gojobs_job needs a live Job ID, and OPS postings close. Any id
+        # hardcoded here would start failing on a date nobody chose, reporting
+        # a broken tool when only the posting had expired.
+        "get_gojobs_job",
+        # Job Bank pages 25 at a time and a single search page routinely
+        # takes 30-60s, with real 180s timeouts seen in development.
+        "search_jobbank",
+        # Indeed is Cloudflare-fronted and a search page is ~1.4MB; anonymous
+        # paging is capped at one page, so a build-gate call buys no signal.
+        "search_indeed",
+        # Same reason as get_gojobs_job: a hardcoded posting key expires
+        # on a date nobody chose, and each posting is ~500KB.
+        "get_indeed_job",
+        }
 )
 
 _STDIO_COMMAND_ENV = "SMOKE_STDIO_COMMAND"

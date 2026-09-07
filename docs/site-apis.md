@@ -690,3 +690,211 @@ Traps worth knowing:
   freshness guarantee.
 - The posting page carries **no** JSON-LD; `sf9Qmf` is the structured detail
   surface. The public permalink needs no slug — the id alone resolves.
+
+## gojobs.gov.on.ca — Ontario Public Service (`src/fetchaller/gojobs/`)
+
+An ASP.NET WebForms board, which is the whole story. Three consequences, each
+of which fails by returning something plausible rather than an error.
+
+**The listing does not exist in any GET.** `Search.aspx` answers a GET with the
+search *form* — 65KB of HTML containing zero job links. Results come only from
+POSTing that form back with `__VIEWSTATE`, `__VIEWSTATEGENERATOR` and
+`__EVENTVALIDATION` echoed from the page that issued them. Fetching the URL and
+reading the HTML shows an empty board, not a failure, so the generic fetch path
+renders 1.8KB of form chrome and looks like it worked.
+
+**Paging is a postback, not a URL.** Page N is `__EVENTTARGET` set to
+`ctl00$MainContent$lnkButton_Page{N}`, signed by the *previous* response's
+`__VIEWSTATE`. Pages therefore cannot be fetched in parallel or out of order,
+and ten rows per page is fixed — there is no page-size control. A full listing
+is a dozen sequential POSTs, which is why the tool requires at least one filter
+and why the limiter is spaced at 2s.
+
+**Facet values are JSON arrays, not scalars.** `ucRegion$hiddenSelected` set to
+`REGION-TRNT` is accepted and silently ignored; it has to be `["REGION-TRNT"]`.
+Measured: the bare string returned all 127 postings, the JSON array returned 35.
+The vocabularies (5 regions, 29 categories, 5 career levels, 984 cities) ship
+inline in the page's own bootstrap JS as `var options_ucRegion = [...]`, so no
+extra request is needed to learn what a facet accepts.
+
+**There is no keyword or title search.** The only text input is an exact Job ID
+lookup. So `title` is matched entirely client-side via `jobfilter`, over a
+window of the board rather than by narrowing it server-side — the board-filter
+-as-optimisation doctrine taken to its limit, because here the optimisation does
+not exist. The board's own location filter *is* real and is still not trusted:
+a Toronto search returned 35, of which one did not list Toronto.
+
+**"Ontario" and "Canada" are the whole board, not a filter.** Every posting is
+an Ontario government job and no row names the province — rows read
+"Mississauga, Central Region" — so filtering on it matched nothing and emptied
+the result set for the most natural query a caller could type. Those names are
+recognised and reported as a no-op instead.
+
+Parsing notes, each a real defect the live board produced:
+
+- **Rows are bounded by the English title anchor** (`_lnkJobTitleEN`), not by
+  the repeater id. A bilingual posting carries a second `_lnkJobTitleFR` anchor
+  whose id contains the same repeater marker, which cut that row in half and
+  left every one of its fields empty while its neighbours parsed perfectly.
+- **The last row needs an explicit end.** With no following anchor it ran to the
+  end of the document and absorbed the pagination strip, the footer and ~130KB
+  of inline script into its closing date. The paging control is the marker that
+  matters — it sits between the last row and the footer.
+- **Row numbers precede the next title**, so the last field of every row picked
+  up the following row's counter ("…11:59 pm EDT 17.").
+- **The facts block ends at the first `<hr>` after the Job ID.** Splitting there
+  stops Salary — the last labelled fact, with nothing after it — from running on
+  into 600 characters of job description, and locates the body without guessing
+  which tag the copy starts with. Measured: one posting opens on `<b>`, another
+  on a bare text node.
+- **`Competition Status` is reported separately and first.** A filled
+  competition still reports `Posting status: Open`; posting 232882 reads "Open"
+  while its competition block says "Position Filled" and 2064 people applied.
+- `Preview.aspx` answers **200 and renders its shell** for an unknown Job ID, so
+  "not found" is a parse outcome, never a status code.
+
+**A search is a conversation, and two cannot share a session at once.** The
+server keys the GET→POST→page-POST exchange to `PHPSESSID`, and the session is
+cached process-wide, so overlapping searches interleave and the server answers
+each with the other's state. Measured, Toronto and Thunder Bay under
+`asyncio.gather` returned **35** and **127**; the same two run sequentially
+return **32** and **17**. Both wrong answers were well-formed, and nothing in
+either response said a filter had been dropped — the Thunder Bay result simply
+reported the whole board and let the client-side filter do all the work.
+Sequentially the shared session is stable (verified: repeated and interleaved
+city/region searches on one session all match their isolated baselines), so the
+fix is an `_exchange_lock` around the exchange, not a session per call.
+
+**`Search.aspx` serves two different pages, and the difference is the city
+list.** The first GET on a session returns ~499KB carrying
+`var options_ucCity` with all 984 cities; every GET after that returns ~65KB
+with no city declaration at all. Regions, categories and career levels are
+present on both, so the light page looks complete and only the largest
+vocabulary is missing.
+
+That was the real cause of the wrong counts above. Re-fetching the form on each
+search got the light page, no place name could resolve to a city code, and
+`_resolve_location` fell through to its region match: "Toronto" quietly became
+REGION-TRNT and the board reported **35** where the city filter gives **32**,
+while "Thunder Bay" matched no region and the board returned the unfiltered
+**127**. The postings shown stayed correct — the client-side filter is the
+guarantee — but the board's own figure was reported for a scope nobody asked
+for. So the vocabulary is read once from the cold page, and an empty city list
+is deliberately **not** cached.
+
+Radware Bot Manager fronts the domain; wafer >= 0.4.9 detects and clears it
+inline. The session is cached at module level, which is also required for
+correctness here — `PHPSESSID` has to survive from the form GET to the POST.
+
+`robots.txt` disallows `/alljobs.aspx` and `/ReadPDF.aspx`. Neither is used.
+
+## jobbank.gc.ca — federal Job Bank (`src/fetchaller/jobbank/`)
+
+The highest-volume Canadian board (64,017 postings nationally at time of
+writing) with salary published on most listings. Two of its parameters are
+**accepted, ignored, and never complained about**, and both fail by rendering a
+normal successful search.
+
+**A location only filters when it carries the city's numeric id.** The obvious
+`?locationstring=St.+Catharines%2C+ON` returns the entire national result set.
+Measured: that URL, `locationstring=Toronto%2C+ON`, `locationstring=nonsensexyz`
+and omitting the parameter altogether all returned **64,017**. The filter is
+`locationparam` (the site's own pagination spells the same value `mid`),
+carrying the numeric `city_id` from the Solr autocomplete the search box uses:
+
+```
+GET /core/ta-cityprovsuggest_en/select?q=St.+Catharines&fq=NOT postalcode_cnt:0&wt=json&rows=25
+    -> {"name":"St. Catharines","city_id":"22415","province_cd":"ON"}
+GET /jobsearch/jobsearch?locationparam=22415&d=25   -> 424
+```
+
+So an unresolvable place name sends **no** location filter at all and says so.
+Falling back to the bare string would look like a filter and be none.
+
+**`searchstring` is dropped for some terms.** Within 25 km of St. Catharines,
+"driver" gives 11, "nurse" 6, "welder" 3, "clerk" 40 — but **"assistant"
+returned 424, byte-identical to the unfiltered page down to the first five
+titles** ("material handler", "groom - horse race track", …). Same failure
+shape as the location: no error, no marker, just the whole slice under a query
+heading. A search for "assistant" reported 1 match where the unfiltered pool
+holds 15 assistant-titled jobs.
+
+The client-side title filter is the guarantee either way, so the *postings* were
+never wrong — but the board's count would be reported for a query it never ran.
+When a title is supplied, one extra request fetches the same location's
+keyword-less total; if the two match, the board's figure is suppressed and the
+caller is told the keyword was ignored.
+
+**Radius is real and is part of the answer.** `d` defaults to 50 km, and the
+board searches *near* a city by design, so a St. Catharines search legitimately
+returns Thorold and Hamilton postings. Measured from St. Catharines: 10 km →
+152, 25 km → 424, 50 km → 1,036, 100 km → 10,327. The radius used is always
+stated, because otherwise nearby towns read as a broken location filter.
+`strict_location` defaults to False for the same reason.
+
+Parsing notes:
+
+- **The result total is `<span class="found" id="results-count">`, nothing
+  else.** Every distance facet renders
+  `<span class="badge">152 <span class="wb-inv">jobs found in</span></span> 10km`,
+  so a "N jobs found" text match silently returns whichever facet came first —
+  152 for the 10 km option on a search whose real total was 1,036. That misread
+  produced three wrong measurements before it was caught.
+- **`wb-inv` spans are screen-reader labels sharing markup with their values**
+  ("Location", "Salary", "Job number:") and must be stripped before the text is
+  flattened, or every field arrives with its own label glued on.
+- **Posting hrefs carry `;jsessionid=` and `?source=`.** Both are session
+  scratch; a shared link is rebuilt from the numeric id.
+- The board is slow: a filtered search page is ~280KB and routinely takes
+  30–60s, with real 180s timeouts during development. The tool's default
+  timeout is 300s.
+
+
+## ca.indeed.com (`src/fetchaller/indeed/`)
+
+Two structured surfaces, both in the served HTML — no browser, no API key.
+Search embeds its results as JSON in
+`window.mosaic.providerData["mosaic-provider-jobcards"]`, with the salary band
+as numbers (`extractedSalary: {min, max, type}`). A posting carries
+`schema.org/JobPosting` JSON-LD: full description, the band again, and
+`validThrough` — an expiry no other board indexed here publishes, and the direct
+answer to indexes that list filled requisitions as open.
+
+Parse the JSON-LD, not the markup: it is a published schema, and a posting page
+renders to 0.7% readable text because the visible HTML is nearly all chrome.
+
+**A search costs one request, after the two-request version stopped working.**
+A probe run found the default page was 100% sponsored while `start=1` returned a
+disjoint all-organic 15 — thirty postings for two requests. On re-test hours
+later `start=1` and `start=2` both returned the login wall, 131,902 bytes and
+zero cards, repeatably. The offset is not a stable surface, so the client fetches
+the page that reliably answers and says it stopped there. Anyone re-testing an
+offset should verify it in the same session as the default page; the difference
+between those two runs was not the URL.
+
+| probe | new postings | verdict |
+|---|---|---|
+| default (no `start`) | 15 | take |
+| `start=1` | 0 on re-test (was +15) | login wall now — do not rely on it |
+| `start=2` | 0 on re-test (was +1) | login wall now |
+| `start` >= 3 | 0 | login wall, consistently |
+| `page` / `p` / `offset` / `pagenum` | 0 | silently ignored, byte-identical to default |
+| `sort=date` / `sort=relevance` / `explvl` / `/m/jobs` | 0 | identical all-sponsored page |
+| `fromage=1/3/7`, `jt=parttime`, `radius=0` | +1 to +6 each | work only by thinning the ad mix |
+| `filter=0`, `limit=50` | — | fingerprinted; deterministic Cloudflare 403 |
+
+Facet partitioning was measured at ~60 of a claimed 91 in ~15 requests, but that
+run depended on the same offsets that later walled, so treat the figure as
+unverified. It is not automatic regardless: narrowing the query is the cheaper
+lever than fifteen requests.
+
+`&limit=` and `filter=0` are scraping tripwires, not features — on a *fresh*
+session `&limit=50` was challenged while the byte-identical URL without it
+returned 200 eight seconds later on the same session. It is the parameter, not
+reputation or rate.
+
+Indeed's robots.txt disallows `/viewjob?`, `/*&start=` and `/*radius=`; per the
+project position on robots (see CLAUDE.md) this is a user-directed fetcher and
+those paths are used. Note also that Indeed publishes an *inverted* group for
+AI crawlers (`Allow: /viewjob?`, `Disallow: /jobs`) — do not switch user-agent
+to select a different rule set; the fingerprint choice belongs to wafer.

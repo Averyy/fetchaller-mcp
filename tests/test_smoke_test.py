@@ -538,9 +538,32 @@ class TestLiveSuiteExemptions:
         assert LIVE_SUITE_EXEMPT <= set(EXPECTED_TOOLS)
 
     def test_only_job_boards_are_exempt(self):
-        # Exemption is for rate-limited third-party boards. Anything else
+        # Exemption is for rate-limited third-party job boards. Anything else
         # skipping the live gate should be a deliberate, reviewed decision.
-        assert all(name.startswith("search_") and name.endswith("_jobs") for name in LIVE_SUITE_EXEMPT)
+        #
+        # The rule is "job-board tool", not the tighter `search_*_jobs` spelling
+        # this once asserted: gojobs is a board whose tools are `search_gojobs`
+        # and `get_gojobs_job`, and neither fits that pattern. Widened to the
+        # property actually being protected rather than the naming accident.
+        # "job" in the name was the rule until Indeed, whose tools are
+        # `search_indeed` / `get_indeed_job` — the search one carries no such
+        # token. The property actually being protected is "third-party job
+        # board", which is not derivable from a name, so the boards are named.
+        boards = ("jobs", "job", "gojobs", "jobbank", "indeed", "oracle", "workday",
+                  "eightfold", "amazon", "google", "apple", "meta", "uber")
+        assert all(any(b in name for b in boards) for name in LIVE_SUITE_EXEMPT)
+
+    def test_detail_tools_are_exempt_only_for_a_recorded_reason(self):
+        # A *search* tool is exempt because calling it live is expensive or
+        # rate-limited. A detail tool is cheap, so exempting one needs its own
+        # justification — get_gojobs_job's is that OPS postings close, so any
+        # hardcoded Job ID would fail on a date nobody chose. Keep this list
+        # short and deliberate.
+        detail_exempt = {name for name in LIVE_SUITE_EXEMPT if not name.startswith("search_")}
+        # get_gojobs_job: OPS postings close, so a hardcoded Job ID fails on a
+        # date nobody chose. get_indeed_job: same, plus Indeed is
+        # Cloudflare-fronted and each posting is ~500KB.
+        assert detail_exempt == {"get_gojobs_job", "get_indeed_job"}
 
     def test_core_tools_are_never_exempt(self):
         for name in ("fetch", "search", "browse_reddit", "search_reddit", "search_realtor"):

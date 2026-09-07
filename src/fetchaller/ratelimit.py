@@ -154,6 +154,27 @@ amazon_jobs_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.2, 0.6))
 # tens of results, so 1s keeps a multi-page walk from looking like a scrape.
 eightfold_limiter = DomainRateLimiter(min_interval=1.0, jitter=(0.2, 0.5))
 
+# gojobs: www.gojobs.gov.on.ca/Search.aspx (ASP.NET WebForms postbacks)
+# Every page is a full-page POST returning ~670KB, and paging is sequential
+# because each request is signed by the previous response's __VIEWSTATE — so a
+# walk cannot be parallelised and spacing is the only lever. The board also
+# sits behind Radware Bot Manager, which is exactly the sort of thing a tight
+# postback loop provokes; 2s keeps a thirteen-page walk unremarkable.
+gojobs_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 0.8))
+
+# Job Bank: www.jobbank.gc.ca/jobsearch/* (federal board, server-rendered)
+# A filtered search page is ~280KB and routinely takes 30-60s to come back, so
+# the board is already pacing itself; 1.5s keeps a multi-page walk polite
+# without adding much to an already slow call.
+jobbank_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.2, 0.6))
+
+# Indeed: ca.indeed.com/jobs and /viewjob (Cloudflare-fronted, server-rendered)
+# Answered every probe unchallenged, which is exactly what gojobs did before
+# Radware fired. A search page is ~1.4MB and a posting ~500KB, so this is the
+# heaviest board indexed here; 4s keeps a sweep unremarkable and leaves headroom
+# if Indeed starts scoring request rate.
+indeed_limiter = DomainRateLimiter(min_interval=4.0, jitter=(0.5, 1.5))
+
 # LinkedIn: www.linkedin.com/jobs-guest/* (logged-out public job endpoints)
 # 3.2s was the measured safe operating point — 46 probes at that spacing drew
 # no 403, 429, Retry-After, or challenge. The blocking threshold was

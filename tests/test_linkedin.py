@@ -334,11 +334,78 @@ class TestPageFirstOptimization:
         monkeypatch.setattr(api, "_get_session", fake_session)
         monkeypatch.setattr(api, "resolve_geo_id", fake_geo)
 
-        result = await search_mod.search_linkedin_jobs("engineer", "Toronto", limit=2)
+        # strict_location=False: no filter will run, so the caller's page size
+        # IS the pool and one full page satisfies it.
+        result = await search_mod.search_linkedin_jobs(
+            "engineer", "Toronto", limit=2, strict_location=False
+        )
 
         assert "content" in result
         assert len(page_calls) == 1
         assert fragment_calls == [], "fragment endpoint used despite a full page"
+
+    async def test_filtering_collects_a_fixed_pool_not_just_limit(self, monkeypatch):
+        """With a filter active the pool is fixed, and that costs requests.
+
+        Collecting only `limit` rows and filtering afterwards made the ANSWER
+        depend on the page size: limit=3 returned 3 of a 3-row pool while
+        limit=10 returned 5 of a 10-row pool — different jobs, not more of the
+        same list. A fixed pool is the contract; the extra fragment requests are
+        the price, and LinkedIn's limiter is spaced accordingly.
+        """
+        from fetchaller.linkedin import api
+        from fetchaller.linkedin import search as search_mod
+
+        page_calls, fragment_calls = [], []
+
+        async def fake_page(params, *, session, timeout=None):
+            page_calls.append(params)
+            return SEARCH_FRAGMENT * 13
+
+        async def fake_fragment(params, *, session, timeout=None):
+            fragment_calls.append(params)
+            return SEARCH_FRAGMENT
+
+        async def fake_session(browser_solver=None):
+            return object()
+
+        async def fake_geo(location, *, session, timeout=None):
+            return "100025096"
+
+        monkeypatch.setattr(api, "fetch_search_page", fake_page)
+        monkeypatch.setattr(api, "fetch_search_fragment", fake_fragment)
+        monkeypatch.setattr(api, "_get_session", fake_session)
+        monkeypatch.setattr(api, "resolve_geo_id", fake_geo)
+
+        for limit in (2, 20):
+            page_calls.clear()
+            fragment_calls.clear()
+            await search_mod.search_linkedin_jobs(
+                "engineer", "Toronto", limit=limit, strict_location=True
+            )
+            # Same pool regardless of the caller's page size.
+            assert len(page_calls) + len(fragment_calls) > 1, limit
+            examined = 26 + len(fragment_calls) * 2
+            assert examined >= search_mod._EXAMINE_CEILING or fragment_calls, limit
+
+    def test_fixed_location_window_is_not_presented_as_the_whole_board(self):
+        from fetchaller.linkedin.parse import JobCard
+        from fetchaller.linkedin.render import render_search_results
+
+        cards = [
+            JobCard(job_id=str(index), title="Engineer", location="Toronto")
+            for index in range(20)
+        ]
+        out = render_search_results(
+            cards,
+            location="Toronto",
+            location_filtered=80,
+            examined=100,
+            window_complete=False,
+        )
+
+        assert "first 100 postings" in out
+        assert "All 100 postings" not in out
 
     async def test_paginated_request_skips_the_page(self, monkeypatch):
         """The page cannot paginate, so start>0 must go straight to fragments."""

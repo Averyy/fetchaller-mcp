@@ -58,6 +58,19 @@ def redact_secrets_for_log(value: object) -> str:
     )
 
 
+def is_safe_markdown_link(value: object) -> bool:
+    """Whether a remote link is safe to expose as a clickable Markdown URL."""
+
+    text = str(value or "").strip()
+    if not text or any(ord(char) < 32 or ord(char) == 127 for char in text):
+        return False
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
 def safe_log_text(value: object, max_length: int = 500) -> str:
     """Return a single-line, bounded diagnostic with URL secrets removed."""
 

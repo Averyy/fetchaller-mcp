@@ -51,6 +51,7 @@ from ..content.bamboohr import (
     render_bamboohr_board,
     render_bamboohr_job,
 )
+from ..content.connection_errors import describe_connection_failure
 from ..content.cornerstone import (
     fetch_cornerstone_board,
     fetch_cornerstone_job,
@@ -2686,7 +2687,7 @@ async def _fetch_url_impl(
     except wafer.TooManyRedirects:
         return {"error": "Too many redirects (redirect loop detected)."}
     except wafer.ConnectionFailed as e:
-        return {"error": f"Connection error: {e.reason}"}
+        return {"error": describe_connection_failure(str(e.reason))}
     except wafer.WaferTimeout:
         return {"error": f"Request timed out after {timeout}s. Try increasing the timeout parameter for slow servers."}
     except wafer.ResponseTooLarge:

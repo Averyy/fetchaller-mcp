@@ -1695,7 +1695,12 @@ class TestErrorHandling:
         with _patch_wafer(session):
             result = await fetch_url("https://example.com/down")
         assert "error" in result
-        assert "econnrefused" in result["error"].lower()
+        # Updated contract: the raw Rust/OS token is translated. It used to be
+        # pasted through verbatim, which for a TLS failure meant a ~700-char
+        # struct dump containing the wheel's build path and the one useful word
+        # buried 300 characters in.
+        assert "refused" in result["error"].lower()
+        assert "nothing is listening" in result["error"].lower()
 
     @_PATCH_SSRF
     async def test_http_429(self, _mock_ssrf):

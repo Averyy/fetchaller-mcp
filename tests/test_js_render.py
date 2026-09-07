@@ -117,8 +117,14 @@ class TestVerdict:
         assert "loading placeholder" in note
         assert "un-hydrated shell" not in note
 
-    def test_no_markers_means_no_verdict(self):
+    def test_no_markers_leave_even_an_empty_large_document_unknown(self):
+        # Ratio alone cannot distinguish a shell from a complete page dominated
+        # by inline data. Known client-rendered platforms carry strong markers.
         assert describe((), 100_000, "") is None
+
+    def test_no_markers_and_readable_text_is_still_no_verdict(self):
+        # The guard that keeps the above from becoming a false-positive engine.
+        assert describe((), 100_000, "x" * 5_000) is None
 
     def test_a_tiny_document_is_not_judged(self):
         """Below the floor, emptiness means nothing."""
@@ -317,3 +323,105 @@ class TestSalvageAppearsInTheVerdict:
 
     def test_metadata_is_optional(self):
         assert "possibly_js_rendered" in describe(("framer",), 2905, "# Title")
+
+
+class TestScriptDominatedShellNeedsStructuralEvidence:
+    """A low text ratio is actionable only with a strong platform marker."""
+
+    def _describe(self, html_bytes, text_len, markers=()):
+        return describe(markers, html_bytes, "x" * text_len, None)
+
+    def test_marker_free_data_heavy_short_article_is_not_flagged(self):
+        assert self._describe(200_000, 1_000) is None
+
+    def test_message_is_the_hard_shell_warning(self):
+        assert "un-hydrated shell" in self._describe(85_416, 257, ("phenom",))
+
+    def test_a_readable_page_is_not_flagged(self):
+        # Real pages measured the same way: SAP's SuccessFactors board 2.06%,
+        # GitHub 3.00%, Job Bank 5.83%, Wikipedia 9.10%, a gojobs posting
+        # 19.07%. All must stay silent on the ratio.
+        for html_bytes, ratio in ((83_745, 0.0206), (375_382, 0.0300),
+                                  (286_413, 0.0583), (1_389_197, 0.0910)):
+            assert self._describe(html_bytes, int(html_bytes * ratio)) is None
+
+    def test_small_documents_are_left_alone(self):
+        # Below the 20KB floor the emptiness means nothing on its own.
+        assert self._describe(5_000, 10) is None
+
+    def test_phenom_and_ukg_are_named_when_recognised(self):
+        assert "(phenom)" in describe(("phenom",), 85_416, "x" * 257, None)
+        assert "(ukg)" in describe(("ukg",), 286_553, "x" * 1_086, None)
+
+    def test_markers_are_detected_from_markup(self):
+        assert "phenom" in collect_markers(
+            '<html><body><script>var phApp = phApp || {"x":1}</script></body></html>'
+        )
+        assert "ukg" in collect_markers(
+            "<html><body><script>Recruiting.TenantFeatureToggle.setFeatureToggles([])"
+            "</script></body></html>"
+        )
+
+
+class TestConnectionFailureMessages:
+    """A transport failure must say which kind it was, without a debug dump."""
+
+    def _d(self, raw):
+        from fetchaller.content.connection_errors import describe_connection_failure
+
+        return describe_connection_failure(raw)
+
+    def test_certificate_chain_failure_is_named(self):
+        raw = (
+            'is_connect error: wreq::Error { kind: Request, source: Some(Error { code: SSL (1), '
+            'cause: Some(Ssl(ErrorStack([Error { code: 268435581, library: "SSL routines", '
+            'reason: "CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate", '
+            'file: "/Users/runner/work/wreq-python/..." '
+        )
+        out = self._d(raw)
+        assert "certificate chain could not be verified" in out
+        assert "intermediate" in out
+
+    def test_generic_verification_failure_does_not_invent_a_chain_cause(self):
+        out = self._d("CERTIFICATE_VERIFY_FAILED")
+        assert "does not distinguish" in out
+        assert "serving an incomplete chain" not in out
+
+    def test_specific_certificate_reason_wins_over_generic_verification(self):
+        assert "expired" in self._d(
+            "CERTIFICATE_VERIFY_FAILED: certificate has expired"
+        )
+        assert "does not cover this hostname" in self._d(
+            "CERTIFICATE_VERIFY_FAILED: HostnameMismatch"
+        )
+
+    def test_no_build_path_or_struct_dump_leaks(self):
+        raw = 'Error { code: 1, file: "/Users/runner/work/wreq-python/target/x", cause: Some(y) }'
+        out = self._d(raw)
+        assert "/Users/runner" not in out
+        assert len(out) < 300
+
+    def test_unknown_failure_redacts_a_tokenized_url(self):
+        out = self._d(
+            "request failed for url "
+            "https://example.com/private/export?api_key=TOPSECRET: peer disconnected"
+        )
+        assert "TOPSECRET" not in out
+        assert "/private/export" not in out
+        assert "https://example.com/…" in out
+
+    def test_unknown_failure_redacts_a_build_path(self):
+        out = self._d(
+            "transport worker crashed at /Users/avery/build/wreq/target/release/client"
+        )
+        assert "/Users/avery" not in out
+        assert "[redacted-path]" in out
+
+    def test_each_cause_is_distinguished(self):
+        assert "does not cover this hostname" in self._d("HostnameMismatch")
+        assert "expired" in self._d("certificate has expired")
+        assert "DNS lookup failed" in self._d("dns error: failed to lookup address")
+        assert "refused" in self._d("Connection refused (os error 61)")
+
+    def test_empty_reason_still_says_something(self):
+        assert self._d("") .startswith("Connection error:")

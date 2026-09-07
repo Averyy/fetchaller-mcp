@@ -77,6 +77,11 @@ async def test_exact_tool_surface_has_strict_schemas(server):
         "search_amazon_jobs",
         "search_google_jobs",
         "search_apple_jobs",
+        "search_gojobs",
+        "get_gojobs_job",
+        "search_indeed",
+        "get_indeed_job",
+            "search_jobbank",
         "search_meta_jobs",
         "search_uber_jobs",
         "search_realtor",
@@ -833,6 +838,25 @@ class TestGuardedBrowserLifecycle:
         assert proxy.closed
 
     @pytest.mark.asyncio
+    async def test_cleanup_releases_every_new_job_board_session(self):
+        from fetchaller.gojobs import api as gojobs_api
+        from fetchaller.indeed import api as indeed_api
+        from fetchaller.jobbank import api as jobbank_api
+        from fetchaller.server import cleanup_server
+
+        gojobs_api._session = object()
+        gojobs_api._vocab_cache = {"city": {"CITY-TRNT": "Toronto"}}
+        indeed_api._session = object()
+        jobbank_api._session = object()
+
+        await cleanup_server(SimpleNamespace())
+
+        assert gojobs_api._session is None
+        assert gojobs_api._vocab_cache is None
+        assert indeed_api._session is None
+        assert jobbank_api._session is None
+
+    @pytest.mark.asyncio
     async def test_browser_cleanup_is_bounded_while_a_solver_is_busy(self):
         from fetchaller.server import close_browser_runtime_bounded
 
@@ -1202,3 +1226,94 @@ async def test_a_value_past_the_advertised_maximum_is_still_refused(server):
     assert _validate_tool_arguments("search_eightfold_jobs", {"employer": "x", "limit": 101})
     # The narrower tools keep their own bound rather than inheriting the widest.
     assert _validate_tool_arguments("search_reddit", {"query": "x", "limit": 26})
+
+
+class TestOptionalEmptyStrings:
+    """An optional string may be empty, and empty means "no filter"."""
+
+    def test_workday_accepts_an_empty_title(self):
+        # Regression: this failed validation while omitting `title` entirely
+        # worked — the same request expressed two ways, one an error, and the
+        # tool's stated constraint only mentions `employer`.
+        from fetchaller.server import _validate_tool_arguments
+
+        assert _validate_tool_arguments(
+            "search_workday_jobs", {"employer": "acme", "title": ""}
+        ) is None
+
+    def test_a_required_string_may_still_not_be_blank(self):
+        from fetchaller.server import _validate_tool_arguments
+
+        assert _validate_tool_arguments("search_workday_jobs", {"employer": ""}) is not None
+        assert _validate_tool_arguments("get_gojobs_job", {"job_id": ""}) is not None
+
+    def test_an_any_required_field_may_still_not_be_blank(self):
+        # Blanking the only field that satisfies anyOf must not sneak past it.
+        from fetchaller.server import _validate_tool_arguments
+
+        assert _validate_tool_arguments("search_jobbank", {"title": ""}) is not None
+
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("search_linkedin_jobs", {"keywords": "x", "sort": ""}),
+            (
+                "search_marketplace",
+                {"query": "x", "location": "Toronto", "category": ""},
+            ),
+            ("search_realtor", {"location": "Toronto", "transaction": ""}),
+        ],
+    )
+    def test_an_optional_enum_may_not_use_a_blank_outside_its_schema(
+        self, tool, arguments
+    ):
+        from fetchaller.server import _validate_tool_arguments
+
+        assert _validate_tool_arguments(tool, arguments) is not None
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_optional_filter_is_dispatched_as_blank(
+        self, server
+    ):
+        with patch(
+            "fetchaller.server.search_gojobs",
+            new_callable=AsyncMock,
+            return_value={"content": "ok"},
+        ) as search_mock:
+            result = await _call_tool(
+                server,
+                "search_gojobs",
+                {"title": "nurse", "location": "   "},
+            )
+
+        assert result.isError is False
+        assert search_mock.await_args.kwargs["title"] == "nurse"
+        assert search_mock.await_args.kwargs["location"] == ""
+
+
+class TestToolSpecificArgumentTypes:
+    def test_min_salary_keeps_each_tools_published_type(self):
+        from fetchaller.server import _validate_tool_arguments
+
+        assert _validate_tool_arguments(
+            "search_linkedin_jobs", {"keywords": "engineer", "min_salary": 80_000}
+        ) is None
+        assert _validate_tool_arguments(
+            "search_gojobs", {"min_salary": "80000"}
+        ) is None
+        assert _validate_tool_arguments(
+            "search_linkedin_jobs", {"keywords": "engineer", "min_salary": "80000"}
+        ) is not None
+        assert _validate_tool_arguments(
+            "search_gojobs", {"min_salary": 80_000}
+        ) is not None
+
+
+class TestLinkedInLocationRecheck:
+    def test_strict_location_is_exposed_and_defaults_on(self):
+        from fetchaller.server import _TOOL_ARGUMENTS, _validate_tool_arguments
+
+        assert "strict_location" in _TOOL_ARGUMENTS["search_linkedin_jobs"]
+        assert _validate_tool_arguments(
+            "search_linkedin_jobs", {"keywords": "x", "strict_location": False}
+        ) is None

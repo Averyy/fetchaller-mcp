@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..jobfilter import counts_line
 from .parse import _MARKDOWN_ESCAPE, JobCard, JobDetail
 
 _DESCRIPTION_BUDGET_RATIO = 0.75
@@ -25,6 +26,11 @@ def render_search_results(
     geo_id: str | None = None,
     start: int = 0,
     max_tokens: int = 25_000,
+    location_filtered: int = 0,
+    examined: int = 0,
+    location_applied: bool = True,
+    truncated_by_limit: int = 0,
+    window_complete: bool = True,
 ) -> str:
     # keywords/location are caller-supplied and land in a markdown heading.
     safe_keywords = keywords.translate(_MARKDOWN_ESCAPE)
@@ -39,9 +45,41 @@ def render_search_results(
         if part
     )
     lines = [f"# LinkedIn jobs{': ' + scope if scope else ''}", ""]
-    plural = "" if len(cards) == 1 else "s"
     offset_note = f", from result {start + 1}" if start else ""
-    lines.append(f"_{len(cards)} job{plural}{offset_note}_")
+    if location_filtered or examined or truncated_by_limit:
+        # LinkedIn's location filter is a radius, not a city match: a
+        # St. Catharines search returned 15 postings, every one of them in the
+        # GTA, under a flat "15 jobs" heading with no caveat. Every sibling
+        # client re-checks and reports; this one did not.
+        lines.extend(
+            counts_line(
+                len(cards),
+                dropped_by_location=location_filtered,
+                board_label="LinkedIn",
+                board_scope=f"near {safe_location}" if safe_location else "",
+                # `counts_line` may say "All N postings" when examined is the
+                # largest known figure. A fixed window is not a total: row 101
+                # was never requested, so suppress that inference and state the
+                # bounded evidence explicitly below.
+                examined=examined if window_complete else 0,
+                truncated_by_limit=truncated_by_limit,
+            )
+        )
+        if not window_complete and examined:
+            lines.extend(
+                [
+                    "",
+                    f"_Only the first {examined} postings in LinkedIn's ranked "
+                    "results were examined. Narrow the query to bring later "
+                    "postings inside the verification window._",
+                ]
+            )
+        if offset_note:
+            lines.append("")
+            lines.append(f"_Paging{offset_note}._")
+    else:
+        plural = "" if len(cards) == 1 else "s"
+        lines.append(f"_{len(cards)} job{plural}{offset_note}_")
     lines.append("")
 
     for index, card in enumerate(cards, start=1):

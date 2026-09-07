@@ -9,7 +9,7 @@ the requests and parses the JSON.
 
 Endpoints used:
 - ``Location.svc/SubAreaSearch``        — geocode a place to a viewport + GEOId
-- ``Listing.svc/PropertySearch_Post``   — the search (list view = Results,
+- ``Listing.svc/AsyncPropertySearch_Post`` — the search (list view = Results,
                                           map view = Pins), POST form-encoded
 Individual listing pages (``www.realtor.ca/real-estate/{id}/{slug}``) are
 server-rendered HTML and are parsed directly; "similar listings" are lazy-loaded
@@ -248,7 +248,11 @@ async def property_search(
         body["OwnershipTypeGroupId"] = OWNERSHIP[ownership]
 
     s = await _get_session(browser_solver)
-    r = await s.post(f"{API}/Listing.svc/PropertySearch_Post", form=body, headers=_API_HEADERS)
+    # ENDPOINT MOVED (verified live 2026-08-16 by reading realtor.ca's own network log):
+    # the site now calls AsyncPropertySearch_Post. PropertySearch_Post answers 403, which
+    # surfaces here as a generic_js challenge that never clears.
+    r = await s.post(f"{API}/Listing.svc/AsyncPropertySearch_Post", form=body,
+                     headers=_API_HEADERS)
     r.raise_for_status()
     return r.json()
 

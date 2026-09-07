@@ -51,6 +51,12 @@ _FRAMEWORK_MARKERS = (
     ("next.js", ("/_next/static/",)),
     ("nuxt", ("/_nuxt/",)),
     ("gatsby", ("/page-data/app-data.json",)),
+    # Two recruiting platforms whose search pages ship no results at all.
+    # Their signatures are structural evidence for the ratio rule: unlike a
+    # bare byte ratio, they distinguish a client-rendered board from a complete
+    # server-rendered page with lots of inline data and a short article.
+    ("phenom", ("phenompeople.com", "phapp")),
+    ("ukg", ("recruiting.tenantfeaturetoggle", "/jobboard/")),
 )
 _FRAMEWORK_NAMES = frozenset(name for name, _ in _FRAMEWORK_MARKERS)
 
@@ -58,7 +64,9 @@ _FRAMEWORK_NAMES = frozenset(name for name, _ in _FRAMEWORK_MARKERS)
 # empty mount point, or a publisher (Framer, Nuxt, Gatsby) whose output is
 # client-rendered by default. Next.js is deliberately absent — it is the common
 # case for server-rendered pages too, so on its own it proves nothing.
-_STRONG_MARKERS = frozenset({"mount-point", "framer", "nuxt", "gatsby"})
+_STRONG_MARKERS = frozenset(
+    {"mount-point", "framer", "nuxt", "gatsby", "phenom", "ukg"}
+)
 
 # A shell is short. This is deliberately near "nothing but the title" rather
 # than merely "a short page": a stub page with a paragraph of real prose is a
@@ -280,14 +288,22 @@ def describe(
     ``markers`` and ``metadata`` come from :func:`collect_shell_evidence`, and
     ``extracted_text`` is the markdown the page rendered down to.
     """
-    if not markers:
-        return None
-
     text_length = len(extracted_text.strip())
     framework = next((marker for marker in markers if marker in _FRAMEWORK_NAMES), None)
     has_strong_marker = any(marker in _STRONG_MARKERS for marker in markers)
 
-    barely_any_text = html_bytes >= MIN_HTML_BYTES and text_length < SHELL_TEXT_CHARS
+    # Byte ratio alone is not page identity. A complete server-rendered page
+    # can carry a large inline data payload around a short real article. The
+    # two motivating vendors now have explicit Phenom/UKG signatures, so a
+    # marker-free document remains unknown rather than being called a shell.
+    if not markers:
+        return None
+
+    barely_any_text = (
+        bool(markers) and html_bytes >= MIN_HTML_BYTES and text_length < SHELL_TEXT_CHARS
+    )
+    # A strong marker (empty mount point, Framer/Nuxt/Gatsby) is its own
+    # evidence, so it qualifies on the ratio without the absolute cap.
     nearly_all_scripting = (
         has_strong_marker
         and html_bytes >= RATIO_MIN_HTML_BYTES

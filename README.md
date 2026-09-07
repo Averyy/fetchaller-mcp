@@ -15,6 +15,9 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 - **`search_marketplace`**: Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range)
 - **`search_realtor`**: Search Canadian homes on realtor.ca for sale or rent with full filters (location, price, beds, baths, property/building type, ownership)
 - **`search_linkedin_jobs`** / **`get_linkedin_job`**: Search LinkedIn's public logged-out job board (keywords, location, date posted, remote/hybrid/on-site, experience, job type, salary) and read full postings — no account needed
+- **`search_gojobs`** / **`get_gojobs_job`**: Search Ontario Public Service jobs and read full posting and competition status details
+- **`search_indeed`** / **`get_indeed_job`**: Search Indeed Canada and read full public posting data, including salary bands and expiry dates
+- **`search_jobbank`**: Search Canada's federal Job Bank by title, city, and radius with local result rechecking
 - **`get_unifi_manual`**: Download a Ubiquiti UniFi installation guide as a PDF or per-page PNGs. Ubiquiti publishes no PDF and draws these guides as vector artwork, so they carry no readable text — this rebuilds the pages into a real document
 - **`get_aliexpress_product`**: AliExpress product details (price, specs, ratings, reviews)
 - **`search_aliexpress`**: Search AliExpress products with price filters and sorting
@@ -53,6 +56,11 @@ Add permissions to `~/.claude/settings.json`:
       "mcp__fetchaller__search_realtor",
       "mcp__fetchaller__search_linkedin_jobs",
       "mcp__fetchaller__get_linkedin_job",
+      "mcp__fetchaller__search_gojobs",
+      "mcp__fetchaller__get_gojobs_job",
+      "mcp__fetchaller__search_indeed",
+      "mcp__fetchaller__get_indeed_job",
+      "mcp__fetchaller__search_jobbank",
       "mcp__fetchaller__get_unifi_manual",
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
@@ -80,8 +88,13 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 - `mcp__fetchaller__search_reddit(query, subreddit?, sort?, time?, limit?)` — Search Reddit posts
 - `mcp__fetchaller__search_marketplace(query, location, platforms?, category?, sort?, condition?, min_price?, max_price?)` — Search Kijiji + Craigslist + Facebook Marketplace
 - `mcp__fetchaller__search_realtor(location, transaction?, property_type?, building_type?, min_price?, max_price?, min_beds?, min_baths?, ownership?, sort?, page?)` — Search realtor.ca homes
-- `mcp__fetchaller__search_linkedin_jobs(keywords, location?, date_posted?, workplace?, experience?, job_type?, min_salary?, sort?, start?, limit?)` — Search LinkedIn public jobs
+- `mcp__fetchaller__search_linkedin_jobs(keywords, location?, strict_location?, date_posted?, workplace?, experience?, job_type?, min_salary?, easy_apply?, under_10_applicants?, sort?, start?, limit?)` — Search LinkedIn public jobs; `strict_location` defaults to `true` and re-checks each posting's own location
 - `mcp__fetchaller__get_linkedin_job(job_id)` — Full public detail for one LinkedIn posting
+- `mcp__fetchaller__search_gojobs(title?, location?, job_category?, career_level?, min_salary?, strict_title?, limit?)` — Search Ontario Public Service jobs
+- `mcp__fetchaller__get_gojobs_job(job_id)` — Full OPS posting and competition status
+- `mcp__fetchaller__search_indeed(title?, location?, radius_km?, strict_title?, strict_location?, limit?)` — Search Indeed Canada
+- `mcp__fetchaller__get_indeed_job(job_key)` — Full Indeed posting, salary band, and expiry
+- `mcp__fetchaller__search_jobbank(title?, location?, radius_km?, strict_title?, strict_location?, limit?)` — Search Canada's federal Job Bank
 - `mcp__fetchaller__get_unifi_manual(url, format?)` — Rebuild a UniFi installation guide as `pdf`/`png`/`svg`. Writes into the server's `DATA_DIR`, so on a containerised deployment the files land inside the container
 - `mcp__fetchaller__get_aliexpress_product(product_id, timeout?)` — AliExpress product details
 - `mcp__fetchaller__search_aliexpress(query, page?, sort?, min_price?, max_price?, timeout?)` — Search AliExpress

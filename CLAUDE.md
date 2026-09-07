@@ -93,6 +93,66 @@ located slice is pulled whole and filtered here instead. fetchaller has NO
 credentialed path to any board — all of them answer anonymously and must
 continue to.
 
+**gojobs.gov.on.ca** is the limiting case of that doctrine, because the board
+has **no keyword search at all** — its only text input is an exact Job ID, so
+`title` is matched entirely here. It is ASP.NET WebForms, and every one of its
+traps fails by rendering something plausible: a GET of `Search.aspx` returns the
+search *form* with zero postings, so the generic fetch path shows an empty board
+rather than an error; paging is a `__EVENTTARGET` postback signed by the
+previous response's `__VIEWSTATE`, so pages are strictly sequential and ten rows
+each; and a facet set to a bare `REGION-TRNT` is accepted and silently ignored
+where `["REGION-TRNT"]` filters. Bound a result row by the **English** title
+anchor, never the repeater id — a bilingual posting's second anchor carries the
+same id and halves the row. `Search.aspx` serves **two different pages**: a session's
+first GET carries all 984 cities, every GET after it silently omits the city
+list while keeping every other facet, so the page looks complete. Re-fetching
+the form per search therefore lost city resolution and quietly downgraded
+"Toronto" to the region filter (board reported 35, not 32) and "Thunder Bay" to
+no filter at all (127) — right postings, wrong reported scope. Read the
+vocabulary once from the cold page and never cache a city-less one. A search is
+also a *conversation* keyed to `PHPSESSID`, so keep the whole exchange behind
+its lock; overlapping searches answer each other's state. Report `Competition Status` before `Posting status`,
+because a filled competition still reads "Open". Treat "Ontario"/"Canada" as the
+whole board, not a filter: no row names the province. Never use `/alljobs.aspx`
+or `/ReadPDF.aspx` — `robots.txt` disallows both.
+
+**jobbank.gc.ca** (federal Job Bank) has the same disease in two places: a
+parameter that is accepted, ignored, and never complained about. A bare
+`locationstring` returns the whole country (64,017) — the real filter is
+`locationparam`/`mid` carrying the numeric `city_id` from the Solr autocomplete
+at `/core/ta-cityprovsuggest_en/select`, so never send a location that could not
+be resolved. `searchstring` is dropped for *some* terms: "driver" filters to 11
+but "assistant" returned the unfiltered 424 byte-identical to no keyword, so
+when a title is given, compare against the same location's keyword-less total
+and suppress the board's count if they match. Read the result total from
+`id="results-count"` only — every distance facet renders its own "N jobs found
+in" badge and a text match returns the facet. Radius (`d`, default 50km) is a
+real filter and is part of the answer: the board searches *near* a city, so
+state the radius or nearby towns read as a broken location filter.
+
+### robots.txt — settled, do not re-open
+
+**fetchaller is a user-directed fetcher, not a crawler, and robots.txt is not
+treated as a constraint on it.** A person asks for a specific page or a specific
+search; the tool retrieves it on their behalf. That is not the activity the
+exclusion protocol was written to govern, and Avery has confirmed this position
+more than once.
+
+This was re-litigated once, mid-build, and the Indeed client was gutted over it
+— `get_indeed_job` deleted, pagination and radius stripped — before being
+restored. Do not do that again. Specifically, `ca.indeed.com/robots.txt`
+disallows `/viewjob?`, `/*&start=` and `/*radius=` for `User-agent: *`, and the
+client uses all three deliberately.
+
+The obligation that *does* apply is load: **be efficient, because fewer
+well-chosen requests is the fair thing and the polite thing at once.** Prefer
+the request that returns the most per call. Indeed is the worked example, including how it
+went: a probe found `start=1` returned a disjoint all-organic page (thirty
+postings for two requests), and on re-test every offset returned the login wall,
+so the client fetches one page. Re-verify a finding in the session you will ship
+before building on it. Keep the per-domain limiter honest, never loop blindly, and
+stop when the marginal request stops paying.
+
 ## Pre-Commit Rules
 
 **ALWAYS run lint and tests before EVERY commit. No exceptions.**
@@ -141,6 +201,6 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber.
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
 - `docs/spa-discovery.md` — SPA API discovery (`src/fetchaller/discovery/`): observing a page in a browser and replaying what it made, so an endpoint's shape never needs bundle archaeology again. Ranking (why coverage and record count are directly opposed), the oracle (why a 200 that means "malformed" is the core problem), minimization, mint steps, and the measured per-board results
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

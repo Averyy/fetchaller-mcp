@@ -84,9 +84,9 @@ Search Kijiji, Craigslist, and Facebook Marketplace simultaneously. Returns grou
 | min_price | integer | — | Minimum price in dollars |
 | max_price | integer | — | Maximum price in dollars |
 
-### search_linkedin_jobs(keywords, location?, date_posted?, workplace?, experience?, job_type?, min_salary?, sort?, start?, limit?)
+### search_linkedin_jobs(keywords, location?, strict_location?, date_posted?, workplace?, experience?, job_type?, min_salary?, easy_apply?, under_10_applicants?, sort?, start?, limit?)
 
-Search LinkedIn's public logged-out job board — no account required. Filters: date posted (any/24h/week/month), workplace (on_site/remote/hybrid), experience (internship..executive), job type (full_time/part_time/contract/temporary/internship), minimum salary (40k-120k), easy_apply (LinkedIn-internal application), under_10_applicants (few applicants so far). Returns title, company, location, posting date, LinkedIn's "Be an early applicant"/"Actively Hiring" badges when present, and a stable linkedin.com/jobs/view URL. Pagination via `start` (rows 0-999, 10 per page). `sort=recent` is applied client-side because LinkedIn's own sortBy is not honoured on this endpoint; salary is not published in logged-out results and is never implied.
+Search LinkedIn's public logged-out job board — no account required. Filters: date posted (any/24h/week/month), workplace (on_site/remote/hybrid), experience (internship..executive), job type (full_time/part_time/contract/temporary/internship), minimum salary (40k-120k), easy_apply (LinkedIn-internal application), under_10_applicants (few applicants so far). `strict_location` defaults to `true`: when `location` is supplied, each posting's own location must match; set it to `false` only when LinkedIn's broader geographic ranking is wanted. Returns title, company, location, posting date, LinkedIn's "Be an early applicant"/"Actively Hiring" badges when present, and a stable linkedin.com/jobs/view URL. Pagination via `start` (rows 0-999, 10 per page). `sort=recent` is applied client-side because LinkedIn's own sortBy is not honoured on this endpoint; salary is not published in logged-out results and is never implied.
 
 ### get_linkedin_job(job_id)
 
@@ -174,6 +174,62 @@ Search jobs.apple.com by title and location. A place name is resolved to Apple's
 | location | string | — | City or country, e.g. "Toronto", "Vancouver", "Canada" |
 | locale | string | en-ca | Storefront locale; sets the country scope (en-ca, en-us, ...) |
 | strict_title | boolean | true | Require the title words to appear in the posting's own title |
+| limit | integer | 25 | Jobs to return (max 100) |
+
+### search_gojobs(title?, location?, job_category?, career_level?, min_salary?, strict_title?, limit?)
+
+Search gojobs.gov.on.ca, the Ontario Public Service careers board. The board has no keyword search of its own — its only text input is an exact Job ID — so `title` is matched against each posting's own title here. Region, city, job category, career level and minimum salary are real board filters. "Ontario" and "Canada" cover the whole board and are treated as no filter. At least one filter is required: an unfiltered listing is a dozen sequential postbacks. Returns title, organization, location, salary, closing date, Job ID, and a posting URL.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| title | string | — | Job title, e.g. "policy advisor" |
+| location | string | — | Ontario city or region, e.g. "Toronto", "Thunder Bay", "North" |
+| job_category | string | — | OPS category, e.g. "Information Technology" |
+| career_level | string | — | Student, Entry level, Experienced, Management, Executive |
+| min_salary | string | — | Minimum annual salary step, e.g. "70000" |
+| strict_title | boolean | true | Require the title words to appear in the posting's own title |
+| limit | integer | 25 | Jobs to return (max 100) |
+
+### get_gojobs_job(job_id)
+
+Full detail for one Ontario Public Service posting. Reports the competition status separately, because a filled competition still reads "Posting status: Open".
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| job_id | string | required | Numeric Job ID, e.g. "232882" |
+
+### search_indeed(title?, location?, radius_km?, strict_title?, strict_location?, limit?)
+
+Search ca.indeed.com. Returns the one anonymous result page Indeed reliably serves, including title, employer, location, salary and posting date. Its deeper offsets return a sign-in wall, so narrow the query to change which postings appear. At least one of title or location is required. Use `get_indeed_job` for the full description, structured salary band and listing expiry date.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| title | string | — | Job title or keywords, e.g. "administrative assistant" |
+| location | string | — | City, e.g. "St. Catharines, ON" |
+| radius_km | integer | 0 | Radius in km (0 uses Indeed's default 25; max 100) |
+| strict_title | boolean | true | Require the title words to appear in the posting's own title |
+| strict_location | boolean | false | Require the posting's own city to match; off by default because Indeed searches a radius |
+| limit | integer | 25 | Jobs to return (max 100; Indeed currently exposes about 15) |
+
+### get_indeed_job(job_key)
+
+Read one Indeed posting in full from its public JobPosting data, including employer, location, employment type, description, salary band, posted date and `validThrough` expiry.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| job_key | string | required | Alphanumeric key from a `?jk=` Indeed URL |
+
+### search_jobbank(title?, location?, radius_km?, strict_title?, strict_location?, limit?)
+
+Search jobbank.gc.ca, the federal Job Bank — the highest-volume Canadian board, with salary published on most listings. A place name is resolved to Job Bank's own numeric city id first: the board silently ignores an unresolved location and returns the whole country (64,000+) as an ordinary successful search. Job Bank searches a RADIUS around a city, so nearby towns are included by design and the radius used is always reported. Its keyword is dropped for some terms ("assistant" returns the unfiltered set), which is detected and reported rather than passed off as a match count. Returns title, employer, location, salary, workplace (on site/remote/hybrid), posted date, job number, and a clean posting URL.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| title | string | — | Job title or keywords, e.g. "truck driver" |
+| location | string | — | Canadian city with province, e.g. "St. Catharines, ON" |
+| radius_km | integer | 50 | Radius around the city (10-500). 10km/25km/50km give 152/424/1036 near St. Catharines |
+| strict_title | boolean | true | Require the title words to appear in the posting's own title |
+| strict_location | boolean | false | Require the posting's own city to match. Off by default — a radius search is the point |
 | limit | integer | 25 | Jobs to return (max 100) |
 
 ### search_meta_jobs(title, location?, remote_only?, strict_title?, limit?)
@@ -299,6 +355,11 @@ Add to `~/.claude/settings.json` (or `.claude/settings.local.json` for per-proje
       "mcp__fetchaller__search_amazon_jobs",
       "mcp__fetchaller__search_google_jobs",
       "mcp__fetchaller__search_apple_jobs",
+      "mcp__fetchaller__search_gojobs",
+      "mcp__fetchaller__get_gojobs_job",
+      "mcp__fetchaller__search_indeed",
+      "mcp__fetchaller__get_indeed_job",
+      "mcp__fetchaller__search_jobbank",
       "mcp__fetchaller__search_meta_jobs",
       "mcp__fetchaller__search_uber_jobs",
       "mcp__fetchaller__get_aliexpress_product",

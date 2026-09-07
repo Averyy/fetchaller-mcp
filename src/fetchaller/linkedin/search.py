@@ -17,10 +17,18 @@ import asyncio
 import sys
 from datetime import UTC, datetime
 
+from ..jobfilter import location_matches, tokens
 from ..security.xss import safe_log_text
 from . import api
 from .parse import parse_job_detail, parse_search_fragment
 from .render import render_job_detail, render_search_results
+
+# How many postings one search collects when a filter will run over them,
+# independent of `limit`. `limit` sizes the OUTPUT; this sizes the POOL.
+# Collecting only `limit` rows and then filtering made the answer depend on how
+# many rows the caller asked for: limit=5 collected 5 and returned 1, limit=25
+# collected 25 and returned 5 — different jobs, not more of the same list.
+_EXAMINE_CEILING = 100
 
 DATE_POSTED = {
     "any": "",
@@ -139,6 +147,7 @@ def _validate(
 async def search_linkedin_jobs(
     keywords: str = "",
     location: str = "",
+    strict_location: bool = True,
     *,
     geo_id: str | None = None,
     date_posted: str = "any",
@@ -170,6 +179,10 @@ async def search_linkedin_jobs(
             session = await api._get_session(browser_solver)
 
             resolved_geo = geo_id
+            # Fixed pool whenever a filter will run; otherwise the caller's
+            # own page size is the pool and nothing is discarded.
+            fetch_limit = _EXAMINE_CEILING if (location and strict_location) else limit
+
             if not resolved_geo and location:
                 resolved_geo = await api.resolve_geo_id(
                     location, session=session, timeout=timeout
@@ -178,6 +191,7 @@ async def search_linkedin_jobs(
             collected = []
             seen: set[str] = set()
             offset = start
+            window_complete = False
 
             # One JSERP page request returns 60 cards; the fragment endpoint
             # returns 10. At start=0 that covers any allowed limit in a single
@@ -197,12 +211,12 @@ async def search_linkedin_jobs(
                     if key and key not in seen:
                         seen.add(key)
                         collected.append(card)
-                if len(collected) >= limit:
+                if len(collected) >= fetch_limit:
                     offset = api.MAX_START + 1  # satisfied; skip the fragment loop
                 else:
                     offset = len(collected)
 
-            while len(collected) < limit and offset <= api.MAX_START:
+            while len(collected) < fetch_limit and offset <= api.MAX_START:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     break
@@ -216,6 +230,7 @@ async def search_linkedin_jobs(
                 )
                 page = parse_search_fragment(fragment)
                 if not page:
+                    window_complete = True
                     break
                 for card in page:
                     key = card.job_id or card.url
@@ -224,6 +239,7 @@ async def search_linkedin_jobs(
                         collected.append(card)
                 # A short page is the end of the result set.
                 if len(page) < api.page_size():
+                    window_complete = True
                     break
                 offset += api.page_size()
 
@@ -236,11 +252,24 @@ async def search_linkedin_jobs(
                     "content_type": "text",
                 }
 
+            # LinkedIn's location filter is a radius around the geoId, not a
+            # city match. A St. Catharines search came back 15-for-15 in the
+            # GTA under a flat "15 jobs" heading. The board's filter is an
+            # optimisation; the caller's is the guarantee.
+            examined = len(collected)
+            location_dropped = 0
+            if location and strict_location:
+                wanted = tokens(location)
+                kept = [c for c in collected if location_matches(c.location or "", wanted)]
+                location_dropped = len(collected) - len(kept)
+                collected = kept
+
             if sort == "recent":
                 # Client-side: the endpoint's own sort is unverified.
                 collected.sort(key=lambda card: card.posted_date or "", reverse=True)
 
-            _log(f"search '{keywords[:40]}' -> {len(collected)} jobs")
+            matched = len(collected)
+            _log(f"search '{keywords[:40]}' -> {matched} jobs")
             return {
                 "content": render_search_results(
                     collected[:limit],
@@ -249,6 +278,15 @@ async def search_linkedin_jobs(
                     geo_id=resolved_geo,
                     start=start,
                     max_tokens=max_tokens,
+                    location_filtered=location_dropped,
+                    examined=examined,
+                    truncated_by_limit=matched - min(matched, limit),
+                    # Completeness matters when a local filter needs a fixed
+                    # evidence pool. Without that filter, `limit` is ordinary
+                    # output pagination rather than a claim that the board ended.
+                    window_complete=(
+                        window_complete or not (location and strict_location)
+                    ),
                 ),
                 "content_type": "markdown",
             }
