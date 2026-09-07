@@ -335,3 +335,107 @@ class TestWaferErrorTyped:
         from fetchaller.realtor.search import _wafer_error
         out = _wafer_error(wafer.WaferTimeout("https://www.realtor.ca/", 60))
         assert "timed out" in out["error"].lower()
+
+
+class TestOriginClearance:
+    """api2 is only reachable after www.realtor.ca has been loaded on the jar.
+
+    Cloudflare answers a cold api2 request with a WAF block page (a 403 wafer
+    reports as ``generic_js``) that nothing solves in place; the front page
+    mints the ``.realtor.ca`` clearance. ``_api`` therefore loads the front
+    page before the first api2 call, and re-clears once on a mid-session
+    block. Measured live 2026-09-07.
+    """
+
+    def setup_method(self):
+        api._origin_cleared = False
+
+    def teardown_method(self):
+        api._origin_cleared = False
+
+    @pytest.mark.asyncio
+    async def test_front_page_loads_before_first_api2_call(self):
+        calls: list[str] = []
+        s = AsyncMock()
+        s.get.side_effect = lambda url, **kw: calls.append(url) or AsyncMock()
+        s.post.side_effect = lambda url, **kw: calls.append(url) or AsyncMock()
+
+        await api._api(s, "post", f"{api.API}/Listing.svc/AsyncPropertySearch_Post", form={})
+
+        assert calls == [api.SITE + "/", f"{api.API}/Listing.svc/AsyncPropertySearch_Post"]
+        assert api._origin_cleared is True
+
+    @pytest.mark.asyncio
+    async def test_front_page_loads_once_per_session(self):
+        calls: list[str] = []
+        s = AsyncMock()
+        s.get.side_effect = lambda url, **kw: calls.append(url) or AsyncMock()
+
+        await api._api(s, "get", f"{api.API}/Location.svc/SubAreaSearch")
+        await api._api(s, "get", f"{api.API}/Location.svc/SubAreaSearch")
+
+        assert calls.count(api.SITE + "/") == 1
+        assert calls.count(f"{api.API}/Location.svc/SubAreaSearch") == 2
+
+    @pytest.mark.asyncio
+    async def test_block_mid_session_reclears_once_and_replays(self):
+        import wafer
+
+        api._origin_cleared = True  # clearance from earlier in the session, now expired
+        calls: list[str] = []
+        blocked = wafer.ChallengeDetected("generic_js", f"{api.API}/x", 403)
+        ok = AsyncMock()
+
+        async def get(url, **kw):
+            calls.append(url)
+            if url.startswith(api.API) and calls.count(url) == 1:
+                raise blocked
+            return ok
+
+        s = AsyncMock()
+        s.get.side_effect = get
+
+        r = await api._api(s, "get", f"{api.API}/x")
+
+        assert r is ok
+        assert calls == [f"{api.API}/x", api.SITE + "/", f"{api.API}/x"]
+
+    @pytest.mark.asyncio
+    async def test_second_block_is_reported_not_looped(self):
+        import wafer
+
+        api._origin_cleared = True
+        s = AsyncMock()
+        blocked = wafer.ChallengeDetected("generic_js", f"{api.API}/x", 403)
+
+        async def get(url, **kw):
+            if url.startswith(api.API):
+                raise blocked
+            return AsyncMock()
+
+        s.get.side_effect = get
+
+        with pytest.raises(wafer.ChallengeDetected):
+            await api._api(s, "get", f"{api.API}/x")
+        assert sum(1 for c in s.get.await_args_list if c.args[0].startswith(api.API)) == 2
+
+    @pytest.mark.asyncio
+    async def test_front_page_challenge_propagates_unsolved(self):
+        """No browser solver: the front page's own challenge is the error, so the
+        caller reports "cloudflare" rather than the api2 block it never reached."""
+        import wafer
+
+        s = AsyncMock()
+        s.get.side_effect = wafer.ChallengeDetected("cloudflare", api.SITE + "/", 403)
+
+        with pytest.raises(wafer.ChallengeDetected) as exc:
+            await api._api(s, "get", f"{api.API}/x")
+        assert exc.value.challenge_type == "cloudflare"
+        assert api._origin_cleared is False
+        s.get.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_session_forgets_clearance(self):
+        api._origin_cleared = True
+        await api.close_session()
+        assert api._origin_cleared is False

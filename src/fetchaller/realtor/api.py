@@ -1,11 +1,18 @@
 """realtor.ca client — api2 search + SSR listing detail.
 
-All search data comes from the Imperva-protected ``api2.realtor.ca`` XHR
-endpoints (the public map page is a CSR shell). wafer handles Imperva
-transparently — a fresh session free-passes via native-TLS at light load (no
-browser), and under escalation the ``browser_solver`` solves on the origin page
-(www.realtor.ca) with same-site XHR passthrough — so this module just constructs
-the requests and parses the JSON.
+All search data comes from the ``api2.realtor.ca`` XHR endpoints (the public
+map page is a CSR shell). Since 2026-09 the whole ``realtor.ca`` zone sits
+behind Cloudflare, and the two hosts answer a cold client differently:
+``www.realtor.ca`` serves a managed challenge, which wafer's ``browser_solver``
+clears, while ``api2.realtor.ca`` serves a WAF *block* page (403, "Sorry, you
+have been blocked") that nothing can solve in place. A browser never sees that
+block because it only ever reaches api2 after loading the site, carrying the
+``.realtor.ca`` clearance the front page minted. So this module reproduces the
+browser's order: every api2 call first makes sure the front page has been
+loaded on the shared session (:func:`_clear_origin`), and a block mid-session
+re-clears once and replays, because the clearance is time-bound. Measured
+2026-09-07: api2 direct -> 403 block; front page then api2 on one jar -> 200.
+wafer owns the solve; fetchaller owns the request order.
 
 Endpoints used:
 - ``Location.svc/SubAreaSearch``        — geocode a place to a viewport + GEOId
@@ -72,15 +79,22 @@ RESIDENTIAL_GROUP = "1"
 _session: wafer.AsyncSession | None = None
 _session_lock = asyncio.Lock()
 
+# True once www.realtor.ca has been loaded on ``_session`` — the step that
+# leaves Cloudflare's ``.realtor.ca`` clearance in the jar for api2 to ride on.
+_origin_cleared = False
+_origin_lock = asyncio.Lock()
+
 
 async def _get_session(browser_solver=None) -> wafer.AsyncSession:
     """Shared session for all realtor traffic.
 
-    rate_limit spaces out api2 calls so we don't trip Imperva's rate-based
-    reese84 challenge; browser_solver lets wafer mint that token once (and
-    reuse it) when heavy load demands it. www.realtor.ca and api2.realtor.ca
-    are rate-limited independently (per-hostname), and both share the cookie
-    jar (Imperva cookies are Domain=.realtor.ca).
+    One session so www.realtor.ca and api2.realtor.ca share a cookie jar: the
+    Cloudflare clearance is ``Domain=.realtor.ca``, minted on the front page and
+    required by the API host. ``browser_solver`` is what clears the front
+    page's managed challenge; without one, realtor is unreachable and the
+    front-page fetch raises ``ChallengeDetected("cloudflare")``, which is the
+    accurate error. rate_limit spaces the two hosts independently
+    (per-hostname).
     """
     global _session
     if _session is None:
@@ -97,10 +111,49 @@ async def _get_session(browser_solver=None) -> wafer.AsyncSession:
     return _session
 
 
+async def _clear_origin(s: wafer.AsyncSession, *, force: bool = False) -> None:
+    """Load the front page on ``s`` so api2 sees Cloudflare's clearance.
+
+    Runs once per session (``force=True`` re-runs it, for a clearance that
+    expired mid-session). Concurrent first callers wait on one load rather
+    than each solving the challenge. A ``ChallengeDetected`` from the front
+    page propagates: it means there is no browser to solve with, and the
+    caller's error should say "cloudflare", not the api2 block it would hit
+    next.
+    """
+    global _origin_cleared
+    if _origin_cleared and not force:
+        return
+    async with _origin_lock:
+        if _origin_cleared and not force:
+            return
+        await s.get(SITE + "/", headers={"Referer": SITE + "/"})
+        _origin_cleared = True
+
+
+async def _api(s: wafer.AsyncSession, method: str, url: str, **kw):
+    """One api2 request in the order a browser makes it.
+
+    Clears the origin first, then sends. api2 answers a missing or expired
+    clearance with a Cloudflare WAF block page — a 403 wafer classifies as
+    ``generic_js`` and cannot solve in place, because there is nothing to
+    solve: the fix is the front page. So one block here re-clears the origin
+    once and replays; a second block is reported.
+    """
+    await _clear_origin(s)
+    send = getattr(s, method)
+    try:
+        return await send(url, **kw)
+    except wafer.ChallengeDetected:
+        await _clear_origin(s, force=True)
+        return await send(url, **kw)
+
+
 async def close_session() -> None:
     """Release the shared session (shutdown cleanup)."""
-    global _session
+    global _session, _origin_cleared
     _session = None
+    _origin_cleared = False
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +212,8 @@ def _full(url: str) -> str:
 async def geocode(area: str, browser_solver=None) -> dict | None:
     """Resolve a place name to a viewport bbox + GEOId via SubAreaSearch."""
     s = await _get_session(browser_solver)
-    r = await s.get(
+    r = await _api(
+        s, "get",
         f"{API}/Location.svc/SubAreaSearch",
         params={"Area": area, "CurrentPage": "1", **_COMMON},
         headers=_API_HEADERS,
@@ -251,8 +305,8 @@ async def property_search(
     # ENDPOINT MOVED (verified live 2026-08-16 by reading realtor.ca's own network log):
     # the site now calls AsyncPropertySearch_Post. PropertySearch_Post answers 403, which
     # surfaces here as a generic_js challenge that never clears.
-    r = await s.post(f"{API}/Listing.svc/AsyncPropertySearch_Post", form=body,
-                     headers=_API_HEADERS)
+    r = await _api(s, "post", f"{API}/Listing.svc/AsyncPropertySearch_Post", form=body,
+                   headers=_API_HEADERS)
     r.raise_for_status()
     return r.json()
 

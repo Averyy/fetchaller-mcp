@@ -4,10 +4,12 @@
   SSR listing-detail fetch/parse. URL detection lives here too.
 - ``render.py`` — markdown renderers for search results and listing detail.
 
-api2.realtor.ca is Imperva-protected; wafer 0.2.4 passes it transparently via
-its native-TLS fallback (light load, no browser) and, under escalation, a
-``browser_solver`` that solves on the origin page (www.realtor.ca) with same-site
-XHR passthrough. fetchaller does NO challenge handling — it just passes the shared
-``browser_solver`` and a per-host ``rate_limit`` so wafer can mint/reuse the
-token and avoid rate-based challenges.
+realtor.ca is behind Cloudflare (since 2026-09; Imperva before that). The front
+page serves a managed challenge that wafer's ``browser_solver`` clears; api2
+serves a WAF block page to any request that does not carry the clearance the
+front page minted. fetchaller does NO challenge handling — it passes the shared
+``browser_solver`` and a per-host ``rate_limit`` — but it does own the request
+*order*: ``api._api()`` loads the front page on the shared session before the
+first api2 call, the way a browser does, and re-clears once on a mid-session
+block.
 """
