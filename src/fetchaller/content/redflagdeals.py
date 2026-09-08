@@ -54,6 +54,11 @@ SELECTORS_LIST = [
     "#inline_bigbox_first",
     ".forum_topic_inline_bigbox",
     ".pencil_ad",
+    # Affiliate countdown card parked in the thread body (Prime Day, Boxing
+    # Day...). Hidden on the site with Bootstrap's d-none once its
+    # data-ends-at has passed, which the converter cannot see.
+    ".countdown-timer",
+    ".forum-cd-timer",
 
     # Breaking news promo
     "#breaking_news",

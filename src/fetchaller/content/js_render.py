@@ -106,11 +106,24 @@ def needs_dom_scan(html: str, extracted_text: str) -> bool:
 
 
 def _is_hidden(element: Tag) -> bool:
-    """Cheap visibility check for the two ways a placeholder is usually parked."""
-    if element.get("hidden") is not None or element.get("aria-hidden") == "true":
-        return True
-    style = str(element.get("style") or "").replace(" ", "").lower()
-    return "display:none" in style or "visibility:hidden" in style
+    """Cheap visibility check for the two ways a placeholder is usually parked.
+
+    Walks up to the body, because hiding is inherited: a spinner inside a
+    closed dialog is not on the page, and the dialog is where the ``hidden``
+    or ``aria-hidden`` lives. PhotoSwipe is the worked example — every page
+    that embeds it ships ``div.pswp__preloader`` (an empty spinner) inside
+    ``div.pswp[aria-hidden=true]``, and checking only the spinner itself
+    flagged every RedFlagDeals thread as possibly client-rendered.
+    """
+    node: Tag | None = element
+    while node is not None and node.name not in ("body", "html", "[document]"):
+        if node.get("hidden") is not None or node.get("aria-hidden") == "true":
+            return True
+        style = str(node.get("style") or "").replace(" ", "").lower()
+        if "display:none" in style or "visibility:hidden" in style:
+            return True
+        node = node.parent
+    return False
 
 
 def _classes(element: Tag) -> str:

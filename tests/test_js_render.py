@@ -81,6 +81,32 @@ class TestMarkerCollection:
         html = '<html><body><div class="spinner" aria-hidden="true"></div></body></html>'
         assert "loading-placeholder" not in collect_markers(html)
 
+    def test_a_placeholder_inside_a_hidden_ancestor_is_ignored(self):
+        """Hiding is inherited. PhotoSwipe ships an empty ``pswp__preloader``
+        spinner inside ``div.pswp[aria-hidden=true]``; checking only the spinner
+        flagged every RedFlagDeals thread as possibly client-rendered."""
+        html = (
+            '<html><body><h1>Thread</h1><p>Real post text.</p>'
+            '<div class="pswp" role="dialog" aria-hidden="true"><div class="pswp__scroll-wrap">'
+            '<div class="pswp__preloader"></div></div>'
+            '<div class="lightbox_loader"></div></div></body></html>'
+        )
+        assert "loading-placeholder" not in collect_markers(html)
+
+    def test_a_placeholder_inside_a_display_none_ancestor_is_ignored(self):
+        html = (
+            '<html><body><div style="display: none"><section><div class="skeleton"></div>'
+            '</section></div></body></html>'
+        )
+        assert "loading-placeholder" not in collect_markers(html)
+
+    def test_a_visible_placeholder_beside_a_hidden_dialog_still_counts(self):
+        html = (
+            '<html><body><div class="pswp" aria-hidden="true"><div class="pswp__preloader"></div></div>'
+            '<div class="results loading"></div></body></html>'
+        )
+        assert "loading-placeholder" in collect_markers(html)
+
     def test_a_placeholder_with_its_own_text_is_ignored(self):
         html = '<html><body><div class="loading">Loading is disabled</div></body></html>'
         assert "loading-placeholder" not in collect_markers(html)

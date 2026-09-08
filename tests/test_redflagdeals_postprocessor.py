@@ -89,6 +89,23 @@ class TestAdsStripped:
         assert "Sidebar advertisement" not in md
         assert "headphones" in md
 
+    async def test_affiliate_countdown_card_stripped(self):
+        """Seen live 2026-09-07: an expired Prime Day countdown link parked in
+        the thread body, hidden on the site with d-none, rendered at the foot of
+        every thread as a "Shop Deals" card."""
+        html = """<body>
+        <section class="thread_posts">
+        <p>Home Depot has the faucet on for $129.99.</p>
+        <a class="countdown-timer d-none forum-cd-timer mb-4" data-ends-at="2026-06-26 23:59"
+           href="https://amzn.to/3RQpF1K"><div class="timer-content"><h2>Amazon Prime Day Ends In</h2>
+           <p>Save Big with Prime Day deals</p><span>Shop Deals</span></div></a>
+        </section>
+        </body>"""
+        md, _ = await html_to_markdown(html, url=RFD_URL)
+        assert "Prime Day" not in md
+        assert "amzn.to" not in md
+        assert "$129.99" in md
+
 
 class TestAuthAndPopupsStripped:
     """Auth containers and popups should be removed."""
