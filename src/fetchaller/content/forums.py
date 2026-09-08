@@ -39,6 +39,11 @@ class ForumTransformResult:
     original_url: str  # Original URL for [Feed: ...] note
     forum_software: str | None  # "xenforo", "vbulletin", "phpbb", "discourse"
     is_thread: bool = False  # True if URL is a known thread (skip autodiscovery)
+    # False for a known-software page that is neither a listing nor a thread
+    # (phpBB search.php, memberlist.php, ucp.php ...). Such a page still
+    # advertises the board's site-wide feed in <link rel="alternate">, and
+    # following it would replace a search result with "latest posts anywhere".
+    autodiscover: bool = True
 
 
 @dataclass
@@ -129,6 +134,14 @@ _XF_THREAD_RE = re.compile(r"/threads/")
 _PHPBB_RFD_LISTING_RE = re.compile(r"/([a-z0-9-]+)-f(\d+)/?$")
 # phpBB (RFD) thread: /{slug}-t{id}.html or /{slug}-{id}/ (slug ending in digits)
 _PHPBB_RFD_THREAD_RE = re.compile(r"/[a-z0-9-]+-(?:t\d+\.html|\d+/?)$")
+# phpBB's own scripts. RFD's SEO slugs above are a rewrite layer; the board's
+# feeds and post permalinks still link the stock forms, so a thread reached
+# from a listing is ``/viewtopic.php?t={id}`` and must be treated as the same
+# thread the slug form is. A phpBB page that is none of these (search.php,
+# memberlist.php, ucp.php, posting.php) is not a listing either, and must not
+# be swapped for the site-wide feed it advertises.
+_PHPBB_TOPIC_SCRIPT_RE = re.compile(r"/viewtopic\.php$")
+_PHPBB_FORUM_SCRIPT_RE = re.compile(r"/viewforum\.php$")
 
 # Discourse listing: /c/{slug}/{id}
 _DISCOURSE_LISTING_RE = re.compile(r"/c/([a-z0-9-]+)/(\d+)/?$")
@@ -157,6 +170,7 @@ def is_thread_url(url: str) -> bool:
         or _VB_THREAD_RE.search(path)
         or _DISCOURSE_THREAD_RE.search(path)
         or _PHPBB_RFD_THREAD_RE.search(path)
+        or _PHPBB_TOPIC_SCRIPT_RE.search(path)
     )
 
 
@@ -279,8 +293,19 @@ def transform_forum_url(url: str) -> ForumTransformResult:
                 original_url=url,
                 forum_software="phpbb",
             )
+        # Stock listing: /viewforum.php?f={id}
+        if _PHPBB_FORUM_SCRIPT_RE.search(path):
+            forum_id = (parse_qs(parsed.query).get("f") or [""])[0]
+            if forum_id.isdigit():
+                feed_url = urlunparse((parsed.scheme, parsed.netloc, f"/feed/forum/{forum_id}", "", "", ""))
+                return ForumTransformResult(
+                    url=feed_url,
+                    is_forum_feed=True,
+                    original_url=url,
+                    forum_software="phpbb",
+                )
         # Thread/topic pages: pass through (redflagdeals.py handles HTML cleanup)
-        if _PHPBB_RFD_THREAD_RE.search(path):
+        if _PHPBB_RFD_THREAD_RE.search(path) or _PHPBB_TOPIC_SCRIPT_RE.search(path):
             return ForumTransformResult(
                 url=url,
                 is_forum_feed=False,
@@ -288,6 +313,17 @@ def transform_forum_url(url: str) -> ForumTransformResult:
                 forum_software="phpbb",
                 is_thread=True,
             )
+        # Anything else on a phpBB board (search.php, memberlist.php, the
+        # index) is served as its own page. Autodiscovery would find the
+        # site-wide feed the page advertises and hand back "latest posts
+        # anywhere" in place of, say, a search result.
+        return ForumTransformResult(
+            url=url,
+            is_forum_feed=False,
+            original_url=url,
+            forum_software="phpbb",
+            autodiscover=False,
+        )
 
     # --- Discourse ---
     if software == "discourse":

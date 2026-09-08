@@ -7,6 +7,7 @@ from fetchaller.content.forums import (
     format_feed_as_markdown,
     is_discourse_html,
     is_forum_html,
+    is_thread_url,
     parse_feed,
     transform_forum_url,
 )
@@ -143,6 +144,41 @@ class TestTransformForumUrl:
         assert result.is_thread
         assert result.forum_software == "phpbb"
         assert result.url == url
+
+    def test_rfd_viewtopic_is_the_same_thread(self):
+        """RFD's own feeds and permalinks link the stock phpBB form. Missing it
+        made the thread a "listing", and autodiscovery swapped the thread for the
+        site-wide feed. Seen live 2026-09-07 once the proof-of-work was solved."""
+        url = "https://forums.redflagdeals.com/viewtopic.php?t=2825380&p=41248900#p41248900"
+        result = transform_forum_url(url)
+        assert not result.is_forum_feed
+        assert result.is_thread
+        assert result.forum_software == "phpbb"
+        assert result.url == url
+        assert is_thread_url(url)
+
+    def test_phpbb_viewforum_is_a_listing(self):
+        result = transform_forum_url("https://forums.redflagdeals.com/viewforum.php?f=9&start=50")
+        assert result.is_forum_feed
+        assert not result.is_thread
+        assert result.url == "https://forums.redflagdeals.com/feed/forum/9"
+
+    def test_phpbb_viewforum_without_id_is_not_a_listing(self):
+        result = transform_forum_url("https://forums.redflagdeals.com/viewforum.php")
+        assert not result.is_forum_feed
+        assert not result.autodiscover
+
+    def test_phpbb_search_is_never_swapped_for_the_site_feed(self):
+        for path in ("/search.php?keywords=roborock", "/memberlist.php?mode=viewprofile&u=1", "/ucp.php"):
+            result = transform_forum_url("https://forums.redflagdeals.com" + path)
+            assert not result.is_forum_feed, path
+            assert not result.is_thread, path
+            assert result.forum_software == "phpbb", path
+            assert not result.autodiscover, path
+
+    def test_listings_and_threads_keep_autodiscovery_default(self):
+        assert transform_forum_url("https://forums.redflagdeals.com/hot-deals-f9/").autodiscover
+        assert transform_forum_url("https://forums.redflagdeals.com/x-2825380/").autodiscover
 
     def test_rfd_homepage_not_thread(self):
         """RFD homepage should NOT be marked as thread — allows Tier 2 autodiscovery."""

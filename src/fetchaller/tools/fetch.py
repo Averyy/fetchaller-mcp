@@ -2971,7 +2971,12 @@ async def _fetch_url_impl(
                     inspect_html_preflight,
                     html,
                     effective_url,
-                    bool(not is_forum_feed and forum_result.forum_software and not forum_result.is_thread),
+                    bool(
+                        not is_forum_feed
+                        and forum_result.forum_software
+                        and not forum_result.is_thread
+                        and forum_result.autodiscover
+                    ),
                     bool(not is_forum_feed and not forum_result.forum_software and not is_thread_url(effective_url)),
                     bool(not _skip_aliexpress_intercept and is_aliexpress_search_url(effective_url)),
                     is_github,

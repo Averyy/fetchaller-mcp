@@ -178,6 +178,45 @@ def _validate_fetch(text: str) -> str | None:
     return None
 
 
+# RedFlagDeals fronts every page of redflagdeals.com with a SHA-256
+# proof-of-work served as HTTP 202 (docs/wafer-request-rfd-pow-gate.md). The
+# feed routes are exempt, so the listing kept working while every thread came
+# back as an empty document — a silent failure that no unit test could see.
+# The listing gate finds a live topic; the thread gate is the one that proves
+# the proof-of-work was solved.
+_RFD_LISTING_URL = "https://forums.redflagdeals.com/hot-deals-f9/"
+_RFD_TOPIC_PATTERNS = (
+    r"forums\.redflagdeals\.com/viewtopic\.php\?t=(\d+)",
+    r"forums\.redflagdeals\.com/[a-z0-9-]+-(\d{6,})/",
+)
+
+
+def _validate_rfd_listing(text: str) -> str | None:
+    if not re.search(r"(?m)^# redflagdeals\.com Forums - Hot Deals$", text):
+        return "missing Hot Deals listing header"
+    if not re.search(r"(?m)^1\. \S", text):
+        return "missing first Hot Deals thread"
+    if _first_id(text, _RFD_TOPIC_PATTERNS) is None:
+        return "missing RFD topic URL"
+    return None
+
+
+def _validate_rfd_thread(text: str) -> str | None:
+    if "JavaScript Required" in text or "POW_CHALLENGE_DATA" in text:
+        return "proof-of-work gate rendered instead of the thread"
+    if "[Feed:" in text:
+        return "thread was swapped for an autodiscovered feed"
+    if not re.search(r"(?m)^# \S", text):
+        return "missing thread title heading"
+    # A rendered post carries its author's profile link and a "Posted:" stamp,
+    # e.g. "Posted: Sep 7th, 2026 8:21 pm". A feed item carries neither.
+    if "memberlist.php?mode=viewprofile" not in text:
+        return "missing a post author"
+    if not re.search(r"(?m)^Posted: [A-Z][a-z]{2} \d{1,2}(?:st|nd|rd|th)?, 20\d\d\b", text):
+        return "missing a dated post"
+    return None
+
+
 def _validate_browse_reddit(text: str) -> str | None:
     if not re.search(r"(?m)^r/Python · hot · [1-9]\d* posts$", text):
         return "missing non-empty r/Python hot-listing header"
@@ -474,6 +513,41 @@ async def run_live_tool_suite(
             semantic_check=_validate_fetch,
         )
     )
+
+    rfd_listing = await _call(
+        session,
+        "fetch",
+        {"url": _RFD_LISTING_URL, "maxTokens": 4000, "timeout": 60},
+        minimum_chars=100,
+        semantic_check=_validate_rfd_listing,
+    )
+    rfd_listing.name = "fetch (redflagdeals listing)"
+    results.append(rfd_listing)
+    rfd_topic = _first_id(rfd_listing.text, _RFD_TOPIC_PATTERNS)
+    if not rfd_listing.passed or rfd_topic is None:
+        results.append(
+            Result(
+                "fetch (redflagdeals thread)",
+                False,
+                "not called: no topic ID from live listing",
+            )
+        )
+    else:
+        await _pace_domain(last_call, "redflagdeals.com")
+        rfd_thread = await _call(
+            session,
+            "fetch",
+            {
+                "url": f"https://forums.redflagdeals.com/viewtopic.php?t={rfd_topic}",
+                "maxTokens": 4000,
+                "timeout": 90,
+            },
+            minimum_chars=300,
+            semantic_check=_validate_rfd_thread,
+        )
+        rfd_thread.name = "fetch (redflagdeals thread)"
+        results.append(rfd_thread)
+
     if not skip_reddit:
         results.append(
             await _call(

@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "fetchaller-mcp"
-version = "3.6.1"
+version = "3.6.2"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -428,7 +428,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = ">=0.5.0" },
+    { name = "wafer-py", extras = ["browser"], specifier = ">=0.6.0" },
 ]
 provides-extras = ["dev"]
 
@@ -1629,15 +1629,15 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.5.0"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2e/da/9202ab05dfa58babcfff7ed405fdd631737fdf519ec06ce9d356f1ba3dd6/wafer_py-0.5.0.tar.gz", hash = "sha256:ead6bb75804b0b2c05711da0dfb47da0224e55b1192972ec20a052bdcbb6a237", size = 1471585, upload-time = "2026-09-03T13:16:47.837Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/29/b1/224f97aff497e1753d70465a204dd8bf6f635ba658cd17b516763a56161f/wafer_py-0.6.0.tar.gz", hash = "sha256:460824723f1f83bfc2e04f190ca8979bca33cbe13a32fdd8b8f18fba38e96df1", size = 1488839, upload-time = "2026-09-08T00:22:45.649Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/08/63fcd62743920ab9b24d247f2eae7e20a89bd90c3d94fe8ff7627714b6e1/wafer_py-0.5.0-py3-none-any.whl", hash = "sha256:fee4f08cd7039858c427a55bc5826cf52b5d727b6e5a65a7f612a4e544ac15fa", size = 544050, upload-time = "2026-09-03T13:16:46.119Z" },
+    { url = "https://files.pythonhosted.org/packages/78/66/95ea85fb8a42119fd5c00cae6848f84c24f95f191959a461ca9007e2c985/wafer_py-0.6.0-py3-none-any.whl", hash = "sha256:f11b0a27cc49aff3126b0cf3d0f7acfe619f09117520f35b7d7e7f0e0a834d55", size = 549213, upload-time = "2026-09-08T00:22:43.944Z" },
 ]
 
 [package.optional-dependencies]

@@ -1,6 +1,6 @@
 # Proof-of-work gate on redflagdeals.com — measurements for wafer
 
-> **RESOLVED in wafer (2026-09-07, unreleased on main as of writing).** wafer
+> **RESOLVED in wafer v0.6.0 (2026-09-07).** wafer
 > now detects the gate as `ChallengeType.POW` on any status and solves it
 > inline: `solve_pow` in `wafer/_solvers.py` runs the hash loop, writes the
 > five-field `pow_bypass` cookie on `.redflagdeals.com` for `cookie_duration`,
@@ -8,8 +8,22 @@
 > URL returns 200 with the thread; the www front page then loads on the same
 > jar with no re-solve; a cold `AsyncSession` also passes. The §3
 > transcription was correct as written (counter 90 for the measured nonce).
-> Reference: `docs/ref-pow.md` in wafer. fetchaller action once the next wafer
-> release ships: bump the floor and add a thread smoke test; no code change.
+> Reference: `docs/ref-pow.md` in wafer. fetchaller action: bump the floor to
+> `wafer-py[browser]>=0.6.0` and add a thread smoke test; no code change.
+>
+> **fetchaller side, done in 3.6.2 (2026-09-07) against released wafer 0.6.0.**
+> Floor bumped, and the container smoke test gained two `fetch` gates: the
+> Hot Deals listing (exempt feed route, finds a live topic) and the thread it
+> links, which is the gate that proves the proof-of-work was solved. That
+> gate found a second, fetchaller-owned bug the block had been hiding:
+> RFD's feeds link threads as `viewtopic.php?t=…`, which `forums.py` did not
+> recognise as a thread, so once wafer returned real HTML the page was
+> treated as a listing, feed autodiscovery picked up the board's site-wide
+> `<link rel="alternate">`, and the tool answered with "latest posts
+> anywhere" instead of the thread. `search.php` was replaced the same way.
+> So "no code change" was wrong: both forms are now handled
+> (`_PHPBB_TOPIC_SCRIPT_RE`; `autodiscover=False` for phpBB pages that are
+> neither listing nor thread). See `docs/site-apis.md`, RedFlagDeals.
 
 **Verdict: this is a wafer issue, not a fetchaller issue.** wafer returns a
 challenge page as an ordinary success and fetchaller renders it as (empty)

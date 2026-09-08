@@ -354,7 +354,9 @@ async def test_shared_live_suite_calls_every_tool_and_uses_search_ids() -> None:
     async def fake_call(session, name, arguments, **kwargs):
         del session, kwargs
         calls.append((name, arguments))
-        if name == "search_aliexpress":
+        if name == "fetch" and arguments.get("url") == smoke_test._RFD_LISTING_URL:
+            text = "https://forums.redflagdeals.com/viewtopic.php?t=2825375&p=41248872#p41248872"
+        elif name == "search_aliexpress":
             text = "https://www.aliexpress.com/item/1005001234567890.html"
         elif name == "search_alibaba":
             text = "https://www.alibaba.com/product-detail/cable_1600123456789.html"
@@ -375,6 +377,8 @@ async def test_shared_live_suite_calls_every_tool_and_uses_search_ids() -> None:
 
     assert [name for name, _ in calls] == [
         "fetch",
+        "fetch",  # redflagdeals listing
+        "fetch",  # redflagdeals thread, id taken from the listing
         "browse_reddit",
         "search_reddit",
         "search",
@@ -389,18 +393,27 @@ async def test_shared_live_suite_calls_every_tool_and_uses_search_ids() -> None:
         "search_realtor",
     ]
     # Every registered tool must get a live call except the explicitly
-    # exempt job boards; +1 for the stdio-cleanliness gate.
-    assert len(results) == len(EXPECTED_TOOLS) - len(LIVE_SUITE_EXEMPT) + 1
-    assert calls[5] == (
+    # exempt job boards; +1 for the stdio-cleanliness gate, +2 for the two
+    # RedFlagDeals fetch gates (listing, then the proof-of-work-gated thread).
+    assert len(results) == len(EXPECTED_TOOLS) - len(LIVE_SUITE_EXEMPT) + 3
+    assert calls[2] == (
+        "fetch",
+        {
+            "url": "https://forums.redflagdeals.com/viewtopic.php?t=2825375",
+            "maxTokens": 4000,
+            "timeout": 90,
+        },
+    )
+    assert calls[7] == (
         "get_aliexpress_product",
         {"product_id": "1005001234567890"},
     )
-    assert calls[10] == ("get_linkedin_job", {"job_id": "4445926062"})
-    assert calls[7] == (
+    assert calls[12] == ("get_linkedin_job", {"job_id": "4445926062"})
+    assert calls[9] == (
         "get_alibaba_product",
         {"product_id": "1600123456789"},
     )
-    assert pace.await_count == 4
+    assert pace.await_count == 5
 
 
 @pytest.mark.asyncio

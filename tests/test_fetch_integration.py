@@ -309,6 +309,70 @@ class TestForumThreadNotHijacked:
         assert len(session.calls) == 1
 
     @_PATCH_SSRF
+    async def test_phpbb_rfd_viewtopic_thread_not_hijacked(self, _mock_ssrf):
+        """The stock ``viewtopic.php?t=`` form, which RFD's own listing feed links,
+        is the same thread and must render as HTML. Before this it was treated as a
+        listing and replaced by the board's site-wide feed."""
+        from fetchaller.tools.fetch import fetch_url
+
+        thread_url = "https://forums.redflagdeals.com/viewtopic.php?t=2825380"
+        feed_url = "https://forums.redflagdeals.com/feed"
+        thread_html = """<html>
+<head>
+  <title>[Home Depot] Moen faucet - RedFlagDeals.com Forums</title>
+  <link rel="alternate" type="application/atom+xml" title="Feed - Board" href="/feed">
+</head>
+<body id="phpbb">
+  <div class="post">RFD viewtopic thread content here.</div>
+</body>
+</html>"""
+
+        session = MockWaferSession(
+            responses={
+                thread_url: _html_response(thread_html, thread_url),
+                feed_url: _feed_response(_SAMPLE_FEED_XML, feed_url),
+            },
+        )
+        with _patch_wafer(session):
+            result = await fetch_url(thread_url)
+
+        assert result.get("content_type") == "markdown"
+        assert "rfd viewtopic thread content" in result["content"].lower()
+        assert "[Feed:" not in result["content"]
+        assert len(session.calls) == 1
+
+    @_PATCH_SSRF
+    async def test_phpbb_rfd_search_not_hijacked(self, _mock_ssrf):
+        """search.php advertises the site-wide feed; following it would return
+        "latest posts anywhere" in place of the search result."""
+        from fetchaller.tools.fetch import fetch_url
+
+        search_url = "https://forums.redflagdeals.com/search.php?keywords=roborock"
+        feed_url = "https://forums.redflagdeals.com/feed"
+        search_html = """<html>
+<head>
+  <title>Search - RedFlagDeals.com Forums</title>
+  <link rel="alternate" type="application/atom+xml" title="Feed - Board" href="/feed">
+</head>
+<body id="phpbb">
+  <div class="search-results">Roborock search results content here.</div>
+</body>
+</html>"""
+
+        session = MockWaferSession(
+            responses={
+                search_url: _html_response(search_html, search_url),
+                feed_url: _feed_response(_SAMPLE_FEED_XML, feed_url),
+            },
+        )
+        with _patch_wafer(session):
+            result = await fetch_url(search_url)
+
+        assert "roborock search results content" in result["content"].lower()
+        assert "[Feed:" not in result["content"]
+        assert len(session.calls) == 1
+
+    @_PATCH_SSRF
     async def test_unknown_domain_xenforo_thread_not_hijacked(self, _mock_ssrf):
         """Unknown XenForo domain: thread with <link rel="alternate"> → HTML, not feed.
 
