@@ -208,11 +208,16 @@ def _validate_rfd_thread(text: str) -> str | None:
         return "thread was swapped for an autodiscovered feed"
     if not re.search(r"(?m)^# \S", text):
         return "missing thread title heading"
-    # A rendered post carries its author's profile link and a "Posted:" stamp,
-    # e.g. "Posted: Sep 7th, 2026 8:21 pm". A feed item carries neither.
+    # A rendered post carries its author's profile link and a date stamp:
+    # "Posted: Sep 7th, 2026 8:21 pm", or "Last Updated: ..." once the post has
+    # been edited (RFD shows one or the other, not both — the first CI run hit
+    # an edited thread and failed on "Posted:" alone). A feed item has neither.
     if "memberlist.php?mode=viewprofile" not in text:
         return "missing a post author"
-    if not re.search(r"(?m)^Posted: [A-Z][a-z]{2} \d{1,2}(?:st|nd|rd|th)?, 20\d\d\b", text):
+    if not re.search(
+        r"(?m)^(?:Posted|Last Updated): [A-Z][a-z]{2} \d{1,2}(?:st|nd|rd|th)?, 20\d\d\b",
+        text,
+    ):
         return "missing a dated post"
     return None
 
