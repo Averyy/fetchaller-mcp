@@ -788,11 +788,20 @@ SELECTORS_LIST = [
     # Page structure
     ".p-nav",
     ".p-navSticky",
+    # Secondary nav strip ("Forum List / What's new / Members / Wiki posts")
+    # plus its dropdown contents. Stock XenForo renders this as a sibling of
+    # .p-nav, so stripping .p-nav alone leaves the whole menu tree in the page.
+    # AVS Forum's California theme has no .p-sectionLinks, which is why the gap
+    # only shows on stock themes (avforums, vwvortex, golfmk7, rdforum).
+    ".p-sectionLinks",
     ".p-header",
     ".p-footer",
     ".p-breadcrumbs",
     ".p-body-sidebar",
     ".p-body-sidebarCol",
+    # Thread sort/filter controls (AVForums' reply-flow addon). Target the
+    # control group only — .kuxReplyFlow itself wraps every post in the thread.
+    ".kuxReplyFlow-controlGroup",
     # User info column: handled in strip_forum_junk to preserve username link
     # (classic XenForo renders usernames only inside .message-cell--user on
     #  paginated pages; California theme uses MessageCard__user-info instead)
