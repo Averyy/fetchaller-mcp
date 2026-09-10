@@ -448,7 +448,7 @@ Call `fetch(url)` on any listing URL for the full description, every property de
 3. Fetches with browser-like TLS fingerprints via wafer (Rust/BoringSSL) — rotates Chrome versions automatically
 4. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
 5. Detects content type
-6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, realtor.ca, wellfound.com, plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Workday/BambooHR/JazzHR/Work-at-a-Startup job boards with embed + white-label detection, and more), converts to markdown
+6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, realtor.ca, wellfound.com, vacuumwars.com, plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Workday/BambooHR/JazzHR/Work-at-a-Startup job boards with embed + white-label detection, and more), converts to markdown
 7. For JSON/XML/CSV/text: returns raw
 8. For PDF: extracts text
 9. Truncates to token limit
@@ -524,6 +524,7 @@ and archive checksum are the `CHROME_VERSION` and `CHROME_SHA256` arguments in
 - **`redflagdeals.py`** — RFD-specific CSS selectors, soup cleanup, regex post-processors.
 - **`forums.py`** — Generic forum support (XenForo, vBulletin, phpBB, Discourse). RSS/Atom feed autodiscovery.
 - **`wikipedia.py`** — CSS selectors for edit buttons, navboxes, TOC, reference lists.
+- **`vacuumwars.py`** — Vacuum Wars. Reads the robot-vacuum comparison tool's inline dataset (`window.vwProducts`), which the client-side app otherwise renders as an empty board; de-duplicates the leaderboard card that prints each product twice.
 - **`alibaba.py`** — Embedded JSON extraction (`window.detailData`, `window.__page__data_sse10`), soup cleanup.
 - **`aliexpress.py`** — CSS selectors, soup cleanup, regex post-processors.
 - **`craigslist.py`** — All city subdomains. CSS selectors, regex post-processors. Search URL detection for SAPI intercept.

@@ -167,6 +167,7 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_aliexpress_search.py` — AliExpress search extraction (HTML parsing, Chrome fallback)
 - `test_aliexpress_mtop.py` — MTop client unit tests (token lifecycle, MD5 signing, JSONP stripping)
 - `test_soylent_postprocessor.py` — Soylent URL detection, inventory extraction, regex postprocessor tests
+- `test_vacuumwars.py` — Vacuum Wars URL/compare-path detection, `window.vwProducts` extraction, tested-vs-untested reporting, colour-variant collapsing, card de-duplication, regex postprocessor tests
 - `test_craigslist_postprocessor.py` — Craigslist URL detection and regex postprocessor unit tests
 - `test_craigslist_sapi.py` — Craigslist SAPI client: URL detection, area ID extraction/caching, SAPI item parsing (URL construction, title/price/location/posted time), total count, area name extraction, relative time formatting, search result formatting
 - `test_kijiji_api.py` — Kijiji GraphQL API client: URL detection, price formatting (cents, FIXED/FREE/PLEASE_CONTACT/SWAP_TRADE), listing/search formatting, error handling
@@ -228,6 +229,21 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
     `https://ui.com/qig/u6-pro` (legacy multi-page, heavy gradients),
     `https://ui.com/qig/udm-pro` (legacy single-page), and
     `https://dl.ui.com/qig/definitely-not-real/` (must report "no guide", not an empty one)
+- vacuumwars.com — each shape has already hidden a bug:
+  - comparison tool (the dataset; must list hundreds of models, never
+    "No products found."): `https://vacuumwars.com/compare/robot-vacuums/`
+  - same payload, client-side pagination (must not be fetched as though it held
+    more): `https://vacuumwars.com/compare/robot-vacuums/page/2/`
+  - no comparison tool for this category, hard 404:
+    `https://vacuumwars.com/compare/cordless-vacuums/`
+  - leaderboard cards (each product must appear once, not three to four times):
+    `https://vacuumwars.com/vacuum-wars-best-robot-vacuums/`
+  - single review, same card widget: `https://vacuumwars.com/dreame-d30-ultra-review/`
+  - non-robot article, no dataset, prose + score tables only:
+    `https://vacuumwars.com/vacuum-wars-best-cordless-vacuums/`
+  - head-to-head URL: 404 status serving the real compare template, currently
+    unhandled and unverified —
+    `https://vacuumwars.com/compare/robot-vacuums/dreame_x60_max_ultra_complete-vs-eufy_omni_s2/`
 - Scrapers often blocked: `https://news.ycombinator.com/`, `https://www.nytimes.com/`
 - Simple: `https://example.com/`, `https://httpbin.org/html`
 - Cloudflare protected: `https://apollomapping.com`, `https://www.miata.net/`, `https://beyond.ca/`
