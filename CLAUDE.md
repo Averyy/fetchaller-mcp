@@ -70,6 +70,45 @@ that has no guide, so a status code proves nothing — detect the bootstrap
 markers, and report a missing guide against the URL the caller asked for, not
 the redirect target. fetchaller has NO credentialed path to any ui.com property.
 
+### Vacuum Wars (vacuumwars.com)
+
+The site's **comparison tool is the whole dataset and the plain HTML path
+returned none of it**. `/compare/<category>/` is an Alpine.js app whose empty
+state ("No products found.", "No brand found.", "Accordion Title") renders as a
+board with nothing on it rather than as a failed read — the trap is that it
+looks like an answer. Every model is in fact inline in the page as
+`window.vwProducts`, 91 fields each, carrying Vacuum Wars' **own lab
+measurements** and the star scores they roll up into; nothing else on the site
+publishes that in machine-readable form. Parse it and discard the shell. That is
+content analysis, not blocking, so none of it is wafer's.
+
+One request gets everything: the tool paginates **client-side** over that array,
+so `/page/2/` re-serves the same payload and must never be fetched as though it
+held more. Tested and merely-listed robots are two populations — a third of the
+models were never put through the lab — so count them separately and render a
+missing measurement as `-`, never as blank, because "never tested" and "scored
+nothing" must not look alike. Colour variants are the same robot listed twice
+and collapse only when brand, base name **and every measurement** match; when
+their prices disagree say **"from"** and quote the cheaper, exactly as ui.com's
+`minDisplay*` fields require. Prices in the dataset are the tool's last cached
+Amazon figure and drift from the live figure the article pages show, so label
+them cached and never present them as the current price.
+
+The comparison tool is **robot vacuums only** — `/compare/cordless-vacuums/` is
+a hard 404. Cordless, upright and carpet-cleaner data is article prose and
+tables, which render fine; do not go looking for a dataset that isn't there.
+Gate extraction on the `/compare/` path *and* the global being present, or a
+review page that happens to carry it gets thrown away and re-rendered as a spec
+table. A `/compare/` path with no readable dataset must say so.
+
+Separately, the leaderboard card (`.vwx-pc`, on the Top 20 page and on every
+review) renders each product **twice** — a collapsed row and the expanded panel
+behind it — and both survive markdownify, so every model appeared three to four
+times. Drop the collapsed `.vwx-row`; it carries nothing the panel lacks. Drop
+`.vwx-chip-more` ("+2 more") **only** because the chips it reveals are already
+in the DOM behind `nth-of-type` CSS — verify that before treating any other
+"more" affordance as noise. fetchaller has NO credentialed path to vacuumwars.com.
+
 ### Job boards
 
 Every job board ranks rather than filters: a title query returns adjacent roles
@@ -201,6 +240,6 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
 - `docs/spa-discovery.md` — SPA API discovery (`src/fetchaller/discovery/`): observing a page in a browser and replaying what it made, so an endpoint's shape never needs bundle archaeology again. Ranking (why coverage and record count are directly opposed), the oracle (why a 200 that means "malformed" is the core problem), minimization, mint steps, and the measured per-board results
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

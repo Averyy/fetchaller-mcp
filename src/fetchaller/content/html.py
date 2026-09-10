@@ -44,6 +44,7 @@ from . import redflagdeals as _redflagdeals
 from . import soylent as _soylent
 from . import stackoverflow as _stackoverflow
 from . import ti as _ti
+from . import vacuumwars as _vacuumwars
 from . import wikipedia as _wikipedia
 from . import workatastartup as _workatastartup
 from ._price import has_positive_price
@@ -313,6 +314,7 @@ _JUNK_AND_FCC_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _fcc.SELECTORS_LIST)
 _JUNK_AND_MOLEX_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _molex.SELECTORS_LIST)
 _JUNK_AND_MOUSER_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _mouser.SELECTORS_LIST)
 _JUNK_AND_SOYLENT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _soylent.SELECTORS_LIST)
+_JUNK_AND_VACUUMWARS_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _vacuumwars.SELECTORS_LIST)
 _JUNK_AND_WIKIPEDIA_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _wikipedia.SELECTORS_LIST)
 
 # Pre-compiled regex for whitespace cleanup
@@ -815,6 +817,8 @@ def _detect_site(url: str | None, is_reddit: bool, soup: BeautifulSoup | None = 
         return "soylent"
     if url and _ti.is_ti(url):
         return "ti"
+    if url and _vacuumwars.is_vacuumwars(url):
+        return "vacuumwars"
     if url and _wikipedia.is_wikipedia(url):
         return "wikipedia"
     if url and _workatastartup.is_workatastartup(url):
@@ -853,6 +857,7 @@ _SITE_SELECTORS = {
     "medium": _JUNK_AND_MEDIUM_SELECTOR,
     "soylent": _JUNK_AND_SOYLENT_SELECTOR,
     "forum": _JUNK_AND_FORUM_SELECTOR,
+    "vacuumwars": _JUNK_AND_VACUUMWARS_SELECTOR,
     "wikipedia": _JUNK_AND_WIKIPEDIA_SELECTOR,
 }
 
@@ -917,6 +922,11 @@ def clean_html(html: str, is_reddit: bool = False, url: str | None = None) -> tu
     if site == "soylent":
         _soylent.extract_inventory(soup)
 
+    # Vacuum Wars: extract the comparison tool's inline dataset before scripts
+    # are removed. The SPA renders nothing without it.
+    if site == "vacuumwars":
+        _vacuumwars.extract_compare_products(soup, url)
+
     # PetSmart: extract rating from JSON-LD before scripts are removed
     if site == "petsmart":
         _petsmart.pre_clean_petsmart(soup)
@@ -976,6 +986,8 @@ def clean_html(html: str, is_reddit: bool = False, url: str | None = None) -> tu
         _medium.strip_medium_junk(soup)
     elif site == "soylent":
         _soylent.strip_soylent_junk(soup)
+    elif site == "vacuumwars":
+        _vacuumwars.strip_vacuumwars_junk(soup)
     elif site == "redflagdeals":
         _redflagdeals.strip_rfd_junk(soup)
     elif site == "forum":
@@ -1071,6 +1083,8 @@ def _html_to_markdown_sync(
         markdown = _medium.postprocess_medium(markdown)
     elif site == "soylent":
         markdown = _soylent.postprocess_soylent(markdown)
+    elif site == "vacuumwars":
+        markdown = _vacuumwars.postprocess_vacuumwars(markdown)
     elif site == "ti":
         markdown = _ti.postprocess_ti(markdown)
     elif site == "redflagdeals":
