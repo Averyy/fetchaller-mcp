@@ -244,6 +244,10 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
   - head-to-head URL: 404 status serving the real compare template, currently
     unhandled and unverified —
     `https://vacuumwars.com/compare/robot-vacuums/dreame_x60_max_ultra_complete-vs-eufy_omni_s2/`
+  - the tool's own front end, same dataset, array ~2 KB in instead of ~285 KB
+    in (the cheaper source): `https://compare.vacuumwars.com/`
+  - its embed route, 404 status serving the real app, still unhandled:
+    `https://compare.vacuumwars.com/embed/?product1=dreame_x60_max_ultra_complete&product2=eufy_omni_s2`
 - Scrapers often blocked: `https://news.ycombinator.com/`, `https://www.nytimes.com/`
 - Simple: `https://example.com/`, `https://httpbin.org/html`
 - Cloudflare protected: `https://apollomapping.com`, `https://www.miata.net/`, `https://beyond.ca/`

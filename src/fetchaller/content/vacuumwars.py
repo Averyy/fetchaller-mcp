@@ -48,7 +48,17 @@ from bs4 import BeautifulSoup, NavigableString
 
 _VACUUMWARS_HOSTS = frozenset({
     "vacuumwars.com", "www.vacuumwars.com",
+    # The comparison tool's own front end. The WordPress page embeds this same
+    # app, and both serve a byte-identical dataset (91 fields, same scores and
+    # prices for every slug present in both). This host is far leaner -- the
+    # array starts ~2 KB in rather than ~285 KB in -- so it is the cheaper
+    # source when a caller already has its URL.
+    "compare.vacuumwars.com",
 })
+
+# On the WordPress site the tool lives under /compare/. On its own front end
+# every route is the tool, so path alone cannot decide.
+_COMPARE_HOSTS = frozenset({"compare.vacuumwars.com"})
 
 
 def is_vacuumwars(url: str) -> bool:
@@ -66,7 +76,10 @@ def is_compare_url(url: str | None) -> bool:
     """
     if not url:
         return False
-    path = urlparse(url).path
+    parts = urlparse(url)
+    if (parts.hostname or "").lower() in _COMPARE_HOSTS:
+        return True
+    path = parts.path
     return path == "/compare" or path.startswith("/compare/")
 
 

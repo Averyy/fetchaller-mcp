@@ -265,3 +265,23 @@ class TestPostprocess:
         md = "# Dreame D30 Ultra Review\n\nIt scored 84 in carpet deep clean.\n"
         out = postprocess_vacuumwars(md)
         assert "scored 84 in carpet deep clean" in out
+
+
+class TestCompareFrontEndHost:
+    """compare.vacuumwars.com serves the same app and the same dataset."""
+
+    def test_host_is_recognised(self):
+        assert is_vacuumwars("https://compare.vacuumwars.com/")
+
+    def test_every_route_on_that_host_is_a_compare_page(self):
+        # The tool is the whole site there, so path cannot decide.
+        assert is_compare_url("https://compare.vacuumwars.com/")
+        assert is_compare_url("https://compare.vacuumwars.com/embed/?product1=x")
+
+    def test_dataset_renders_from_that_host(self):
+        out = _render([TESTED], "https://compare.vacuumwars.com/")
+        assert "Dreame X60 Max Ultra Complete" in out
+        assert "4.18" in out
+
+    def test_main_site_still_needs_the_compare_path(self):
+        assert not is_compare_url("https://vacuumwars.com/dreame-d30-ultra-review/")

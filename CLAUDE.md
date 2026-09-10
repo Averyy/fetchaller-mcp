@@ -84,8 +84,8 @@ content analysis, not blocking, so none of it is wafer's.
 
 One request gets everything: the tool paginates **client-side** over that array,
 so `/page/2/` re-serves the same payload and must never be fetched as though it
-held more. Tested and merely-listed robots are two populations — a third of the
-models were never put through the lab — so count them separately and render a
+held more. Tested and merely-listed robots are two populations — roughly half
+the models were never put through the lab — so count them separately and render a
 missing measurement as `-`, never as blank, because "never tested" and "scored
 nothing" must not look alike. Colour variants are the same robot listed twice
 and collapse only when brand, base name **and every measurement** match; when
@@ -93,6 +93,14 @@ their prices disagree say **"from"** and quote the cheaper, exactly as ui.com's
 `minDisplay*` fields require. Prices in the dataset are the tool's last cached
 Amazon figure and drift from the live figure the article pages show, so label
 them cached and never present them as the current price.
+
+Never hardcode a total. The array is larger than one capture through this
+repo's own fetch tool can hold and both hosts ignore `Range`, so no count taken
+from a client is a total — only a floor. The server-side parse has no such
+ceiling. `compare.vacuumwars.com` is the tool's own front end serving the
+identical dataset with the array ~2 KB in rather than ~285 KB in, so it is the
+cheaper source when a caller has that URL; every route there is the tool, so
+decide on host for that one and on path for the main site.
 
 The comparison tool is **robot vacuums only** — `/compare/cordless-vacuums/` is
 a hard 404. Cordless, upright and carpet-cleaner data is article prose and
