@@ -94,6 +94,14 @@ their prices disagree say **"from"** and quote the cheaper, exactly as ui.com's
 Amazon figure and drift from the live figure the article pages show, so label
 them cached and never present them as the current price.
 
+There is **no JSON endpoint** and that question is closed: the app's bundle is
+byte-identical on both hosts and makes exactly one network call, the feedback
+form's. The dataset is only ever inlined, so the >1.3 MB page fetch is already
+the cheapest read available. `robots.txt` disallows `/compare/` and then
+explicitly re-allows `/compare/robot-vacuums/` — the one path read here is the
+one the site opened on purpose. Since each fetch costs a full render, the domain
+is throttled at 2s (`vacuumwars_limiter`); no block has ever been seen.
+
 Never hardcode a total. The array is larger than one capture through this
 repo's own fetch tool can hold and both hosts ignore `Range`, so no count taken
 from a client is a total — only a floor. The server-side parse has no such

@@ -209,6 +209,28 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_ratelimit.py` — Per-domain rate limiter (DomainRateLimiter) unit tests
 - Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
 
+## Vacuum Wars live verification (never yet run)
+
+`scripts/verify_vacuumwars.py` is a standalone live gate, deliberately **not**
+wired into CI. The Vacuum Wars module was built in an environment whose egress
+policy blocked vacuumwars.com, so every one of its gates has only ever been
+exercised against captured pages. Run it from a machine that can reach the site:
+
+```bash
+uv run python scripts/verify_vacuumwars.py
+```
+
+Besides the pass/fail gates it prints two things that environment could not
+establish, and both should be reconciled with the docs afterwards:
+
+- the dataset's **true** listing/scored/field counts, since every figure written
+  from inside that environment was a floor (the payload exceeds the fetch tool's
+  ceiling and both hosts ignore `Range`);
+- whether the reverse-soft-404 routes — the main site's `-vs-` URLs and
+  `compare.vacuumwars.com/embed/` — actually carry the dataset in their 404
+  bodies. If they do, they are worth handling; if not, leaving them erroring is
+  correct and should be recorded as settled.
+
 ## Test URLs for Benchmarking
 
 - Reddit listing/thread: `https://www.reddit.com/r/homelab/`,

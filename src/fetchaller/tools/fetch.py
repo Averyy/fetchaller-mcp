@@ -144,6 +144,7 @@ from ..content.reddit import (
 from ..content.soylent import is_soylent as _is_soylent
 from ..content.ti import extract_ti_part_from_pdf_url, fetch_document_sections, is_ti_document_viewer
 from ..content.url import normalize_url
+from ..content.vacuumwars import is_vacuumwars as _is_vacuumwars
 from ..content.workday import (
     fetch_workday_board,
     fetch_workday_job,
@@ -2322,6 +2323,10 @@ async def _fetch_url_impl(
         from ..ratelimit import soylent_limiter
 
         await soylent_limiter.wait()
+    elif _is_vacuumwars(fetch_url_str):
+        from ..ratelimit import vacuumwars_limiter
+
+        await vacuumwars_limiter.wait()
 
     # SSRF-safe fetch. Resolve + validate the fetch host, then pin the wafer
     # session to those exact IPs so wafer cannot re-resolve to an internal
