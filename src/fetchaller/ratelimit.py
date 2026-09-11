@@ -85,12 +85,14 @@ aliexpress_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
 # 2s base is conservative enough for sequential product page fetches.
 soylent_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 
-# Vacuum Wars: vacuumwars.com / compare.vacuumwars.com
-# The comparison tool has no JSON endpoint -- its bundle makes no data request,
-# so the whole dataset only ever arrives inlined in a >1.3 MB HTML page. Every
-# fetch therefore costs the site a full render, which is why this is throttled
-# harder than a page of its size would otherwise suggest. No block has been
-# observed; this is politeness, not evasion.
+# Vacuum Wars: vacuumwars.com, compare.vacuumwars.com, robotvacs.com.
+# The comparison tool has no JSON endpoint -- its bundle makes exactly one
+# network call and it is the feedback form -- so the whole dataset only ever
+# arrives inlined in a 2.6 MB HTML page. Every fetch therefore costs the site a
+# full render, which is why this is throttled harder than a page of its size
+# would otherwise suggest. robotvacs.com is the tool's vanity domain and is
+# covered too, or the same render could be pulled through it unthrottled. No
+# block has been observed; this is politeness, not evasion.
 vacuumwars_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 
 # Reddit anonymous JSON. MCP tool calls share RedditRequestQueue; this limiter

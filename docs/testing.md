@@ -167,7 +167,7 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_aliexpress_search.py` — AliExpress search extraction (HTML parsing, Chrome fallback)
 - `test_aliexpress_mtop.py` — MTop client unit tests (token lifecycle, MD5 signing, JSONP stripping)
 - `test_soylent_postprocessor.py` — Soylent URL detection, inventory extraction, regex postprocessor tests
-- `test_vacuumwars.py` — Vacuum Wars URL/compare-path detection, `window.vwProducts` extraction, tested-vs-untested reporting, colour-variant collapsing, card de-duplication, regex postprocessor tests
+- `test_vacuumwars.py` — Vacuum Wars URL/compare-path detection, `window.vwProducts` extraction, tested-vs-untested reporting, colour-variant collapsing (including the untested-listing case where measurements alone cannot tell two robots apart), app-shell vs ordinary-article detection, card de-duplication, regex postprocessor tests
 - `test_craigslist_postprocessor.py` — Craigslist URL detection and regex postprocessor unit tests
 - `test_craigslist_sapi.py` — Craigslist SAPI client: URL detection, area ID extraction/caching, SAPI item parsing (URL construction, title/price/location/posted time), total count, area name extraction, relative time formatting, search result formatting
 - `test_kijiji_api.py` — Kijiji GraphQL API client: URL detection, price formatting (cents, FIXED/FREE/PLEASE_CONTACT/SWAP_TRADE), listing/search formatting, error handling
@@ -209,27 +209,25 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_ratelimit.py` — Per-domain rate limiter (DomainRateLimiter) unit tests
 - Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
 
-## Vacuum Wars live verification (never yet run)
+## Vacuum Wars live verification
 
 `scripts/verify_vacuumwars.py` is a standalone live gate, deliberately **not**
-wired into CI. The Vacuum Wars module was built in an environment whose egress
-policy blocked vacuumwars.com, so every one of its gates has only ever been
-exercised against captured pages. Run it from a machine that can reach the site:
+wired into CI: it asserts against a site whose catalogue grows every week, so a
+failure there should stop a release rather than redden an unrelated build. Run
+it before shipping a change to `vacuumwars.py`:
 
 ```bash
 uv run python scripts/verify_vacuumwars.py
 ```
 
-Besides the pass/fail gates it prints two things that environment could not
-establish, and both should be reconciled with the docs afterwards:
-
-- the dataset's **true** listing/scored/field counts, since every figure written
-  from inside that environment was a floor (the payload exceeds the fetch tool's
-  ceiling and both hosts ignore `Range`);
-- whether the reverse-soft-404 routes — the main site's `-vs-` URLs and
-  `compare.vacuumwars.com/embed/` — actually carry the dataset in their 404
-  bodies. If they do, they are worth handling; if not, leaving them erroring is
-  correct and should be recorded as settled.
+It covers the whole module against the live site: that the dataset parses whole,
+that the compare page renders it instead of the empty state, that `/page/2/` is
+a hard 404 rather than a second payload, that the lean host agrees with the main
+one, that no merged row hides a spec its members disagree on, that `/compare/`
+itself is left alone as the article it is, that `robotvacs.com` lands on the
+dataset, and that the `-vs-` and `/embed/` routes 404 with nothing in them. It
+also prints the catalogue's current size — that figure must never be copied into
+the docs as a constant, only as a dated measurement.
 
 ## Test URLs for Benchmarking
 
@@ -254,8 +252,12 @@ establish, and both should be reconciled with the docs afterwards:
 - vacuumwars.com — each shape has already hidden a bug:
   - comparison tool (the dataset; must list hundreds of models, never
     "No products found."): `https://vacuumwars.com/compare/robot-vacuums/`
-  - same payload, client-side pagination (must not be fetched as though it held
-    more): `https://vacuumwars.com/compare/robot-vacuums/page/2/`
+  - the tool's public name, 301s onto the compare path (must still render the
+    dataset, and must still be throttled): `https://robotvacs.com/`
+  - an ordinary article that merely lives under `/compare/` (must render as
+    itself, with no "could not be read" warning): `https://vacuumwars.com/compare/`
+  - no page 2 exists; hard 404 with a 306 KB error body:
+    `https://vacuumwars.com/compare/robot-vacuums/page/2/`
   - no comparison tool for this category, hard 404:
     `https://vacuumwars.com/compare/cordless-vacuums/`
   - leaderboard cards (each product must appear once, not three to four times):
@@ -263,12 +265,12 @@ establish, and both should be reconciled with the docs afterwards:
   - single review, same card widget: `https://vacuumwars.com/dreame-d30-ultra-review/`
   - non-robot article, no dataset, prose + score tables only:
     `https://vacuumwars.com/vacuum-wars-best-cordless-vacuums/`
-  - head-to-head URL: 404 status serving the real compare template, currently
-    unhandled and unverified —
+  - head-to-head URL: 404 serving the real compare template, no dataset in the
+    body, must stay an `HTTP 404` to the caller —
     `https://vacuumwars.com/compare/robot-vacuums/dreame_x60_max_ultra_complete-vs-eufy_omni_s2/`
   - the tool's own front end, same dataset, array ~2 KB in instead of ~285 KB
     in (the cheaper source): `https://compare.vacuumwars.com/`
-  - its embed route, 404 status serving the real app, still unhandled:
+  - its embed route, same 404-with-the-real-app, also empty:
     `https://compare.vacuumwars.com/embed/?product1=dreame_x60_max_ultra_complete&product2=eufy_omni_s2`
 - Scrapers often blocked: `https://news.ycombinator.com/`, `https://www.nytimes.com/`
 - Simple: `https://example.com/`, `https://httpbin.org/html`

@@ -69,7 +69,53 @@ UNTESTED = {
     "matter_compatible": "0",
 }
 
+# Two listings the dataset gives the same name and different hardware. The
+# lab never touched either, so every measurement is null and a merge rule that
+# looked only at measurements would fuse them into one row.
+SAME_NAME_A = {
+    "id": 4,
+    "name": "OKP L1",
+    "slug": "okp_l1",
+    "brand": "OKP",
+    "price": 91.82,
+    "official_suction_power": 1400,
+    "official_battery_life": 150,
+    "obstacle_avoidance": "1",
+}
+SAME_NAME_B = dict(
+    SAME_NAME_A,
+    id=5,
+    name="OKP L1 (White)",
+    price=99.99,
+    official_suction_power=4000,
+    official_battery_life=180,
+    obstacle_avoidance="0",
+)
+
+# Identical hardware, typed inconsistently by the site: 40% of the numeric
+# spec fields arrive as an int on one listing and a string on the next.
+TYPED_INT = dict(UNTESTED, id=6, name="Bagotte BL20", slug="bagotte_bl20_a")
+TYPED_STR = dict(
+    UNTESTED,
+    id=7,
+    name="Bagotte BL20 (Gray)",
+    slug="bagotte_bl20_b",
+    official_suction_power="3000",
+    official_battery_life="100",
+    robot_height_inches="3.0",
+    threshold_height_mm="15",
+)
+TYPED_INT["name"] = "Bagotte BL20"
+TYPED_INT["brand"] = TYPED_STR["brand"] = "Bagotte"
+
 COMPARE_URL = "https://vacuumwars.com/compare/robot-vacuums/"
+
+# The comparison tool's shell, dataset absent. The app's own root Alpine
+# component is what tells it apart from an ordinary article.
+_SHELL_HTML = (
+    "<html><body><div x-data='fetchData'>"
+    "<div>No products found.</div></div></body></html>"
+)
 
 
 def _compare_page(products) -> BeautifulSoup:
@@ -191,15 +237,68 @@ class TestVariantCollapsing:
         assert "(2 listings)" not in out
         assert "2 models (2 listings" in out
 
+    def test_untested_listings_do_not_collapse_on_name_alone(self):
+        # Three quarters of the catalogue has no measurement at all, so a rule
+        # keyed only on measurements is degenerate there and merges anything
+        # sharing a name. These two are different hardware.
+        out = _render([SAME_NAME_A, SAME_NAME_B])
+        assert "2 models (2 listings" in out
+        assert "(2 listings)" not in out
+
+    def test_a_split_keeps_the_names_that_tell_the_rows_apart(self):
+        out = _render([SAME_NAME_A, SAME_NAME_B])
+        assert "OKP L1 (White)" in out
+
+    def test_a_merge_still_shortens_to_the_base_name(self):
+        out = _render([TESTED, VARIANT])
+        assert "Dreame X60 Max Ultra Complete (2 listings)" in out
+        assert "(White)" not in out
+
+    def test_int_and_string_spellings_of_one_spec_still_merge(self):
+        # The site types the same field both ways; comparing raw values would
+        # split colour variants that are in fact identical.
+        out = _render([TYPED_INT, TYPED_STR])
+        assert "1 models (2 listings" in out
+
+    def test_a_merged_row_never_hides_a_printed_spec(self):
+        quieter = dict(VARIANT, official_suction_power=8000)
+        out = _render([TESTED, quieter])
+        assert "2 models (2 listings" in out
+        assert "35,000" in out
+        assert "8,000" in out
+
 
 class TestCompareFailureIsReported:
     def test_missing_dataset_is_announced_not_rendered_as_empty(self):
-        soup = BeautifulSoup(
-            "<html><body><div>No products found.</div></body></html>", "html.parser"
-        )
+        soup = BeautifulSoup(_SHELL_HTML, "html.parser")
         extract_compare_products(soup, COMPARE_URL)
         out = postprocess_vacuumwars(soup.get_text())
         assert "could not be read" in out
+
+    def test_empty_state_text_alone_still_reports_the_failure(self):
+        # Alpine's attribute is the primary signal; the empty state is the
+        # backstop, so a markup change cannot turn a failed read back into a
+        # board that looks merely empty.
+        soup = BeautifulSoup(
+            "<html><body><div>No products found.</div>"
+            "<div>No brand found.</div></body></html>",
+            "html.parser",
+        )
+        extract_compare_products(soup, COMPARE_URL)
+        assert "could not be read" in postprocess_vacuumwars(soup.get_text())
+
+    def test_ordinary_article_under_compare_is_left_alone(self):
+        # vacuumwars.com/compare/ is not the tool -- it is a WordPress article
+        # announcing it. Warning that the dataset "could not be read" there
+        # invents a failure on a page that rendered perfectly.
+        soup = BeautifulSoup(
+            "<html><body><h1>Try RobotVacs.com</h1>"
+            "<p>Our new comparison tool is live.</p></body></html>",
+            "html.parser",
+        )
+        extract_compare_products(soup, "https://vacuumwars.com/compare/")
+        assert soup.find(id="vacuumwars-compare-marker") is None
+        assert "could not be read" not in postprocess_vacuumwars(soup.get_text())
 
     def test_review_page_is_never_replaced_by_the_dataset(self):
         soup = _compare_page([TESTED])
@@ -285,3 +384,122 @@ class TestCompareFrontEndHost:
 
     def test_main_site_still_needs_the_compare_path(self):
         assert not is_compare_url("https://vacuumwars.com/dreame-d30-ultra-review/")
+
+
+class TestVanityDomain:
+    def test_robotvacs_is_recognised(self):
+        # The site's own article calls the tool RobotVacs.com and links there,
+        # so this is the URL a caller most likely arrives with. It has to be
+        # recognised or the rate limiter, which keys off the URL as asked for,
+        # never fires on the 2.6 MB render.
+        assert is_vacuumwars("https://robotvacs.com/")
+        assert is_vacuumwars("https://www.robotvacs.com/")
+
+    def test_robotvacs_root_is_a_compare_path(self):
+        # It 301s onto /compare/robot-vacuums/ today, so extraction normally
+        # runs against the redirect target. This keeps the module working if
+        # the redirect is ever dropped.
+        assert is_compare_url("https://robotvacs.com/")
+
+
+# A listing whose trailing parenthetical is a configuration, not a colour.
+NO_DOCK = {
+    "id": 8,
+    "name": "Eufy L60 (No self-empty station)",
+    "slug": "eufy_l60_no_dock",
+    "brand": "Eufy",
+    "price": 186.97,
+    "flattened_pet_hair_pickup_test_2_inches_5": 86,
+    "official_suction_power": 5000,
+    "self_emptying_bin": "0",
+}
+
+
+class TestNamesKeepWhatTellsRowsApart:
+    def test_a_lone_listing_keeps_its_parenthetical(self):
+        # Nothing merged, so nothing earned the shortening. "Eufy L60" sits
+        # beside "Eufy L60 with Self Empty Station" in the real catalogue, and
+        # dropping the qualifier leaves the reader guessing which is which.
+        out = _render([NO_DOCK])
+        assert "Eufy L60 (No self-empty station)" in out
+
+    def test_identical_names_are_not_shortened(self):
+        twin = dict(NO_DOCK, id=9, slug="eufy_l60_no_dock_b")
+        out = _render([NO_DOCK, twin])
+        assert "Eufy L60 (No self-empty station) (2 listings)" in out
+
+    def test_a_real_merge_still_shortens(self):
+        out = _render([TESTED, VARIANT])
+        assert "Dreame X60 Max Ultra Complete (2 listings)" in out
+
+
+class TestRankMeansRank:
+    def test_a_row_without_an_overall_score_is_not_numbered(self):
+        # It has lab results, so it belongs in the tested table, but numbering
+        # it would make its dataset position read as a placing.
+        out = _render([TESTED, NO_DOCK])
+        rows = [ln for ln in out.splitlines() if "Eufy L60" in ln]
+        assert rows[0].startswith("| - |")
+
+    def test_the_unranked_tail_is_declared(self):
+        out = _render([TESTED, NO_DOCK])
+        assert "no overall score" in out
+        assert "Rows 1 to 1 are the ranking" in out
+
+    def test_a_genuine_zero_still_ranks(self):
+        # "scored zero" and "never scored" must not look alike.
+        zeroed = dict(TESTED, id=10, name="Zero Bot", slug="zero",
+                      vacuum_wars_score_stars=0)
+        out = _render([TESTED, zeroed])
+        row = [ln for ln in out.splitlines() if "Zero Bot" in ln][0]
+        assert row.startswith("| 2 |")
+
+
+class TestPriceHonesty:
+    def test_an_unpriced_member_makes_the_row_say_from(self):
+        # The row speaks for two listings and only one has a cached figure, so
+        # a bare price would claim both cost it.
+        unpriced = dict(VARIANT, price=None)
+        out = _render([TESTED, unpriced])
+        assert "from $1,614.99" in out
+
+
+class TestMarkdownRoundTrip:
+    def test_the_injected_block_survives_markdownify(self):
+        # _render() above reads the marker straight off the soup, so the
+        # marker regex, the blank-line sentinel and markdownify's escaping
+        # have no coverage from it. This is the only test that runs the real
+        # conversion path.
+        from fetchaller.content.html import _html_to_markdown_sync
+
+        html = (
+            "<html><body><div x-data='fetchData'>No products found.</div>"
+            "<script>window.vwProducts = " + json.dumps([TESTED, UNTESTED]) + ";"
+            "</script></body></html>"
+        )
+        out = _html_to_markdown_sync(html, url=COMPARE_URL)
+        if isinstance(out, tuple):
+            out = out[0]
+        assert "# Vacuum Wars comparison data: robot vacuums" in out
+        # Blank lines restored, so the tables are not welded to the prose.
+        assert "\n\n## Lab-tested" in out
+        # Sentinels fully consumed, and markdownify did not escape the table.
+        assert "__VACUUMWARS" in out is False or "__VACUUMWARS" not in out
+        assert "\\_" not in out and "\\*" not in out
+        assert "No products found" not in out
+        rows = [ln for ln in out.splitlines() if ln.startswith("|")]
+        assert all(ln.endswith("|") for ln in rows)
+
+
+class TestShellDetectionIsNarrow:
+    def test_a_generic_alpine_widget_is_not_the_app(self):
+        # Most bindings on the real app page are generic disclosure widgets.
+        # If the theme ever adopts Alpine for a menu, every article under
+        # /compare/ would otherwise collect an invented failure warning.
+        soup = BeautifulSoup(
+            "<html><body><div x-data='{ open: false }'>"
+            "<p>An article about robot vacuums.</p></div></body></html>",
+            "html.parser",
+        )
+        extract_compare_products(soup, "https://vacuumwars.com/compare/")
+        assert soup.find(id="vacuumwars-compare-marker") is None

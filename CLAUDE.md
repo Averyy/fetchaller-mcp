@@ -73,7 +73,7 @@ the redirect target. fetchaller has NO credentialed path to any ui.com property.
 ### Vacuum Wars (vacuumwars.com)
 
 The site's **comparison tool is the whole dataset and the plain HTML path
-returned none of it**. `/compare/<category>/` is an Alpine.js app whose empty
+returned none of it**. `/compare/robot-vacuums/` is an Alpine.js app whose empty
 state ("No products found.", "No brand found.", "Accordion Title") renders as a
 board with nothing on it rather than as a failed read — the trap is that it
 looks like an answer. Every model is in fact inline in the page as
@@ -82,40 +82,93 @@ measurements** and the star scores they roll up into; nothing else on the site
 publishes that in machine-readable form. Parse it and discard the shell. That is
 content analysis, not blocking, so none of it is wafer's.
 
-One request gets everything: the tool paginates **client-side** over that array,
-so `/page/2/` re-serves the same payload and must never be fetched as though it
-held more. Tested and merely-listed robots are two populations — roughly half
-the models were never put through the lab — so count them separately and render a
+One request gets everything and there is no second one to make: the tool
+paginates **client-side** over that array, and `/page/2/` is a hard 404 with a
+306 KB error body carrying no dataset at all. Tested and merely-listed robots
+are two populations and the tested one is the **minority** — on 2026-09-11, 894
+listings held 222 with any lab result — so count them separately and render a
 missing measurement as `-`, never as blank, because "never tested" and "scored
-nothing" must not look alike. Colour variants are the same robot listed twice
-and collapse only when brand, base name **and every measurement** match; when
-their prices disagree say **"from"** and quote the cheaper, exactly as ui.com's
-`minDisplay*` fields require. Prices in the dataset are the tool's last cached
-Amazon figure and drift from the live figure the article pages show, so label
-them cached and never present them as the current price.
+nothing" must not look alike.
+
+Colour variants collapse only when brand, base name, every measurement **and
+every spec the table prints** match. Measurements alone are not enough and that
+is the real trap here: three quarters of the catalogue was never tested, so
+every measurement is null there, the signature goes degenerate and the rule
+decays to brand-plus-name — which merged an "OKP L1" at 1400 Pa with obstacle
+avoidance into an "OKP L1 (White)" at 4000 Pa without it, and printed one
+member's specs beside the other member's price. That is the same silent
+substitution `from` exists to prevent, arriving through a different door.
+Compare the **rendered** value, not the raw one: the site types the same field
+`4000` on one listing and `"4000"` on the next for ~40% of the numeric specs.
+Drop a trailing parenthetical **only where dropping it is what merged the
+rows** — more than one listing, under more than one name. A row standing alone
+keeps the name the site gave it, because a parenthetical on a single listing is
+usually not a colour: "Eufy L60 (No self-empty station)" sits beside "Eufy L60
+with Self Empty Station", and "(Amazon Exclusive)", "(No AutoEmpty Dock)" and
+the bare model numbers "(7550)", "(2152)" all carry meaning. Stripping by
+default renamed 158 rows, 16 of them load-bearing. When merged prices disagree
+say **"from"** and quote the cheaper, exactly as ui.com's `minDisplay*` fields
+require — and say it too when a member has **no** cached price, since a bare
+figure on a two-listing row claims both cost it.
+
+**Rank means rank.** Sixteen models carry individual test results but no overall
+score. They belong in the tested table, but numbering them makes a dataset
+position read as a placing, so their rank cell is `-` and the table says how
+many rows below it are unordered. A genuine score of `0` is a score and still
+ranks; that distinction is the whole point. Prices are the tool's last
+cached Amazon figure, so label them cached and never present them as current —
+and print that caveat **before** the tables: the full render is ~30k tokens,
+past the fetch tool's 25k default, and truncation took the closing paragraph
+off. Order the spec table tested-first for the same reason, carry no score column
+there (the ranked table above already has it for every row that has one), and
+print a per-brand index of the untested tail in the header. The tail is sorted
+by brand, so a budget cut takes whole brands off the end of the alphabet and a
+missing row otherwise reads as a model the site does not list.
 
 There is **no JSON endpoint** and that question is closed: the app's bundle is
 byte-identical on both hosts and makes exactly one network call, the feedback
-form's. The dataset is only ever inlined, so the >1.3 MB page fetch is already
-the cheapest read available. `robots.txt` disallows `/compare/` and then
-explicitly re-allows `/compare/robot-vacuums/` — the one path read here is the
-one the site opened on purpose. Since each fetch costs a full render, the domain
-is throttled at 2s (`vacuumwars_limiter`); no block has ever been seen.
+form's `admin-ajax` — `vacuumwars_send_message` is the only action string in it.
+The dataset is only ever inlined, so the 2.6 MB page fetch is already the
+cheapest read available. `robots.txt` disallows `/compare/` and then explicitly
+re-allows `/compare/robot-vacuums/` — the one path read here is the one the site
+opened on purpose. Since each fetch costs a full render, the domain is throttled
+at 2s (`vacuumwars_limiter`); no block has ever been seen.
 
-Never hardcode a total. The array is larger than one capture through this
-repo's own fetch tool can hold and both hosts ignore `Range`, so no count taken
-from a client is a total — only a floor. The server-side parse has no such
-ceiling. `compare.vacuumwars.com` is the tool's own front end serving the
-identical dataset with the array ~2 KB in rather than ~285 KB in, so it is the
-cheaper source when a caller has that URL; every route there is the tool, so
-decide on host for that one and on path for the main site.
+Never hardcode a total; the catalogue grows weekly and every figure above is a
+dated measurement. Three hosts serve it. `compare.vacuumwars.com` is the tool's
+own front end with the array ~2 KB in rather than ~285 KB in, so it is the
+cheaper source when a caller has that URL — and the **fresher** one, because the
+WordPress page sits behind Cloudflare on a 600s cache while the lean host is
+uncached nginx. They are not interchangeable snapshots: on 2026-09-11 the lean
+host carried 897 listings to the cached page's 894. Never assert the two are
+equal; the invariant is containment, with the lean host possibly ahead. Every
+route there is the tool, so decide on host for that one and on path for the main
+site, and note it serves no `robots.txt` at all. `robotvacs.com` is the tool's **public name** — the site's
+own article links there, so it is the URL a caller most likely arrives with. It
+301s onto the compare path and extraction keys off the URL wafer ended on, so
+keep it in `is_vacuumwars()` or the rate limiter, which keys off the URL as
+asked for, never fires on it.
+
+The `-vs-` head-to-head URLs and `compare.vacuumwars.com/embed/` answer **404
+while serving the real template** and carry no dataset. `fetch_url` errors on
+any status >= 400, so the caller sees `HTTP 404` instead of a board rendered
+from an error page. Settled — do not re-open.
 
 The comparison tool is **robot vacuums only** — `/compare/cordless-vacuums/` is
 a hard 404. Cordless, upright and carpet-cleaner data is article prose and
 tables, which render fine; do not go looking for a dataset that isn't there.
 Gate extraction on the `/compare/` path *and* the global being present, or a
 review page that happens to carry it gets thrown away and re-rendered as a spec
-table. A `/compare/` path with no readable dataset must say so.
+table. A `/compare/` path with no readable dataset must say so — **but only when
+the page really is the app**, detected by its own two root Alpine components
+(`fetchData`, `infiniteScroll`) with the empty state as backstop. Do not match
+on Alpine merely being present: most bindings on that page are generic
+disclosure widgets, so the theme adopting Alpine for a menu would put the
+warning on every article under `/compare/`.
+`/compare/` itself is an ordinary WordPress article announcing the tool, and
+warning that its dataset "could not be read" invents a failure on a page that
+rendered perfectly: the same bug this module exists to fix, pointed the other
+way.
 
 Separately, the leaderboard card (`.vwx-pc`, on the Top 20 page and on every
 review) renders each product **twice** — a collapsed row and the expanded panel

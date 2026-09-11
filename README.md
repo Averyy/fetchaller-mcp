@@ -524,7 +524,7 @@ and archive checksum are the `CHROME_VERSION` and `CHROME_SHA256` arguments in
 - **`redflagdeals.py`** — RFD-specific CSS selectors, soup cleanup, regex post-processors.
 - **`forums.py`** — Generic forum support (XenForo, vBulletin, phpBB, Discourse). RSS/Atom feed autodiscovery.
 - **`wikipedia.py`** — CSS selectors for edit buttons, navboxes, TOC, reference lists.
-- **`vacuumwars.py`** — Vacuum Wars. Reads the robot-vacuum comparison tool's inline dataset (`window.vwProducts`), which the client-side app otherwise renders as an empty board; de-duplicates the leaderboard card that prints each product twice.
+- **`vacuumwars.py`** — Vacuum Wars (vacuumwars.com, compare.vacuumwars.com, robotvacs.com). Reads the robot-vacuum comparison tool's inline dataset (`window.vwProducts`), which the client-side app otherwise renders as an empty board; separates lab-tested models from listed-only ones, collapses colour variants only where every printed figure agrees, and de-duplicates the leaderboard card that prints each product twice.
 - **`alibaba.py`** — Embedded JSON extraction (`window.detailData`, `window.__page__data_sse10`), soup cleanup.
 - **`aliexpress.py`** — CSS selectors, soup cleanup, regex post-processors.
 - **`craigslist.py`** — All city subdomains. CSS selectors, regex post-processors. Search URL detection for SAPI intercept.
