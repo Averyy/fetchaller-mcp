@@ -155,8 +155,12 @@ any status >= 400, so the caller sees `HTTP 404` instead of a board rendered
 from an error page. Settled — do not re-open.
 
 The comparison tool is **robot vacuums only** — `/compare/cordless-vacuums/` is
-a hard 404. Cordless, upright and carpet-cleaner data is article prose and
-tables, which render fine; do not go looking for a dataset that isn't there.
+a hard 404. Cordless, upright and carpet-cleaner data is article prose and the
+same `.vwx-` card widget, which renders fine; do not go looking for a dataset
+that isn't there. Do not assume those pages carry tables either: the cordless
+page was rebuilt on 2026-09-11 from score tables to cards, with zero `<table>`
+elements left. Gate them on the cards surviving, never on a header string the
+site owns.
 Gate extraction on the `/compare/` path *and* the global being present, or a
 review page that happens to carry it gets thrown away and re-rendered as a spec
 table. A `/compare/` path with no readable dataset must say so — **but only when

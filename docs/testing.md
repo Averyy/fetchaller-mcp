@@ -220,14 +220,30 @@ it before shipping a change to `vacuumwars.py`:
 uv run python scripts/verify_vacuumwars.py
 ```
 
-It covers the whole module against the live site: that the dataset parses whole,
-that the compare page renders it instead of the empty state, that `/page/2/` is
-a hard 404 rather than a second payload, that the lean host agrees with the main
-one, that no merged row hides a spec its members disagree on, that `/compare/`
-itself is left alone as the article it is, that `robotvacs.com` lands on the
-dataset, and that the `-vs-` and `/embed/` routes 404 with nothing in them. It
-also prints the catalogue's current size — that figure must never be copied into
-the docs as a constant, only as a dated measurement.
+Twelve gate groups cover the whole module against the live site:
+
+- the dataset parses whole, and the compare page renders it instead of the
+  empty state;
+- `/page/2/` is a hard 404 rather than a second copy of the payload, and the
+  `-vs-` and `/embed/` routes 404 with no dataset in them;
+- the lean host carries everything the Cloudflare-cached WordPress page does,
+  with scores agreeing on every shared slug. **Containment, not equality** —
+  the lean host is uncached and runs ahead, so an equality assertion passes or
+  fails on timing rather than on correctness;
+- no merged row hides a spec its members disagree on;
+- no two rows share a name the site did not itself duplicate, and a
+  configuration parenthetical such as `(No self-empty station)` survives onto
+  the row;
+- the rank column is used only for rows that have an overall score, and the
+  unranked tail is declared;
+- `/compare/` itself is left alone as the article it is, and `robotvacs.com`
+  lands on the dataset;
+- leaderboard cards appear once on the Top 20 page and on a review, and a
+  non-robot article keeps every product it cards up, with its score and without
+  the per-card chrome.
+
+It also prints the catalogue's current size and the host lag — those figures
+must never be copied into the docs as constants, only as dated measurements.
 
 ## Test URLs for Benchmarking
 
@@ -263,8 +279,9 @@ the docs as a constant, only as a dated measurement.
   - leaderboard cards (each product must appear once, not three to four times):
     `https://vacuumwars.com/vacuum-wars-best-robot-vacuums/`
   - single review, same card widget: `https://vacuumwars.com/dreame-d30-ultra-review/`
-  - non-robot article, no dataset, prose + score tables only:
-    `https://vacuumwars.com/vacuum-wars-best-cordless-vacuums/`
+  - non-robot article, no dataset, prose plus the same `.vwx-` cards. Rebuilt
+    2026-09-11 from score tables to cards, so assert the cards survive, not a
+    header string: `https://vacuumwars.com/vacuum-wars-best-cordless-vacuums/`
   - head-to-head URL: 404 serving the real compare template, no dataset in the
     body, must stay an `HTTP 404` to the caller —
     `https://vacuumwars.com/compare/robot-vacuums/dreame_x60_max_ultra_complete-vs-eufy_omni_s2/`

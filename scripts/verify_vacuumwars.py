@@ -21,6 +21,7 @@ import re
 import sys
 
 import wafer
+from bs4 import BeautifulSoup
 
 from fetchaller.content.html import html_to_markdown
 from fetchaller.content.vacuumwars import (
@@ -173,11 +174,34 @@ async def main() -> int:
         check(f"{label}: feature chips separated", "brushPad mop" not in out)
         print(f"        -> {label}: {len(out):,} chars (~{len(out)//4:,} tokens)")
 
-    print("\n== non-robot article still renders its own score tables ==")
+    print("\n== a non-robot article keeps its own content ==")
+    # This gate used to assert the literal header "Vacuum Wars Overall". The
+    # site rebuilt the page on 2026-09-11 -- score tables replaced by the same
+    # .vwx- card widget, zero <table> elements left -- and the gate failed on a
+    # string the site owns rather than on anything this module does. Assert the
+    # property instead: every product the page cards up survives into the
+    # markdown, once, with its score, and none of the per-card chrome does.
     status4, h4 = get(session, CORDLESS)
     out4 = await html_to_markdown(h4, url=CORDLESS)
     out4 = out4[0] if isinstance(out4, tuple) else out4
-    check("cordless page has score tables", "Vacuum Wars Overall" in out4, f"HTTP {status4}")
+    card_soup = BeautifulSoup(h4, "lxml")
+    reviews = {
+        a["href"].split("?")[0].rstrip("/")
+        for card in card_soup.select(".vwx-pc")
+        for a in card.select('a[href*="-review"]')
+    }
+    lost = [r for r in reviews if r not in out4]
+    check("cordless page fetched", status4 == 200, f"HTTP {status4}")
+    check(
+        "every carded product survives into the markdown",
+        bool(reviews) and not lost,
+        f"{len(reviews)} carded products, {len(lost)} lost",
+    )
+    check("its Vacuum Wars scores still render", "Vacuum Wars Stars" in out4)
+    check(
+        "no per-card price timestamp survives",
+        not re.search(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2} [ap]m", out4),
+    )
 
     print("\n== a merged row never speaks for two different robots ==")
     if products:
