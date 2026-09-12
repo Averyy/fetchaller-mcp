@@ -5,4 +5,4 @@ from importlib.metadata import version
 try:
     __version__ = version("fetchaller-mcp")
 except Exception:
-    __version__ = "3.6.4"  # Keep in sync with pyproject.toml.
+    __version__ = "3.7.0"  # Keep in sync with pyproject.toml.

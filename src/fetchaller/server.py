@@ -24,6 +24,7 @@ from .apple_jobs.search import search_apple_jobs
 from .cache.response_cache import ResponseCache
 from .config import Config, load_config, set_wafer_cache_dir
 from .eightfold.search import search_eightfold_jobs
+from .gcjobs.search import get_gcjobs_job, search_gcjobs
 from .gojobs.search import get_gojobs_job, search_gojobs
 from .google_jobs.search import search_google_jobs
 from .indeed.search import get_indeed_job, search_indeed
@@ -397,6 +398,11 @@ async def cleanup_server(server) -> None:
         cleanup_fns.append(close_jobbank_session)
     except ImportError:
         pass
+    try:
+        from .gcjobs.api import close_session as close_gcjobs_session
+        cleanup_fns.append(close_gcjobs_session)
+    except ImportError:
+        pass
 
     for fn in cleanup_fns:
         try:
@@ -662,6 +668,17 @@ _TOOL_ARGUMENTS: dict[str, set[str]] = {
         "strict_location",
         "limit",
     },
+    "search_gcjobs": {
+        "title",
+        "location",
+        "organization",
+        "min_salary",
+        "language",
+        "exclude_various_locations",
+        "strict_title",
+        "limit",
+    },
+    "get_gcjobs_job": {"job_id"},
     "search_google_jobs": {
         "title",
         "location",
@@ -725,6 +742,9 @@ _TOOL_REQUIRED = {
     # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
     "search_jobbank": set(),
     # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
+    "search_gcjobs": set(),
+    "get_gcjobs_job": {"job_id"},
+    # No single field is mandatory — see _TOOL_ANY_REQUIRED below.
     "search_indeed": set(),
     "get_indeed_job": {"job_key"},
 }
@@ -736,6 +756,9 @@ _DEFAULT_JOB_ID_RULE = (6, 20, "LinkedIn job ID")
 _JOB_ID_RULES: dict[str, tuple[int, int, str]] = {
     "get_linkedin_job": _DEFAULT_JOB_ID_RULE,
     "get_gojobs_job": (1, 12, "Ontario Public Service Job ID"),
+    # Current poster ids are seven digits; the board still serves 2001-era
+    # postings at single-digit ids, which the tool reports as closed.
+    "get_gcjobs_job": (1, 12, "GC Jobs poster ID"),
 }
 _TOOL_ANY_REQUIRED: dict[str, set[str]] = {
     "search_amazon_jobs": {"title", "location", "job_category"},
@@ -747,6 +770,7 @@ _TOOL_ANY_REQUIRED: dict[str, set[str]] = {
         "min_salary",
     },
     "search_jobbank": {"title", "location"},
+    "search_gcjobs": {"title", "location", "organization", "min_salary", "language"},
     "search_indeed": {"title", "location"},
 }
 _STRING_LIMITS = {
@@ -757,6 +781,7 @@ _STRING_LIMITS = {
     "geo_id": 24,
     "location": 256,
     "employer": 512,
+    "organization": 128,
     "title": 256,
     "job_key": 32,
     "job_category": 64,
@@ -848,6 +873,7 @@ _TOOL_ENUMS = {
         "internship",
     },
     ("search_linkedin_jobs", "min_salary"): {40000, 60000, 80000, 100000, 120000},
+    ("search_gcjobs", "language"): {"english", "french", "bilingual"},
     ("search_reddit", "sort"): {
         "relevance",
         "hot",
@@ -906,6 +932,10 @@ _TOOL_INTEGER_RANGES = {
     ("search_indeed", "limit"): (1, 100),
     ("search_indeed", "radius_km"): (0, 100),
     ("search_jobbank", "radius_km"): (10, 500),
+    ("search_gcjobs", "limit"): (1, 100),
+    # A dollar figure, not a band: the client maps it onto the board's own
+    # salary bands and re-checks each posting's floor against it.
+    ("search_gcjobs", "min_salary"): (1, 999_999),
     ("search_meta_jobs", "limit"): (1, 100),
     ("search_uber_jobs", "limit"): (1, 100),
 }
@@ -917,7 +947,7 @@ _TOOL_INTEGER_RANGES = {
 # Python-truthy, so writing "false" turned the filter ON; `0`, `[]` and `None`
 # were accepted and turned it OFF. Every one of those silently inverted or
 # ignored the caller's intent against the published contract.
-_BOOLEAN_ARGS = frozenset(['easy_apply', 'include_remote', 'raw', 'remote_only', 'strict_location', 'strict_title', 'under_10_applicants'])
+_BOOLEAN_ARGS = frozenset(['easy_apply', 'exclude_various_locations', 'include_remote', 'raw', 'remote_only', 'strict_location', 'strict_title', 'under_10_applicants'])
 
 
 def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
@@ -2440,6 +2470,127 @@ def create_server(
                 },
             ),
             Tool(
+                name="search_gcjobs",
+                description=(
+                    "Search GC Jobs (emploisfp-psjobs.cfp-psc.gc.ca), the federal "
+                    "public service board — the only route to Government of Canada "
+                    "postings, which a plain fetch of the site cannot read (it "
+                    "returns a 'JavaScript must be enabled' shell over zero "
+                    "postings). Title, location, organization, minimum salary and "
+                    "language are real board filters, sent the way the board's own "
+                    "form sends them and confirmed against the page's echo of what "
+                    "it applied; title, location and salary are re-checked here. "
+                    "Rows come back soonest-closing first. Eligibility ('Who can "
+                    "apply') is not on the listing — many federal processes are "
+                    "restricted to current public servants, citizens, or a named "
+                    "area — so read a posting with get_gcjobs_job before relying "
+                    "on it. Give at least one filter."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": 'Job title, e.g. "policy analyst"',
+                        },
+                        "location": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": (
+                                'Canadian city or province, e.g. "St. Catharines, ON", '
+                                '"Ottawa", "Ontario". "Canada" covers the whole board '
+                                "and is treated as no filter."
+                            ),
+                        },
+                        "organization": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "description": (
+                                "Hiring organization, by exact name or abbreviation, "
+                                'e.g. "Canada Revenue Agency", "CRA", "RCMP"'
+                            ),
+                        },
+                        "min_salary": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 999999,
+                            "description": (
+                                "Minimum annual salary in dollars, e.g. 70000. Matched "
+                                "against the bottom of each posting's salary range."
+                            ),
+                        },
+                        "language": {
+                            "type": "string",
+                            "enum": ["english", "french", "bilingual"],
+                            "description": (
+                                "Language requirement facet, as the board defines it "
+                                "(\"english\" includes postings open to either language)"
+                            ),
+                        },
+                        "exclude_various_locations": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Drop postings listed as “Various Locations”. The board "
+                                "counts those as matches for any city, and they can "
+                                "outnumber the postings that name the place."
+                            ),
+                        },
+                        "strict_title": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Require the title words to appear in the posting's title"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Jobs to return (default: 25)",
+                        },
+                    },
+                    # An unfiltered listing is the whole national board — over
+                    # twenty sequential pages.
+                    "anyOf": [
+                        {"required": ["title"]},
+                        {"required": ["location"]},
+                        {"required": ["organization"]},
+                        {"required": ["min_salary"]},
+                        {"required": ["language"]},
+                    ],
+                },
+            ),
+            Tool(
+                name="get_gcjobs_job",
+                description=(
+                    "Full detail for one GC Jobs posting by the numeric poster ID in "
+                    "its URL. Reports 'Who can apply' first — the eligibility line "
+                    "that decides whether a federal posting is open to the reader — "
+                    "flags a posting whose closing date has passed (the board still "
+                    "serves 2001-era postings as though live), and, for the third of "
+                    "postings the hiring organization hosts on its own site, returns "
+                    "the outbound URL instead of an empty record."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "maxLength": 32,
+                            "description": (
+                                'Numeric poster ID from the posting URL '
+                                '(page1800?poster=NNNNNNN), e.g. "2432896"'
+                            ),
+                        },
+                    },
+                    "required": ["job_id"],
+                },
+            ),
+            Tool(
                 name="search_meta_jobs",
                 description=(
                     "Search metacareers.com by title and office. Meta spells its "
@@ -2949,6 +3100,29 @@ def create_server(
                     strict_title=arguments.get("strict_title", True),
                     strict_location=arguments.get("strict_location", False),
                     limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "search_gcjobs":
+                result = await search_gcjobs(
+                    title=arguments.get("title", ""),
+                    location=arguments.get("location", ""),
+                    organization=arguments.get("organization", ""),
+                    min_salary=arguments.get("min_salary", 0),
+                    language=arguments.get("language", ""),
+                    exclude_various_locations=arguments.get(
+                        "exclude_various_locations", False
+                    ),
+                    strict_title=arguments.get("strict_title", True),
+                    limit=arguments.get("limit", 25),
+                    browser_solver=browser_solver,
+                )
+                return _format_result(name, result, start_time)
+
+            elif name == "get_gcjobs_job":
+                result = await get_gcjobs_job(
+                    arguments.get("job_id", ""),
                     browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)

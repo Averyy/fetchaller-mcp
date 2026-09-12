@@ -13,12 +13,14 @@ import wafer
 from bs4 import BeautifulSoup
 
 from fetchaller.content.ashby import (
+    _BOARD_GRAPHQL_URL,
     _MARKER,
     BOARD_MAX_RESPONSE_BYTES,
     AshbyBoardTooLargeError,
     _extract_ashby_jid,
     _extract_org_slug_from_js,
     _find_careers_chunk_url,
+    _normalise_graphql_board,
     extract_ashby_board_slug,
     extract_ashby_data,
     fetch_ashby_board,
@@ -171,13 +173,6 @@ class TestFetchAshbyBoardBudget:
 
         assert await fetch_ashby_board("openai", FailingSession()) is None
 
-    async def test_non_200_still_falls_through(self):
-        class NotFoundSession:
-            async def get(self, url):
-                return SimpleNamespace(status_code=404, text="")
-
-        assert await fetch_ashby_board("nobody", NotFoundSession()) is None
-
     async def test_fetch_url_reports_oversized_board_instead_of_empty_page(self):
         async def raise_too_large(org, session):
             raise AshbyBoardTooLargeError("too big")
@@ -194,6 +189,204 @@ class TestFetchAshbyBoardBudget:
         assert "content" not in result
         assert "openai" in result["error"]
         assert "read limit" in result["error"]
+
+
+def _graphql_response(board) -> SimpleNamespace:
+    return SimpleNamespace(status_code=200, text=json.dumps({"data": {"jobBoard": board}}))
+
+
+_EVENUP_BOARD = {
+    "teams": [
+        {"id": "t-eng", "name": "Engineering", "parentTeamId": None},
+        {"id": "t-fin", "name": "Finance", "parentTeamId": None},
+        {"id": "t-fpa", "name": "FP&A", "parentTeamId": "t-fin"},
+    ],
+    "jobPostings": [
+        {
+            "id": "93ee7f2d-e8ef-4989-8759-92aafa837fb9",
+            "title": "Backend Engineer, Cases Product",
+            "teamId": "t-eng",
+            "locationId": "l-sf",
+            "locationName": "San Francisco (hybrid)",
+            "locationAddress": None,
+            "employmentType": "FullTime",
+            "workplaceType": "Hybrid",
+            "compensationTierSummary": None,
+            "secondaryLocations": [{"locationId": "l-to", "locationName": "Toronto (hybrid)"}],
+        },
+        {
+            "id": "4c1d2e3f-0000-4000-8000-000000000001",
+            "title": "Senior Financial Analyst, Corporate Consolidation & G&A",
+            "teamId": "t-fpa",
+            "locationId": "l-to",
+            "locationName": "Toronto (hybrid)",
+            "locationAddress": None,
+            "employmentType": "FullTime",
+            "workplaceType": "Hybrid",
+            "compensationTierSummary": "$120K – $150K",
+            "secondaryLocations": [],
+        },
+    ],
+}
+
+
+class TestFetchAshbyBoardGraphqlFallback:
+    """A REST 404 is ambiguous: no such org, or the org switched the public
+    posting API off while keeping its hosted board (EvenUp, 2026-09-11, 40
+    live reqs). Returning ``None`` on the 404 alone sent the caller to the SPA
+    shell, which renders as ``# EvenUp Jobs`` — an empty board reported as a
+    successful read. The hosted board's GraphQL settles the ambiguity: a null
+    ``jobBoard`` is a missing org, anything else is the board.
+    """
+
+    class _Session:
+        def __init__(self, rest, graphql=None, post_exc=None):
+            self.rest = rest
+            self.graphql = graphql
+            self.post_exc = post_exc
+            self.posts: list[tuple[str, dict]] = []
+
+        async def get(self, url):
+            if isinstance(self.rest, Exception):
+                raise self.rest
+            return self.rest
+
+        async def post(self, url, **kwargs):
+            self.posts.append((url, kwargs))
+            if self.post_exc is not None:
+                raise self.post_exc
+            return self.graphql
+
+    async def test_rest_200_never_asks_graphql(self):
+        session = self._Session(
+            rest=SimpleNamespace(status_code=200, text=json.dumps({"jobs": [], "apiVersion": "1"})),
+            post_exc=AssertionError("GraphQL must not be called when REST answers"),
+        )
+        data = await fetch_ashby_board("skywatch", session)
+        assert data["jobs"] == []
+        assert data["source"] == "https://api.ashbyhq.com/posting-api/job-board/skywatch"
+        assert session.posts == []
+
+    async def test_rest_404_with_hosted_board_returns_the_board(self):
+        session = self._Session(
+            rest=SimpleNamespace(status_code=404, text="Not Found"),
+            graphql=_graphql_response(_EVENUP_BOARD),
+        )
+        data = await fetch_ashby_board("evenup", session)
+        assert data is not None
+        assert len(data["jobs"]) == 2
+        assert data["source"] == _BOARD_GRAPHQL_URL
+        assert "public posting API" in data["sourceNote"]
+        # The query names the org through the variable, not the URL.
+        (url, kwargs), = session.posts
+        assert url == _BOARD_GRAPHQL_URL
+        assert kwargs["json"]["variables"] == {"organizationHostedJobsPageName": "evenup"}
+        assert kwargs["json"]["operationName"] == "ApiJobBoardWithTeams"
+
+    async def test_rest_404_and_null_board_means_no_such_org(self):
+        session = self._Session(
+            rest=SimpleNamespace(status_code=404, text="Not Found"),
+            graphql=_graphql_response(None),
+        )
+        assert await fetch_ashby_board("nobody", session) is None
+
+    async def test_graphql_errors_fall_through(self):
+        session = self._Session(
+            rest=SimpleNamespace(status_code=404, text="Not Found"),
+            graphql=SimpleNamespace(
+                status_code=200,
+                text=json.dumps({"errors": [{"message": "Cannot query field"}], "data": None}),
+            ),
+        )
+        assert await fetch_ashby_board("evenup", session) is None
+
+    async def test_graphql_transport_failure_falls_through(self):
+        session = self._Session(
+            rest=SimpleNamespace(status_code=404, text="Not Found"),
+            post_exc=ConnectionError("boom"),
+        )
+        assert await fetch_ashby_board("evenup", session) is None
+
+    async def test_rest_transport_failure_still_tries_graphql(self):
+        session = self._Session(rest=ConnectionError("boom"), graphql=_graphql_response(_EVENUP_BOARD))
+        data = await fetch_ashby_board("evenup", session)
+        assert data is not None and len(data["jobs"]) == 2
+
+    async def test_oversized_graphql_board_raises(self):
+        session = self._Session(
+            rest=SimpleNamespace(status_code=404, text="Not Found"),
+            post_exc=wafer.ResponseTooLarge(_BOARD_GRAPHQL_URL, 60_000_000, 50_000_000),
+        )
+        with pytest.raises(AshbyBoardTooLargeError):
+            await fetch_ashby_board("evenup", session)
+
+    def test_normalised_shape_matches_rest(self):
+        data = _normalise_graphql_board(_EVENUP_BOARD, "evenup")
+        eng, fin = data["jobs"]
+        assert eng["department"] == "Engineering" and eng["team"] == "Engineering"
+        assert eng["location"] == "San Francisco (hybrid)"
+        assert eng["secondaryLocations"] == [{"location": "Toronto (hybrid)"}]
+        assert eng["workplaceType"] == "Hybrid"
+        assert eng["employmentType"] == "FullTime"
+        assert eng["isListed"] is True
+        assert eng["jobUrl"] == "https://jobs.ashbyhq.com/evenup/93ee7f2d-e8ef-4989-8759-92aafa837fb9"
+        assert "compensation" not in eng
+        # Department is the root of the parentTeamId chain; team is the leaf.
+        assert fin["department"] == "Finance" and fin["team"] == "FP&A"
+        assert fin["compensation"] == {"compensationTierSummary": "$120K – $150K"}
+
+    def test_team_cycle_does_not_hang(self):
+        board = {
+            "teams": [
+                {"id": "a", "name": "A", "parentTeamId": "b"},
+                {"id": "b", "name": "B", "parentTeamId": "a"},
+            ],
+            "jobPostings": [{"id": "1", "title": "X", "teamId": "a", "secondaryLocations": []}],
+        }
+        job = _normalise_graphql_board(board, "o")["jobs"][0]
+        assert job["team"] == "A" and job["department"] == "B"
+
+    def test_render_marks_the_graphql_source(self):
+        data = _normalise_graphql_board(_EVENUP_BOARD, "evenup")
+        out = render_ashby_board(data, "evenup", source_url="https://jobs.ashbyhq.com/evenup")
+        assert "# evenup — Job Board (2 open positions)" in out
+        assert f"**source**: {_BOARD_GRAPHQL_URL}" in out
+        assert "**note**: this org has switched off Ashby's public posting API" in out
+        assert "apiVersion" not in out
+        assert "## Engineering (1)" in out
+        assert "## Finance (1)" in out
+        assert "team: FP&A" in out
+        assert "**Senior Financial Analyst, Corporate Consolidation & G&A** — Toronto (hybrid) · Hybrid · FullTime · team: FP&A · $120K – $150K" in out
+        assert "+ Toronto (hybrid)" in out
+        assert "  - https://jobs.ashbyhq.com/evenup/93ee7f2d-e8ef-4989-8759-92aafa837fb9" in out
+
+    def test_rest_compensation_summary_renders_too(self):
+        data = {
+            "jobs": [{
+                "title": "Head of Finance",
+                "department": "Finance",
+                "location": "Kitchener",
+                "isListed": True,
+                "compensation": {"compensationTierSummary": "$200K – $250K", "compensationTiers": []},
+                "jobUrl": "https://jobs.ashbyhq.com/skywatch/1",
+            }],
+        }
+        out = render_ashby_board(data, "skywatch")
+        assert "**Head of Finance** — Kitchener · $200K – $250K" in out
+        assert "**source**: https://api.ashbyhq.com/posting-api/job-board/skywatch" in out
+
+    async def test_fetch_url_renders_the_hosted_board_not_the_shell(self):
+        data = _normalise_graphql_board(_EVENUP_BOARD, "evenup")
+
+        async def hosted_only(org, session):
+            return data
+
+        with patch("fetchaller.tools.fetch.fetch_ashby_board", side_effect=hosted_only):
+            result = await fetch_url("https://jobs.ashbyhq.com/evenup", timeout=10)
+
+        assert "error" not in result
+        assert "Senior Financial Analyst, Corporate Consolidation & G&A" in result["content"]
+        assert _BOARD_GRAPHQL_URL in result["content"]
 
 
 def _build_app_data_html(posting: dict, organization: dict | None = None) -> str:

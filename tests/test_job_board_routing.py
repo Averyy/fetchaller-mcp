@@ -33,6 +33,17 @@ ROUTED = [
     ("https://www.uber.com/us/en/careers/list/", "uber_search"),
     # The host uber.com/careers/list/ actually redirects to.
     ("https://jobs.uber.com/en/jobs/", "uber_search"),
+    # GC Jobs: the search page is a JavaScript shell over zero postings.
+    (
+        "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page2440?toggleLanguage=en",
+        "gcjobs_search",
+    ),
+    # The first response of a session rewrites its own paths with a session id.
+    (
+        "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page1800;jsessionid=00130B0F?poster=2432896",
+        "gcjobs_job",
+    ),
+    ("https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page1800?toggleLanguage=en&poster=1", "gcjobs_job"),
 ]
 
 NOT_ROUTED = [
@@ -56,6 +67,11 @@ NOT_ROUTED = [
     # Incomplete paths.
     "https://jobs.apple.com/en-ca/details/",
     "https://www.metacareers.com/",
+    # GC Jobs pages that are neither the board nor a posting: the help page,
+    # the apply flow, and a posting URL with no poster id.
+    "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page100080?helpPage=help/jobSearch.jsp",
+    "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page1710?careerChoiceId=2432896",
+    "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page1800?toggleLanguage=en",
 ]
 
 

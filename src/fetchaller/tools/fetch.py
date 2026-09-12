@@ -144,7 +144,15 @@ from ..content.reddit import (
 from ..content.soylent import is_soylent as _is_soylent
 from ..content.ti import extract_ti_part_from_pdf_url, fetch_document_sections, is_ti_document_viewer
 from ..content.url import normalize_url
-from ..content.vacuumwars import is_vacuumwars as _is_vacuumwars
+from ..content.vacuumwars import (
+    has_dataset as _vw_has_dataset,
+)
+from ..content.vacuumwars import (
+    is_vacuumwars as _is_vacuumwars,
+)
+from ..content.vacuumwars import (
+    route_compare_url as _vw_route_compare_url,
+)
 from ..content.workday import (
     fetch_workday_board,
     fetch_workday_job,
@@ -699,6 +707,11 @@ def _match_job_board_url(url: str) -> tuple[str, str, dict] | None:
     from ..amazon_jobs.url import extract_amazon_job_path, is_amazon_jobs_search_url
     from ..apple_jobs.url import extract_apple_job, extract_apple_search, extract_locale
     from ..eightfold.url import extract_position_id, is_eightfold_board_url
+    from ..gcjobs.url import (
+        extract_gcjobs_poster,
+        gcjobs_search_criteria,
+        is_gcjobs_search_url,
+    )
     from ..google_jobs.url import extract_google_job_id, extract_google_search
     from ..meta_careers.url import extract_meta_job_id, is_meta_jobs_index_url
     from ..oracle_recruiting.url import (
@@ -777,6 +790,14 @@ def _match_job_board_url(url: str) -> tuple[str, str, dict] | None:
         return ("Uber posting", "uber_job", {"job_id": uber_job_id})
     if is_uber_jobs_list_url(url):
         return ("Uber board", "uber_search", {})
+
+    # GC Jobs: the search page a URL returns is a "JavaScript must be enabled"
+    # shell, and the listing is a second request the client knows how to make.
+    gcjobs_poster = extract_gcjobs_poster(url)
+    if gcjobs_poster:
+        return ("GC Jobs posting", "gcjobs_job", {"poster_id": gcjobs_poster})
+    if is_gcjobs_search_url(url):
+        return ("GC Jobs board", "gcjobs_search", gcjobs_search_criteria(url))
     return None
 
 
@@ -852,6 +873,14 @@ async def _dispatch_job_board(
         from ..uber_jobs.search import search_uber_jobs
 
         return await search_uber_jobs(**common)
+    if kind == "gcjobs_job":
+        from ..gcjobs.search import get_gcjobs_job
+
+        return await get_gcjobs_job(kwargs["poster_id"], **common)
+    if kind == "gcjobs_search":
+        from ..gcjobs.search import search_gcjobs
+
+        return await search_gcjobs(title=kwargs.get("title", ""), strict_title=False, **common)
     return {"error": f"No client for job board kind '{kind}'."}
 
 
@@ -1154,6 +1183,7 @@ async def _fetch_url_impl(
     _skip_aliexpress_intercept: bool = False,
     _skip_alibaba_intercept: bool = False,
     _skip_craigslist_intercept: bool = False,
+    _skip_vacuumwars_route: bool = False,
 ) -> dict:
     """
     Fetch a URL and return its content.
@@ -1844,10 +1874,11 @@ async def _fetch_url_impl(
                 cache.set(_ab_cache_key, markdown, "markdown")
             content = truncate(markdown, max_tokens)
             _log(
-                f"FETCH {url} -> Ashby board ({len(_ab_data.get('jobs') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)"
+                f"FETCH {url} -> Ashby board ({len(_ab_data.get('jobs') or [])} jobs via {_ab_data.get('source')}, {len(content)} chars, {time.monotonic() - start:.1f}s)"
             )
             return {"content": content, "content_type": "markdown", "url": url}
-        # API 404 (not an Ashby-hosted board) or transient failure — fall through.
+        # No Ashby board under that slug (REST refused it *and* the hosted
+        # board's GraphQL returned null) or transient failure — fall through.
 
     # Gem direct URL (jobs.gem.com/{board}/{extId}): fetch via public GraphQL.
     if is_gem_url(url) and structured:
@@ -2249,6 +2280,15 @@ async def _fetch_url_impl(
     if is_forum_feed and structured:
         fetch_url_str = forum_result.url
 
+    # Vacuum Wars: read the comparison tool from its own uncached host rather
+    # than the WordPress page, which is a cached copy of the same dataset and
+    # can lag it. Only the exact tool URLs move; see route_compare_url().
+    vacuumwars_routed: str | None = None
+    if structured and not _skip_vacuumwars_route:
+        vacuumwars_routed = _vw_route_compare_url(url)
+        if vacuumwars_routed:
+            fetch_url_str = vacuumwars_routed
+
     # Costco fallback: when search API returns 0 results, fetch the category page
     if _costco_redirect_fallback and _costco_fallback_url:
         fetch_url_str = _costco_fallback_url
@@ -2306,7 +2346,14 @@ async def _fetch_url_impl(
                 }
                 if is_cached_json:
                     result_dict["_json_budget_applied"] = True
-                if is_reddit and fetch_url_str != url and not is_cached_json:
+                if vacuumwars_routed and not is_cached_json:
+                    result_dict["content"] = truncate(
+                        f"[Fetched via: {vacuumwars_routed} — the comparison "
+                        f"tool's own uncached host; the vacuumwars.com page serves "
+                        f"a cached copy of the same dataset]\n\n{cached.content}",
+                        max_tokens,
+                    )
+                elif is_reddit and fetch_url_str != url and not is_cached_json:
                     result_dict["content"] = truncate(
                         f"[Fetched via: {fetch_url_str}]\n\n{cached.content}",
                         max_tokens,
@@ -3055,7 +3102,7 @@ async def _fetch_url_impl(
                     cache.set(cache_key, markdown, "markdown")
                 content = truncate(markdown, max_tokens)
                 _log(
-                    f"FETCH {url} -> Ashby embed board {_ab_embed_slug} ({len(_ab_data.get('jobs') or [])} jobs, {len(content)} chars, {time.monotonic() - start:.1f}s)"
+                    f"FETCH {url} -> Ashby embed board {_ab_embed_slug} ({len(_ab_data.get('jobs') or [])} jobs via {_ab_data.get('source')}, {len(content)} chars, {time.monotonic() - start:.1f}s)"
                 )
                 return {
                     "content": f"[Ashby-hosted board: jobs.ashbyhq.com/{_ab_embed_slug}]\n\n{content}",
@@ -3176,6 +3223,13 @@ async def _fetch_url_impl(
         # GitHub file listing extraction
         file_listing = preflight.github_file_listing if is_github else None
 
+        # A routed read that came back without the array is a failure, not an
+        # empty board. Say so, so the caller falls back to the page they named
+        # rather than getting the SPA's "No products found." rendered as an
+        # answer.
+        if vacuumwars_routed and not _vw_has_dataset(html):
+            return {"error": "compare.vacuumwars.com answered without the dataset"}
+
         try:
             markdown, _ = await html_to_markdown(
                 html,
@@ -3256,6 +3310,13 @@ async def _fetch_url_impl(
             if result.final_url and result.final_url != fetch_url_str:
                 note += f"\n[Redirected to: {result.final_url}]"
             response["content"] = f"{note}\n\n{content}"
+        elif vacuumwars_routed:
+            response["content"] = truncate(
+                f"[Fetched via: {vacuumwars_routed} — the comparison tool's own "
+                f"uncached host; the vacuumwars.com page serves a cached copy of "
+                f"the same dataset]\n\n{markdown}",
+                max_tokens,
+            )
         elif is_reddit and fetch_url_str != url:
             response["content"] = truncate(
                 f"[Fetched via: {fetch_url_str}]\n\n{markdown}",
@@ -3317,6 +3378,7 @@ async def fetch_url(
     _skip_aliexpress_intercept: bool = False,
     _skip_alibaba_intercept: bool = False,
     _skip_craigslist_intercept: bool = False,
+    _skip_vacuumwars_route: bool = False,
 ) -> dict:
     """Fetch a URL within the caller's end-to-end timeout budget."""
     if timeout <= 0:
@@ -3338,7 +3400,43 @@ async def fetch_url(
                 _skip_aliexpress_intercept=_skip_aliexpress_intercept,
                 _skip_alibaba_intercept=_skip_alibaba_intercept,
                 _skip_craigslist_intercept=_skip_craigslist_intercept,
+                _skip_vacuumwars_route=_skip_vacuumwars_route,
             )
+            # The tool's own host is a single point of failure. If it did not
+            # answer with the dataset, read the page the caller actually named
+            # -- but say so, and lead with it. A silent fall-back here would
+            # hand back a cached copy as though it were current, which is the
+            # substitution this whole module exists to prevent.
+            if (
+                "error" in result
+                and not _skip_vacuumwars_route
+                and _vw_route_compare_url(url)
+            ):
+                first_error = result["error"]
+                result = await _fetch_url_impl(
+                    url,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    raw=raw,
+                    config=config,
+                    cache=cache,
+                    reddit_queue=reddit_queue,
+                    method=method,
+                    headers=headers,
+                    body=body,
+                    _skip_aliexpress_intercept=_skip_aliexpress_intercept,
+                    _skip_alibaba_intercept=_skip_alibaba_intercept,
+                    _skip_craigslist_intercept=_skip_craigslist_intercept,
+                    _skip_vacuumwars_route=True,
+                )
+                if isinstance(result.get("content"), str):
+                    result["content"] = truncate(
+                        f"[compare.vacuumwars.com did not answer with the dataset "
+                        f"({first_error}); read the cached copy at {url} instead, "
+                        f"which can lag behind the tool's own host]\n\n"
+                        f"{result['content']}",
+                        max_tokens,
+                    )
             if isinstance(result.get("content"), str):
                 chars_per_token = config.chars_per_token if config else 4
                 result_mime = str(result.get("content_type") or "").lower().partition(";")[0].strip()

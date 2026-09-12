@@ -18,6 +18,7 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 - **`search_gojobs`** / **`get_gojobs_job`**: Search Ontario Public Service jobs and read full posting and competition status details
 - **`search_indeed`** / **`get_indeed_job`**: Search Indeed Canada and read full public posting data, including salary bands and expiry dates
 - **`search_jobbank`**: Search Canada's federal Job Bank by title, city, and radius with local result rechecking
+- **`search_gcjobs`** / **`get_gcjobs_job`**: Search GC Jobs, the federal public service board, and read full postings with the "Who can apply" eligibility line first
 - **`get_unifi_manual`**: Download a Ubiquiti UniFi installation guide as a PDF or per-page PNGs. Ubiquiti publishes no PDF and draws these guides as vector artwork, so they carry no readable text — this rebuilds the pages into a real document
 - **`get_aliexpress_product`**: AliExpress product details (price, specs, ratings, reviews)
 - **`search_aliexpress`**: Search AliExpress products with price filters and sorting
@@ -61,6 +62,8 @@ Add permissions to `~/.claude/settings.json`:
       "mcp__fetchaller__search_indeed",
       "mcp__fetchaller__get_indeed_job",
       "mcp__fetchaller__search_jobbank",
+      "mcp__fetchaller__search_gcjobs",
+      "mcp__fetchaller__get_gcjobs_job",
       "mcp__fetchaller__get_unifi_manual",
       "mcp__fetchaller__get_aliexpress_product",
       "mcp__fetchaller__search_aliexpress",
@@ -95,6 +98,8 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 - `mcp__fetchaller__search_indeed(title?, location?, radius_km?, strict_title?, strict_location?, limit?)` — Search Indeed Canada
 - `mcp__fetchaller__get_indeed_job(job_key)` — Full Indeed posting, salary band, and expiry
 - `mcp__fetchaller__search_jobbank(title?, location?, radius_km?, strict_title?, strict_location?, limit?)` — Search Canada's federal Job Bank
+- `mcp__fetchaller__search_gcjobs(title?, location?, organization?, min_salary?, language?, exclude_various_locations?, strict_title?, limit?)` — Search GC Jobs, the federal public service board
+- `mcp__fetchaller__get_gcjobs_job(job_id)` — Full GC Jobs posting: eligibility, closing date, salary, classification
 - `mcp__fetchaller__get_unifi_manual(url, format?)` — Rebuild a UniFi installation guide as `pdf`/`png`/`svg`. Writes into the server's `DATA_DIR`, so on a containerised deployment the files land inside the container
 - `mcp__fetchaller__get_aliexpress_product(product_id, timeout?)` — AliExpress product details
 - `mcp__fetchaller__search_aliexpress(query, page?, sort?, min_price?, max_price?, timeout?)` — Search AliExpress
@@ -524,7 +529,7 @@ and archive checksum are the `CHROME_VERSION` and `CHROME_SHA256` arguments in
 - **`redflagdeals.py`** — RFD-specific CSS selectors, soup cleanup, regex post-processors.
 - **`forums.py`** — Generic forum support (XenForo, vBulletin, phpBB, Discourse). RSS/Atom feed autodiscovery.
 - **`wikipedia.py`** — CSS selectors for edit buttons, navboxes, TOC, reference lists.
-- **`vacuumwars.py`** — Vacuum Wars (vacuumwars.com, compare.vacuumwars.com, robotvacs.com). Reads the robot-vacuum comparison tool's inline dataset (`window.vwProducts`), which the client-side app otherwise renders as an empty board; separates lab-tested models from listed-only ones, collapses colour variants only where every printed figure agrees, and de-duplicates the leaderboard card that prints each product twice.
+- **`vacuumwars.py`** — Vacuum Wars (vacuumwars.com, compare.vacuumwars.com, robotvacs.com). Reads the robot-vacuum comparison tool's inline dataset (`window.vwProducts`), which the client-side app otherwise renders as an empty board; routes comparison reads to the tool's own uncached host rather than the cached WordPress copy, disclosing the swap and falling back loudly if it fails; separates lab-tested models from listed-only ones, collapses colour variants only where every printed figure agrees, and de-duplicates the leaderboard card that prints each product twice.
 - **`alibaba.py`** — Embedded JSON extraction (`window.detailData`, `window.__page__data_sse10`), soup cleanup.
 - **`aliexpress.py`** — CSS selectors, soup cleanup, regex post-processors.
 - **`craigslist.py`** — All city subdomains. CSS selectors, regex post-processors. Search URL detection for SAPI intercept.

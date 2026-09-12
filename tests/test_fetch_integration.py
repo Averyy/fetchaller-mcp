@@ -2529,3 +2529,138 @@ class TestRenderFallbackOnChallenge:
 
     async def test_an_empty_render_is_not_treated_as_success(self):
         assert await self._call(self._session(content=b"")) is None
+
+
+# ---------------------------------------------------------------------------
+# Vacuum Wars: the comparison tool is read from its own uncached host
+# ---------------------------------------------------------------------------
+
+
+_VW_COMPARE = "https://vacuumwars.com/compare/robot-vacuums/"
+_VW_LEAN = "https://compare.vacuumwars.com/compare/robot-vacuums/"
+
+_VW_PRODUCT = {
+    "name": "Dreame X60 Max Ultra Complete",
+    "slug": "x60",
+    "brand": "Dreame",
+    "price": 1614.99,
+    "vacuum_wars_score_stars": "4.18",
+    "official_suction_power": 35000,
+}
+
+
+def _vw_page(products) -> str:
+    return (
+        "<html><body><div x-data='fetchData'>No products found.</div>"
+        "<script>window.vwProducts = " + json.dumps(products) + ";</script>"
+        "</body></html>"
+    )
+
+
+class TestVacuumWarsReadsTheUncachedHost:
+    """The WordPress page is a cached copy of the tool's own dataset.
+
+    Its Cache-Control says 600s, but a sibling page on that origin was served
+    in a layout the Internet Archive dates five weeks earlier, and which that
+    page had already stopped using days before, so the header bounds nothing.
+    The tool's own host is uncached and has only ever been observed level with
+    or ahead of the cached page, so a structured read of the tool goes there
+    and says that it did. The lag on this page specifically was measured once
+    at three records and closed within hours, so routing is justified on bytes
+    -- 370 KB smaller, array 2 KB in rather than 285 KB -- not on that number.
+    """
+
+    @_PATCH_SSRF
+    async def test_compare_url_is_read_from_the_lean_host(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession({_VW_LEAN: _html_response(_vw_page([_VW_PRODUCT]), _VW_LEAN)})
+        with _patch_wafer(session):
+            result = await fetch_url(_VW_COMPARE)
+
+        assert session.calls == [_VW_LEAN]
+        assert "[Fetched via: " + _VW_LEAN in result["content"]
+        assert "Dreame X60 Max Ultra Complete" in result["content"]
+
+    @_PATCH_SSRF
+    async def test_the_vanity_domain_routes_too(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession({_VW_LEAN: _html_response(_vw_page([_VW_PRODUCT]), _VW_LEAN)})
+        with _patch_wafer(session):
+            await fetch_url("https://robotvacs.com/")
+
+        assert session.calls == [_VW_LEAN]
+
+    @_PATCH_SSRF
+    async def test_a_failing_lean_host_falls_back_and_says_so(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession({
+            _VW_LEAN: MockResponse(b"nope", "text/html", 503, _VW_LEAN),
+            _VW_COMPARE: _html_response(_vw_page([_VW_PRODUCT]), _VW_COMPARE),
+        })
+        with _patch_wafer(session):
+            result = await fetch_url(_VW_COMPARE)
+
+        assert session.calls == [_VW_LEAN, _VW_COMPARE]
+        # Silence here would hand back a cached copy as though it were current.
+        assert "did not answer with the dataset" in result["content"]
+        assert "can lag behind" in result["content"]
+        assert "Dreame X60 Max Ultra Complete" in result["content"]
+
+    @_PATCH_SSRF
+    async def test_a_200_without_the_dataset_also_falls_back(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        # A parked or rebuilt lean host answering 200 with the bare shell must
+        # not render "No products found." as the answer.
+        shell = "<html><body><div x-data='fetchData'>No products found.</div></body></html>"
+        session = MockWaferSession({
+            _VW_LEAN: _html_response(shell, _VW_LEAN),
+            _VW_COMPARE: _html_response(_vw_page([_VW_PRODUCT]), _VW_COMPARE),
+        })
+        with _patch_wafer(session):
+            result = await fetch_url(_VW_COMPARE)
+
+        assert session.calls == [_VW_LEAN, _VW_COMPARE]
+        assert "Dreame X60 Max Ultra Complete" in result["content"]
+        assert "No products found" not in result["content"]
+
+    @_PATCH_SSRF
+    async def test_both_hosts_failing_reports_against_the_asked_url(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession(default=MockResponse(b"nope", "text/html", 503, _VW_LEAN))
+        with _patch_wafer(session):
+            result = await fetch_url(_VW_COMPARE)
+
+        assert "error" in result
+
+    @_PATCH_SSRF
+    async def test_raw_is_fetched_as_named(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        # raw=True is a byte contract for the URL the caller named.
+        session = MockWaferSession({_VW_COMPARE: _html_response(_vw_page([_VW_PRODUCT]), _VW_COMPARE)})
+        with _patch_wafer(session):
+            await fetch_url(_VW_COMPARE, raw=True)
+
+        assert session.calls == [_VW_COMPARE]
+
+    @_PATCH_SSRF
+    async def test_settled_routes_are_left_alone(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        # /page/2/, the -vs- URLs and the /compare/ article all have settled
+        # behaviour that routing must not disturb.
+        for url in (
+            "https://vacuumwars.com/compare/robot-vacuums/page/2/",
+            "https://vacuumwars.com/compare/robot-vacuums/a-vs-b/",
+            "https://vacuumwars.com/compare/",
+            "https://vacuumwars.com/dreame-d30-ultra-review/",
+        ):
+            session = MockWaferSession(default=_html_response("<html><body><p>x</p></body></html>", url))
+            with _patch_wafer(session):
+                await fetch_url(url)
+            assert session.calls == [url], url

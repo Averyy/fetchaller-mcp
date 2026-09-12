@@ -150,11 +150,13 @@ def counts_line(
     *,
     dropped_by_title: int = 0,
     dropped_by_location: int = 0,
+    dropped_by_salary: int = 0,
     board_total: int = 0,
     board_label: str = "The board",
     board_scope: str = "",
     truncated_by_limit: int = 0,
     examined: int = 0,
+    exhausted: bool = False,
 ) -> list[str]:
     """The result-count preamble, as markdown lines.
 
@@ -177,6 +179,13 @@ def counts_line(
     ranking more postings than one search can page through leaves the rest
     unseen, and a result that says only "13 jobs shown" against 1510 matches
     invites the reader to treat 13 as the answer.
+
+    ``exhausted`` says the client paged to the board's last page, so a gap
+    between ``board_total`` and ``examined`` is the board's own arithmetic —
+    GC Jobs counted 84 for St. Catharines and its five pages served 83
+    distinct rows — and not something a narrower query would recover. Without
+    it that gap printed "The remaining 1 were not examined. Narrow the query",
+    which sends the reader chasing a posting that does not exist.
     """
     plural = "" if shown == 1 else "s"
     dropped: list[tuple[int, str]] = []
@@ -184,6 +193,8 @@ def counts_line(
         dropped.append((dropped_by_title, "title"))
     if dropped_by_location:
         dropped.append((dropped_by_location, "location"))
+    if dropped_by_salary:
+        dropped.append((dropped_by_salary, "salary"))
 
     head = f"_{shown} job{plural} shown"
     if truncated_by_limit:
@@ -211,9 +222,15 @@ def counts_line(
         # A window smaller than the board's own count means the rest was never
         # looked at, and saying so is the difference between a partial answer
         # and a wrong one.
-        partial = 0 < examined < board_total
+        partial = 0 < examined < board_total and not exhausted
         lines.append("")
-        if not dropped:
+        if exhausted and 0 < examined < board_total:
+            lines.append(
+                f"_{board_label} counted {board_total}{where} for this query but its "
+                f"pages served {examined} distinct posting"
+                f"{'' if examined == 1 else 's'}; every one of those was examined._"
+            )
+        elif not dropped:
             lines.append(
                 f"_{board_label} has {ranked}{where} for this query; "
                 "raise `limit` to see more._"

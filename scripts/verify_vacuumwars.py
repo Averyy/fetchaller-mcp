@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
+from datetime import UTC, datetime
 
 import wafer
 from bs4 import BeautifulSoup
@@ -142,14 +143,23 @@ async def main() -> int:
             f"lean {len(lp)} vs cached {len(products)}; "
             f"lean is ahead by {len(ahead)}, missing {len(missing)}",
         )
-        if ahead:
-            notes.append(
-                f"HOST LAG: the lean host carried {len(ahead)} listing(s) the "
-                f"Cloudflare-cached WordPress page did not "
-                f"({', '.join(sorted(ahead)[:5])}). Expected, not a fault: "
-                f"compare.vacuumwars.com is the fresher source as well as the "
-                f"cheaper one."
-            )
+        def _max_id(rows):
+            ids = [r.get("id") for r in rows if isinstance(r.get("id"), int)]
+            return max(ids) if ids else None
+
+        # Unconditional and dated on purpose. How far the cached page runs
+        # behind is the one number that decides whether routing is worth its
+        # complexity, and a single reading cannot establish it -- the one lag
+        # seen so far closed within hours. Keep these lines; they accumulate
+        # into the answer. Deliberately NOT a failing gate: it is the site's
+        # cache, not a defect here, and it must never block a release.
+        notes.append(
+            f"HOST LAG {datetime.now(UTC):%Y-%m-%d %H:%M} UTC: lean "
+            f"{len(lp)} listings / max id {_max_id(lp)}; cached page "
+            f"{len(products)} / max id {_max_id(products)}; lean ahead by "
+            f"{len(ahead)}"
+            + (f" ({', '.join(sorted(ahead)[:5])})" if ahead else "")
+        )
         by_wp = {x["slug"]: x for x in products}
         drift = [
             s for s, x in ((y["slug"], y) for y in lp)
@@ -175,12 +185,18 @@ async def main() -> int:
         print(f"        -> {label}: {len(out):,} chars (~{len(out)//4:,} tokens)")
 
     print("\n== a non-robot article keeps its own content ==")
-    # This gate used to assert the literal header "Vacuum Wars Overall". The
-    # site rebuilt the page on 2026-09-11 -- score tables replaced by the same
-    # .vwx- card widget, zero <table> elements left -- and the gate failed on a
-    # string the site owns rather than on anything this module does. Assert the
-    # property instead: every product the page cards up survives into the
-    # markdown, once, with its score, and none of the per-card chrome does.
+    # This gate used to assert the literal header "Vacuum Wars Overall", a
+    # table header on the page. Vacuum Wars replaced those tables with the
+    # same .vwx- card widget sometime between 2026-08-04 and 2026-09-06, so
+    # the string was already gone before this module existed. It kept passing
+    # because the capture it ran against was stale: a fetch on the morning of
+    # 2026-09-11 still returned the old 705 KB table layout, byte-for-byte the
+    # shape the Internet Archive holds for 2026-08-04, and the current 527 KB
+    # card layout only appeared once the cache regenerated that afternoon.
+    # So the gate was never testing this module -- it was testing which cached
+    # copy the CDN happened to hand us. Assert the property instead: every
+    # product the page cards up survives into the markdown, once, with its
+    # score, and none of the per-card chrome does.
     status4, h4 = get(session, CORDLESS)
     out4 = await html_to_markdown(h4, url=CORDLESS)
     out4 = out4[0] if isinstance(out4, tuple) else out4
@@ -298,6 +314,29 @@ async def main() -> int:
         check("vanity domain renders the dataset", "Lab-tested, ranked" in md6)
     except Exception as exc:  # noqa: BLE001
         check("robotvacs.com redirects onto the compare path", False, str(exc))
+
+    print("\n== the compare tool is read from its own uncached host ==")
+    from fetchaller.content.vacuumwars import LEAN_URL
+    from fetchaller.tools.fetch import fetch_url
+
+    for label, asked in (("wordpress path", COMPARE), ("vanity domain", VANITY)):
+        got = await fetch_url(asked, timeout=90, max_tokens=200_000)
+        body = got.get("content", "")
+        check(
+            f"{label}: routed to the lean host and says so",
+            body.startswith(f"[Fetched via: {LEAN_URL}"),
+            got.get("error") or body.splitlines()[0][:60],
+        )
+        check(
+            f"{label}: heading does not drift with the host",
+            "# Vacuum Wars comparison data: robot vacuums" in body,
+        )
+        if lp:
+            check(
+                f"{label}: carries the lean host's listing count",
+                f"({len(lp)} listings" in body,
+                f"expected {len(lp)}",
+            )
 
     print("\n== settled: the 404 routes carry nothing ==")
     for label, url in (("main site -vs- URL", VS), ("lean host /embed/", EMBED)):

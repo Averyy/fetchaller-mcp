@@ -52,11 +52,14 @@ from bs4 import BeautifulSoup, NavigableString
 
 _VACUUMWARS_HOSTS = frozenset({
     "vacuumwars.com", "www.vacuumwars.com",
-    # The comparison tool's own front end. The WordPress page embeds this same
-    # app, and both serve a byte-identical dataset (91 fields, same scores and
-    # prices for every slug present in both). This host is far leaner -- the
-    # array starts ~2 KB in rather than ~285 KB in -- so it is the cheaper
-    # source when a caller already has its URL.
+    # The comparison tool's own front end, and the host every structured
+    # compare read is routed to -- see route_compare_url(). It serves the same
+    # 91 fields with the same scores for every slug present on both, but the
+    # two are not byte-identical and must never be assumed equal: the
+    # WordPress page is a Cloudflare/WP Engine cached copy and this host is
+    # uncached, so the relationship is containment, with this host possibly
+    # ahead. It is also far leaner -- the array starts ~2 KB in rather than
+    # ~285 KB in, over a 370 KB smaller document.
     "compare.vacuumwars.com",
     # The tool's public name -- the site's own article calls it RobotVacs.com
     # and links there, so this is the URL a caller is most likely to arrive
@@ -101,6 +104,64 @@ def is_compare_url(url: str | None) -> bool:
         return True
     path = parts.path
     return path == "/compare" or path.startswith("/compare/")
+
+
+# The tool's own host serves the app at "/" and at this path with a
+# byte-identical body, and reports this one as the final URL either way.
+# Naming it explicitly keeps the disclosure line equal to what was really
+# fetched, instead of looking like a redirect the caller did not ask for.
+LEAN_URL = "https://compare.vacuumwars.com/compare/robot-vacuums/"
+
+# The exact URLs that are nothing but the comparison tool. Deliberately not a
+# prefix match: /page/2/, the -vs- URLs, /compare/ and /embed/ all have settled
+# behaviour that routing must not disturb.
+_ROUTABLE = {
+    ("vacuumwars.com", "/compare/robot-vacuums"),
+    ("vacuumwars.com", "/compare/robot-vacuums/"),
+    ("www.vacuumwars.com", "/compare/robot-vacuums"),
+    ("www.vacuumwars.com", "/compare/robot-vacuums/"),
+    ("robotvacs.com", ""),
+    ("robotvacs.com", "/"),
+    ("www.robotvacs.com", ""),
+    ("www.robotvacs.com", "/"),
+}
+
+
+def route_compare_url(url: str | None) -> str | None:
+    """Map a comparison-tool URL onto the tool's own uncached host.
+
+    The WordPress page is a cached copy. Its ``Cache-Control`` says 600s, but
+    a sibling page on the same origin was observed serving a layout the
+    Internet Archive dates five weeks earlier, so the header is not a bound on
+    how stale it can be. The tool's own host is uncached and has never been
+    seen behind it -- the invariant the live gate holds is containment, lean
+    host superset of cached page.
+
+    Routing wins even at zero lag: 370 KB less to transfer, the array 2 KB
+    into the document instead of 285 KB, and one less hop for robotvacs.com,
+    which is a 301 today.
+
+    Returns the URL to fetch instead, or None to leave the request alone.
+    """
+    if not url:
+        return None
+    parts = urlparse(url)
+    if parts.query:
+        return None
+    host = (parts.hostname or "").lower()
+    if (host, parts.path) in _ROUTABLE:
+        return LEAN_URL
+    return None
+
+
+def has_dataset(html: str) -> bool:
+    """Check whether a fetched page actually carries the inline array.
+
+    A routed read that comes back 200 without it must fall back rather than
+    render the shell's empty state, which looks like a tool with nothing on
+    it rather than like a failed read.
+    """
+    return bool(_VWPRODUCTS_RE.search(html or ""))
 
 
 def _is_compare_shell(soup: BeautifulSoup) -> bool:
@@ -541,6 +602,14 @@ def _parse_vwproducts(text: str) -> list[dict] | None:
 
 
 def _category_label(soup: BeautifulSoup, url: str | None) -> str:
+    # The tool's own hosts serve it at "/", so there is no category in the
+    # path and the <h1> fallback would title the page "Robot Vacuum
+    # Comparison" there against "robot vacuums" on the WordPress path. Since
+    # every structured compare read is now routed to those hosts, that
+    # difference would otherwise reach every caller. The tool is
+    # robot-vacuums-only and that is settled, so name it.
+    if (urlparse(url or "").hostname or "").lower() in _COMPARE_HOSTS:
+        return "robot vacuums"
     path = urlparse(url or "").path.strip("/")
     parts = [p for p in path.split("/") if p and p != "compare"]
     if parts and parts[0] != "page":

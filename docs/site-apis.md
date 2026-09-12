@@ -146,11 +146,17 @@ Four things about that dataset decide whether the output is honest:
 
 **Never hardcode a total.** Vacuum Wars adds listings continuously, so every figure above is a dated measurement, not a constant; `scripts/verify_vacuumwars.py` prints the current one. The earlier claim that the array could not be captured whole from a client was wrong — a plain wafer fetch returns all 2.6 MB and parses the array entire — so the counts are measurements, not floors.
 
-**Three hosts, one dataset, two freshnesses.** `compare.vacuumwars.com` is the tool's own front end. Scores agree with the WordPress page for every slug present on both, and the array starts ~2 KB into the document instead of ~285 KB, so it is the cheaper source when a caller has that URL. It is also the **fresher** one, and that is not a detail: the WordPress page is served through Cloudflare on `max-age=600, must-revalidate`, while the lean host is nginx and uncached. Measured on 2026-09-11 the lean host carried 897 listings to the cached page's 894, three records newer than the cached build. So do not assert the two are identical — the invariant is containment, that everything on the WordPress page is on the lean host, with the lean host possibly ahead. Every route on that host is the tool, so `is_compare_url()` decides on host there and on path only for the main site; that host serves **no `robots.txt`** (the path answers 404 with the app shell), and every route on it other than `/` 404s. `robotvacs.com` is the tool's public name — the site's own article calls it that and links there, so it is the URL a caller is most likely to arrive with. It 301s onto `/compare/robot-vacuums/`, and extraction keys off the URL wafer ended on, so the dataset is read either way; the host is named in `is_vacuumwars()` so the rate limiter, which keys off the URL as asked for, still fires on it.
+**Three hosts, one dataset, and every structured read is routed to one of them.** `compare.vacuumwars.com` is the tool's own front end: uncached nginx, the array ~2 KB into the document instead of ~285 KB, 370 KB smaller overall. The WordPress page is a WP Engine page cache behind Cloudflare serving a copy of the same dataset on `max-age=600, must-revalidate`. Scores agree for every slug present on both, but the two are not identical and must never be assumed equal — the invariant is **containment**, everything on the WordPress page is on the lean host, with the lean host possibly ahead.
+
+`route_compare_url()` maps the exact tool URLs (`vacuumwars.com/compare/robot-vacuums[/]`, `robotvacs.com/`) onto the lean host for any structured GET. It is a strict set membership test, never a prefix match, so `/page/2/`, the `-vs-` URLs, `/compare/` and `/embed/` keep their settled behaviour and a query string suppresses routing entirely; `raw=true` always fetches what was named. The routed read is disclosed with a `[Fetched via: ...]` line, including on a cache hit, and `_category_label()` pins the heading to "robot vacuums" for the lean hosts so it does not drift with the host that answered.
+
+On the **size** of the lag, be careful not to over-read it. It was observed once at three records and had closed within hours, which a plain 600s edge cache explains; the weeks-stale observation below is the cordless page, a sibling on the same origin, not this one. Routing does not depend on the lag being large — it wins on bytes at zero lag — so do not claim "weeks" for the compare page. The live script prints a dated lag line on every run and those accumulate into the real figure. Every route on that host is the tool, so `is_compare_url()` decides on host there and on path only for the main site; that host serves **no `robots.txt`** (the path answers 404 with the app shell), and every route on it other than `/` 404s. `robotvacs.com` is the tool's public name — the site's own article calls it that and links there, so it is the URL a caller is most likely to arrive with. It 301s onto `/compare/robot-vacuums/`, and extraction keys off the URL wafer ended on, so the dataset is read either way; the host is named in `is_vacuumwars()` so the rate limiter, which keys off the URL as asked for, still fires on it.
+
+**Failure is disclosed, never silent.** If the lean host errors, or answers 200 without the array, `fetch_url` re-reads the URL the caller named and leads the output with a line saying the lean host did not answer and that the copy it fell back to can lag. A silent fallback would hand back a cached copy as though it were current, which is exactly the substitution this module exists to prevent. If that second read fails too, the error reports against the URL the caller asked for.
 
 **Settled: the reverse-soft-404 routes carry nothing.** A head-to-head URL such as `/compare/robot-vacuums/<slug>-vs-<slug>/` and `compare.vacuumwars.com/embed/?product1=&product2=` both answer **HTTP 404 while serving the real compare template**. Neither body contains `vwProducts`. `fetch_url` errors on any status ≥ 400, so a caller sees `HTTP 404` rather than a board rendered from an error page, which is the correct outcome. Do not re-open this.
 
-The comparison tool is **robot vacuums only** — `/compare/cordless-vacuums/` is a hard 404, and no other category page carries `vwProducts`. Cordless, upright and carpet-cleaner data lives in the article prose and in the same `.vwx-` leaderboard cards, which render fine. Do not assume tables: the cordless page was rebuilt on 2026-09-11 from score tables to cards and now has zero `<table>` elements, which broke a live gate asserting the literal header "Vacuum Wars Overall". Those pages must be gated on every carded product surviving into the markdown with its score, never on a string the site owns and can rename. Extraction is gated on the `/compare/` path *and* the global being present: a review page carrying the same global must never be thrown away and re-rendered as a spec table. When a `/compare/` path has no readable dataset the output says so — but **only if the page is actually the app**, detected by its own two root Alpine components (`fetchData`, `infiniteScroll`) with the empty state as backstop. Matching on Alpine merely being present is too broad: 12 of the 17 bindings on that page are generic disclosure widgets, so a theme that adopted Alpine for a menu would put the warning on every article under `/compare/`. `vacuumwars.com/compare/` itself is not the tool; it is an ordinary WordPress article announcing RobotVacs.com, and warning that the dataset "could not be read" on a page that rendered perfectly invents a failure, which is this module's own bug pointed the other way.
+The comparison tool is **robot vacuums only** — `/compare/cordless-vacuums/` is a hard 404, and no other category page carries `vwProducts`. Cordless, upright and carpet-cleaner data lives in the article prose and in the same `.vwx-` leaderboard cards, which render fine. Do not assume tables: the cordless page went from score tables to cards between 2026-08-04 and 2026-09-06 and now has zero `<table>` elements, which broke a live gate asserting the literal header "Vacuum Wars Overall". The instructive part is *when* it broke. A fetch on the morning of 2026-09-11 still returned the old 705 KB table layout, byte-for-byte the shape the Internet Archive holds for 2026-08-04, and the current 527 KB card layout appeared only after the cache regenerated that afternoon. **A page on this host can be served weeks stale despite a 600s `Cache-Control`, and it flips without warning**, so a capture is evidence of what the cache held, not of what the site serves. Re-fetch and check the Internet Archive before concluding the site just changed. `compare.vacuumwars.com` is uncached and is the only reliably current source. Those pages must be gated on every carded product surviving into the markdown with its score, never on a string the site owns and can rename. Extraction is gated on the `/compare/` path *and* the global being present: a review page carrying the same global must never be thrown away and re-rendered as a spec table. When a `/compare/` path has no readable dataset the output says so — but **only if the page is actually the app**, detected by its own two root Alpine components (`fetchData`, `infiniteScroll`) with the empty state as backstop. Matching on Alpine merely being present is too broad: 12 of the 17 bindings on that page are generic disclosure widgets, so a theme that adopted Alpine for a menu would put the warning on every article under `/compare/`. `vacuumwars.com/compare/` itself is not the tool; it is an ordinary WordPress article announcing RobotVacs.com, and warning that the dataset "could not be read" on a page that rendered perfectly invents a failure, which is this module's own bug pointed the other way.
 
 **Leaderboard cards** (`.vwx-pc`, on the Top 20 page and on every single-product review) render each product **twice**: a collapsed table row and the expanded panel behind it, both of which survive markdownify, so a model's name, image, score, price and buy link each appeared three to four times. The collapsed `.vwx-row` carries nothing the expanded panel lacks and is dropped. `.vwx-chip-more` ("+2 more") is dropped too, but only because the chips it reveals are already in the DOM behind `nth-of-type` CSS — nothing is hidden by removing it. Feature chips are adjacent inline spans, so they need an explicit separator or they run together into one garbled feature ("...extending side brushPad mop, washing and lifting...").
 
@@ -202,7 +208,7 @@ Every supported job board platform exposes both an individual-posting API and a 
 
 | Platform | Posting URL | Board URL | API base |
 |----------|-------------|-----------|----------|
-| Ashby    | `jobs.ashbyhq.com/{org}/{uuid}` | `jobs.ashbyhq.com/{org}` | `api.ashbyhq.com/posting-api/job-board/{org}` |
+| Ashby    | `jobs.ashbyhq.com/{org}/{uuid}` | `jobs.ashbyhq.com/{org}` | `api.ashbyhq.com/posting-api/job-board/{org}` (REST, first); on anything but a parseable 200, POST `jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams` (`jobBoardWithTeams`) |
 | Gem      | `jobs.gem.com/{board}/{extId}`  | `jobs.gem.com/{board}`   | `api.gem.com/job_board/v0/{board}/job_posts/` (REST, Greenhouse-shaped) + `jobs.gem.com/api/public/graphql` (per posting) |
 | Lever    | `jobs.lever.co/{company}/{id}`  | `jobs.lever.co/{company}` (SSR — no intercept) | `api.lever.co/v0/postings/{company}/{id}` |
 | Greenhouse | `boards.greenhouse.io/{token}/jobs/{id}` (and `?gh_jid=&gh_src=` variants) | `boards.greenhouse.io/{token}` (SSR — no intercept) | `boards-api.greenhouse.io/v1/boards/{token}/jobs/{id}` |
@@ -213,7 +219,7 @@ Every supported job board platform exposes both an individual-posting API and a 
 | JazzHR   | `{tenant}.applytojob.com/apply/{id}[/{slug}]` | `{tenant}.applytojob.com/apply` | Posting: schema.org JSON-LD in the SSR'd HTML. Board: SSR'd HTML (`.list-group .list-group-item` items, optional preceding `.department-heading h3`) |
 | HubSpot  | `www.hubspot.com/careers/jobs/{id}` (often with vestigial `?gh_jid={same id}`) | (no public board endpoint) | POST `wtcfns.hubspot.com/careers/graphql` with `Job(id: ID!)` operation |
 
-- **`src/fetchaller/content/ashby.py`** — Postings extracted from `window.__appData.posting` in the SSR'd HTML (no API needed per-posting). Board index uses the public posting-api REST endpoint. Board response is grouped by `department` for readability; `isListed=False` jobs are filtered out.
+- **`src/fetchaller/content/ashby.py`** — Postings extracted from `window.__appData.posting` in the SSR'd HTML (no API needed per-posting). Board index uses the public posting-api REST endpoint first. An org can switch that API off while keeping its hosted board (EvenUp, 2026-09-11: REST `Not Found` for every casing of the slug, 40 live reqs), and the 404 is then indistinguishable from a slug that was never an Ashby org — so on any non-200 the hosted board's own unauthenticated GraphQL (`jobBoardWithTeams`, operation `ApiJobBoardWithTeams`) is asked; it answers `{"data": {"jobBoard": null}}` for an unknown org and the posting briefs otherwise, and only that null falls through to the HTML fetch. Introspection is disabled; the brief type accepts `id title teamId locationId locationName locationAddress employmentType workplaceType compensationTierSummary secondaryLocations{locationId locationName}` and nothing else observed (no descriptions, publish dates, apply URLs or `isListed`). The GraphQL payload is normalised into the REST `jobs` shape before rendering: `department` is the root of the `teams`/`parentTeamId` chain, `team` the leaf, `jobUrl` is rebuilt as `jobs.ashbyhq.com/{org}/{id}`, and `compensationTierSummary` nests under `compensation` as REST does. The render prints `**source**:` for both paths and a `**note**:` on the GraphQL one, so a description-less board is never mistaken for the REST read. Board response is grouped by `department` for readability; `isListed=False` jobs are filtered out; a `compensation.compensationTierSummary` renders inline on the posting line.
 - **`src/fetchaller/content/gem.py`** — Postings via Apollo GraphQL (`ExternalJobPostingQuery`). Board listings via the public REST endpoint, which is Greenhouse-shaped (flat list of jobs with `departments[]`, `location.name`, `location_type`, `employment_type`, `absolute_url`).
 - **`src/fetchaller/content/lever.py`** + **`src/fetchaller/content/greenhouse.py`** — Posting API paths only. Their board index pages are SSR'd and render correctly through the generic HTML pipeline.
 - **`src/fetchaller/content/dayforce.py`** — Postings extracted from `__NEXT_DATA__.props.pageProps.jobData` in the SSR'd HTML; `site-info` (clientNamespace/jobBoardCode/cultureCode) also pulled from `dehydratedState.queries`. Board listing needs three round-trips: (1) GET the board page for session cookies + `site-info`, (2) GET `/api/auth/csrf` for the NextAuth token, (3) POST `/api/geo/{namespace}/jobposting/search` with `X-CSRF-TOKEN`, `Content-Type: application/json`, and body `{clientNamespace, jobBoardCode, cultureCode, pageNumber, pageSize}`. The validator is strict — `jobBoardId` instead of `jobBoardCode` returns 400 "Culture not found".
@@ -231,14 +237,14 @@ When a URL doesn't match a known ATS host, `fetch_url()` still falls through to 
 |-------|----------|--------|
 | Greenhouse `<div id="grnhse_app">` / `boards.greenhouse.io/embed/job_app` iframe / `?gh_jid=&gh_src=` query params | `is_greenhouse_html` + `extract_greenhouse_params_from_html` | Fetch posting via `boards-api.greenhouse.io/v1/boards/{token}/jobs/{id}` |
 | Dayforce white-label SSR (`__NEXT_DATA__.runtimeConfig.BASE_URL == "https://jobs.dayforcehcm.com/"`) | `extract_dayforce_canonical_board_url` | Rewrite to canonical `jobs.dayforcehcm.com/{lang}/{namespace}/{board}` and run the standard Dayforce board flow |
-| Ashby `<script src="https://jobs.ashbyhq.com/{org}/embed">` | `extract_ashby_embed_slug_from_html` | Fetch the canonical board via Ashby's posting-api REST endpoint |
+| Ashby `<script src="https://jobs.ashbyhq.com/{org}/embed">` | `extract_ashby_embed_slug_from_html` | Fetch the canonical board via Ashby's posting-api REST endpoint, falling back to the hosted board's GraphQL when the org has the public API off |
 | BambooHR `<div id="BambooHR" data-domain="{tenant}.bamboohr.com">` | `extract_bamboohr_embed_tenant` | Fetch `/careers/list` on the tenant subdomain |
 | JazzHR `*.applytojob.com/apply` references (any tag/attribute) | `extract_jazzhr_embed_tenants` | Fetch each tenant's board and aggregate via `render_jazzhr_boards()` |
 
 Each detector runs in order; the first match returns and short-circuits the rest. Output is prefixed with a small `[ATS-hosted board: …]` breadcrumb so callers see which subsystem produced the markdown.
 
 Key behaviors:
-- **API 404 fall-through**: When an org/board isn't hosted on that platform (e.g. `jobs.ashbyhq.com/anthropic` — Anthropic doesn't use Ashby), the API returns 404 and the dispatch falls through to the normal HTML fetch. No error surfaced to the caller.
+- **API 404 fall-through**: When an org/board isn't hosted on that platform (e.g. `jobs.ashbyhq.com/anthropic` — Anthropic doesn't use Ashby), the API returns 404 and the dispatch falls through to the normal HTML fetch. No error surfaced to the caller. A first-party ATS 404 is ambiguous, though — no such org, or the org turned the public API off — and falling through to an SPA shell turns that ambiguity into a confident empty board. Ashby now settles it with a second, first-party read (see above) before falling through; the other board interceptors still return `None` on a bare non-200 and have not been audited for an equivalent "API off, board on" mode.
 - **Order in dispatch matters**: Posting URLs are checked before board URLs (`/{org}/{uuid}` is more specific than `/{org}`). Posting regex requires two path segments; board regex requires exactly one. For Dayforce, CSOD, BambooHR, JazzHR, and Workday the URL shapes already disambiguate (`.../jobs/{id}` vs `.../home/requisition/{reqid}` vs `.../careers/{id}` vs `.../apply/{id}` vs `.../job/{externalPath}` for postings; bare board paths otherwise).
 - **Renderers preserve raw field names**: Each platform's renderer dumps the API's own keys/enums (`FullTime`, `REMOTE`, `full_time`, `hybrid`, `postingType`, `availableCultures`, `locationType: 2`) without translation — companies expose different metadata, and translation loses signal.
 - **Pagination quirks**: Workday's salesforce.wd12 tenant returns `total=N` only on page 1 and zeros it on subsequent pages — the Workday board fetcher locks `total` to the first page's value to avoid an early break. Other Workday tenants (CAE, NVIDIA, Mastercard, Adobe) all behave normally.
@@ -887,6 +893,126 @@ Parsing notes:
 - The board is slow: a filtered search page is ~280KB and routinely takes
   30–60s, with real 180s timeouts during development. The tool's default
   timeout is 300s.
+
+
+## emploisfp-psjobs.cfp-psc.gc.ca — GC Jobs, federal public service (`src/fetchaller/gcjobs/`)
+
+The only route to Government of Canada postings, and one a plain fetch cannot
+read: `page2440` answers 149KB of shell whose body says "The page is being
+updated. Please wait... JavaScript must be enabled", with no `<form>` and no
+postings. It is a Java/JSF app that delivers the page in two halves, and the
+listing is the second one. Reverse-engineered with wafer on 2026-09-11; every
+figure below is a dated measurement.
+
+**The results are a second request, and one flag alone is an error.** The
+page's own `jobSearch.js` re-fetches `window.location.href` with
+`isSecondPartOfPage=1` appended and drops the answer into `#bodyPart`. Sent by
+itself that flag returns a 2,355-byte "Lost Connection / Connexion
+interrompue" page; with `isInitialNetworkCheck=1` alongside it, 134KB and
+twenty postings. No landing GET is needed — the first request of a fresh
+session can be the search.
+
+**The init flag *is* the search.** Criteria travel in the query string exactly
+as the page's GET form sends them — the input names, not the `critMap`
+button indexes an earlier probe sent (`wLocation=232` is accepted and ignored;
+`addedLocation=W232` narrowed the board from 414 to 84):
+
+```
+GET page2440?toggleLanguage=en&tab=1&title=anal&addedLocation=W232
+    &department=75&jobSalaryRange=7&jobSalaryRange=8&officialLanguage=1
+    &variousLocation=variousLocation&search=Search+jobs
+    &isSecondPartOfPage=1&isInitialNetworkCheck=1
+GET page2440?ajaxFilter=st+catharines
+    -> [{"LOCATION_CD":"W","LOCATION_DESC":"St. Catharines (Ontario)","LOCATION_ID":232}]
+```
+
+`LOCATION_CD` is `P` for a province, `W` for a place; the value sent is the
+two concatenated. The autocomplete is a substring search ("Toronto" also
+returns the airport; "x" returns Ajax and Comox), so the client sends exact
+name matches only, and none at all for a place it cannot resolve.
+
+The search is stored in the JSF session **only when the init flag is
+present**, and a search without it is an HTTP 500 carrying the Lost
+Connection page. Paging therefore omits the flag: page N is
+`requestedPage=N&fromPage=N-1&tab=1&log=false&isSecondPartOfPage=1`, which
+walks the stored search. A page request *with* the init flag resets the
+stored search to the whole board and pages that — measured, page 2 of a
+13-page Ontario search came back as page 2 of the 21-page national listing,
+with nothing in the response to say so. That makes a search a conversation
+keyed to `JSESSIONID`, and two cannot share the process-wide session at once;
+`_exchange_lock` serialises them. The first response of a fresh session
+rewrites every href with `;jsessionid=…`, which the row regex tolerates —
+anchoring on `page1800?` parsed the first search a process ran to zero rows.
+
+**The page echoes the criteria it applied**, one `addTopSearchCritButton(...)`
+call each — a province as `"addedLocation"+"P"+ 4`, a city as
+`"addedLocation"+"W" + "232"`, a band as `"jobSalaryRange7"`. That echo is the
+only proof a filter was honoured (an ignored parameter yields a normal page of
+the whole board), so `applied_criteria` reads it and a filter the board did not
+echo is reported as unscoped and re-applied locally.
+
+**Board semantics, each measured:**
+
+- **Title is a case-insensitive substring in the given word order.** "policy
+  analyst" returned 3, "analyst policy" 0, "nalyst" 32. So the board is sent
+  the first four characters of the longest query word — the longest substring
+  every title the client filter would accept is certain to contain — and the
+  client filter is the guarantee.
+- **Salary bands file a posting by the bottom of its range.** Band 8
+  ($100,000+) alone returned floors from $100,265 up; band 5 ($70–79,999)
+  floors from $70,338 to $78,909. A minimum salary selects every band whose
+  top reaches it and the floor is re-checked here, since a band starts below
+  the figure asked for. Hourly postings are left as the board classed them.
+- **A city filter is loose.** St. Catharines returned 84, of which 73 were
+  "Various Locations" and 6 named places in Nova Scotia and Quebec; 4 named
+  the city. The local re-check drops the 6, keeps "Various Locations" (a
+  posting open in many places may include the city; the posting lists them)
+  and says how many there were. `exclude_various_locations` sends the board's
+  own "Exclude various locations" checkbox, which took St. Catharines from 84
+  to 4.
+- **"English" as a language facet includes "English or French" and "Various
+  language requirements" rows** (302 of 414); it is a board facet, trusted as
+  scoped and labelled as such.
+- The count is "Jobs open to the public (N)" and the strip says "of M" pages,
+  twenty rows each. A genuine empty search says "No jobs found" with a count
+  of 0; a page past the end renders the strip with no rows. The count can
+  exceed the distinct rows the pages serve (84 counted, 83 served) — the
+  `exhausted` flag on `counts_line` exists so that gap is not reported as an
+  unexamined remainder.
+- The organization vocabulary (188 entries: id, name, abbreviation) ships
+  inline on every *result* page as `departmentsIdNameAbbreviation[i][0..2]`
+  and nowhere on the shell, so learning it costs one unfiltered search, once
+  per process. Exact name or abbreviation only; "CRA" and "Canada Revenue
+  Agency" both resolve, "Revenue" is matched on the row text instead.
+
+**Detail pages need none of this** — `page1800?poster=<id>` is a plain GET —
+but come in three shapes:
+
+- **External.** "You will leave the GC Jobs Web site": the organization hosts
+  the posting itself (CMHC, CSIS, Bank of Canada…), and GC Jobs serves only a
+  departure notice with an outbound link — no title beyond the link text, no
+  closing date, location, salary or eligibility. Eleven of twenty postings
+  enumerated on 2026-09-11 were this, and every "Various Locations" CMHC row
+  checked was. Parsed as a posting it yields a record with every field
+  empty; it is rendered as external with the URL instead.
+- **Posting.** `<h1>` title, `<h2 class="pst-h2">` organization, `<h3
+  class="pst-h3">` closing date in Pacific time, a facts box of
+  `<b>Label</b><br>value` pairs (reference and selection process numbers,
+  location, salary with `- Classification: FC-05` appended, **Who can
+  apply**), and the body sections in `.right-box`. "Who can apply" is
+  rendered first: three of nine readable postings were restricted — to
+  Nunavut Inuit residing in Arviat, to a 125 km radius of the National
+  Capital Region, to Canadian citizens — in ways nothing on the listing
+  reveals.
+- **Legacy.** `poster=1` is a Fisheries and Oceans ad with a `Deadline:` of
+  October 12, 2001, served as a normal live page. The closing date is parsed
+  from either template and a past one is rendered as "Closed" before anything
+  else, so anything guessing low ids cannot surface it as current.
+
+An unknown poster id (0, 999999999) is a plain 404, unlike gojobs, whose
+`Preview.aspx` answers 200 with its shell. A posting alone must not be trusted
+to prove the page is a posting: the Lost Connection page has two `<h1>`s, and
+the parser requires the closing-date heading or the facts box.
 
 
 ## ca.indeed.com (`src/fetchaller/indeed/`)

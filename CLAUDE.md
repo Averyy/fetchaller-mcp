@@ -135,15 +135,31 @@ opened on purpose. Since each fetch costs a full render, the domain is throttled
 at 2s (`vacuumwars_limiter`); no block has ever been seen.
 
 Never hardcode a total; the catalogue grows weekly and every figure above is a
-dated measurement. Three hosts serve it. `compare.vacuumwars.com` is the tool's
-own front end with the array ~2 KB in rather than ~285 KB in, so it is the
-cheaper source when a caller has that URL — and the **fresher** one, because the
-WordPress page sits behind Cloudflare on a 600s cache while the lean host is
-uncached nginx. They are not interchangeable snapshots: on 2026-09-11 the lean
-host carried 897 listings to the cached page's 894. Never assert the two are
-equal; the invariant is containment, with the lean host possibly ahead. Every
-route there is the tool, so decide on host for that one and on path for the main
-site, and note it serves no `robots.txt` at all. `robotvacs.com` is the tool's **public name** — the site's
+dated measurement. Three hosts serve it, and **every structured read of the
+tool is routed to `compare.vacuumwars.com`** — see `route_compare_url()`. That
+host is the tool's own front end: uncached nginx, the array ~2 KB into the
+document rather than ~285 KB, 370 KB smaller overall, and one hop fewer for
+`robotvacs.com`. The WordPress page is a WP Engine/Cloudflare cached copy of
+the same dataset. Never assert the two are equal; the invariant, and the one
+the live gate holds, is **containment** — lean host superset of cached page.
+
+Be careful about the **size** of that lag. It was measured once at three
+records and had closed within hours, which is consistent with the plain 600s
+edge cache. The weeks-stale observation is the *cordless* page, a sibling on
+the same origin, not this one. So do not write "weeks" about the compare page
+in docs or output. Routing is justified without it: it wins at zero lag on
+bytes alone. `scripts/verify_vacuumwars.py` prints a dated lag line every run,
+and those lines accumulate into the real answer.
+
+Routing is a strict URL map, never a prefix: only the exact tool URLs move, so
+`/page/2/`, the `-vs-` URLs, `/compare/` and `/embed/` keep their settled
+behaviour, and `raw=true` fetches what was named. The routed read is disclosed
+with a `[Fetched via: ...]` line, on a cache hit too. If the lean host fails,
+or answers 200 without the array, fetchaller re-reads the URL the caller named
+and **says so at the top of the output** — a silent fallback would hand back a
+cached copy as though it were current, which is the substitution this module
+exists to prevent. Errors after that report against the asked URL. Note the
+lean host serves no `robots.txt` at all. `robotvacs.com` is the tool's **public name** — the site's
 own article links there, so it is the URL a caller most likely arrives with. It
 301s onto the compare path and extraction keys off the URL wafer ended on, so
 keep it in `is_vacuumwars()` or the rate limiter, which keys off the URL as
@@ -158,9 +174,19 @@ The comparison tool is **robot vacuums only** — `/compare/cordless-vacuums/` i
 a hard 404. Cordless, upright and carpet-cleaner data is article prose and the
 same `.vwx-` card widget, which renders fine; do not go looking for a dataset
 that isn't there. Do not assume those pages carry tables either: the cordless
-page was rebuilt on 2026-09-11 from score tables to cards, with zero `<table>`
-elements left. Gate them on the cards surviving, never on a header string the
-site owns.
+page went from score tables to cards between 2026-08-04 and 2026-09-06, and now
+has zero `<table>` elements. Gate them on the cards surviving, never on a header
+string the site owns.
+
+**A capture of this site is not evidence of what it serves.** That page change
+was already weeks old when a fetch on the morning of 2026-09-11 still returned
+the old table layout, matching the Internet Archive's 2026-08-04 copy; the
+current layout appeared only when the cache regenerated that afternoon. So a
+page here can be served **weeks** stale, not the 600s its `Cache-Control`
+implies, and it flips without warning. Date every capture, re-fetch before
+concluding the site changed, and check the Internet Archive before blaming a
+same-day edit. `compare.vacuumwars.com` is uncached and is the only reliably
+current source.
 Gate extraction on the `/compare/` path *and* the global being present, or a
 review page that happens to carry it gets thrown away and re-rendered as a spec
 table. A `/compare/` path with no readable dataset must say so — **but only when
@@ -242,6 +268,43 @@ in" badge and a text match returns the facet. Radius (`d`, default 50km) is a
 real filter and is part of the answer: the board searches *near* a city, so
 state the radius or nearby towns read as a broken location filter.
 
+**emploisfp-psjobs.cfp-psc.gc.ca** (GC Jobs, the federal public service board)
+is the board a plain fetch reads as *empty*: the search page is a JavaScript
+shell over zero postings, and the listing is a second request that needs
+**two** flags — `isSecondPartOfPage=1` alone is a "Lost Connection" page, and
+`isInitialNetworkCheck=1` is what unlocks it. That second flag is also the
+search: criteria go in the query under the form's input names (`title`,
+`addedLocation=W232`, `department`, `jobSalaryRange`, `officialLanguage`), are
+stored in the JSF session only when it is present, and are **reset to the
+whole board** by any later request that carries it — so paging omits it and
+walks the stored search, which makes a search a conversation and the exchange
+is locked like gojobs. An earlier probe sent `wLocation=232` (a display-button
+index from the page's script, not an input name), saw it silently ignored and
+concluded the location filter could not be applied; the input name works. The
+page echoes every criterion it applied as an `addTopSearchCritButton` call and
+that echo, not the request, decides whether a filter is reported as applied.
+Title is a **substring in the given word order** ("policy analyst" 3, "analyst
+policy" 0), so the board gets four characters of the longest word and the
+client filter is the guarantee. A third of postings are hosted on the
+organization's own site and `page1800` serves a departure notice for them;
+`get_gcjobs_job` returns the outbound URL rather than an empty record, prints
+"Who can apply" first, and marks a past closing date "Closed" — the board
+still serves a 2001 posting at `poster=1` as though live. An unknown id is a
+plain 404. fetchaller has NO credentialed path to GC Jobs; the internal tab
+(`tab=2`) is never requested.
+
+**jobs.ashbyhq.com** board index: an org can switch off Ashby's **public
+posting API** and keep its hosted board (EvenUp, 2026-09-11, 40 live reqs), and
+the REST endpoint then answers 404 for every casing of the slug — exactly what
+it answers for a slug that was never an Ashby org. Treating that 404 as "no
+board" fell through to the SPA shell, which rendered `# EvenUp Jobs` as a
+successful read of an empty board, and a board sweep missed the company
+entirely. Never run a case-variant ladder on it. The hosted board's own
+unauthenticated GraphQL (`jobBoardWithTeams`) is what settles the ambiguity:
+null means no such org, anything else is the board. It carries no descriptions,
+so the render says which path it came from. A first-party ATS 404 is ambiguous
+on every board; only Ashby has been given the second read so far.
+
 ### robots.txt — settled, do not re-open
 
 **fetchaller is a user-directed fetcher, not a crawler, and robots.txt is not
@@ -313,6 +376,6 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). emploisfp-psjobs.cfp-psc.gc.ca (GC Jobs: two-flag second-part listing, session-stored search and paging, criteria echo, external/legacy posting shapes). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
 - `docs/spa-discovery.md` — SPA API discovery (`src/fetchaller/discovery/`): observing a page in a browser and replaying what it made, so an endpoint's shape never needs bundle archaeology again. Ranking (why coverage and record count are directly opposed), the oracle (why a 200 that means "malformed" is the core problem), minimization, mint steps, and the measured per-board results
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

@@ -562,7 +562,7 @@ class TestLiveSuiteExemptions:
         # `search_indeed` / `get_indeed_job` — the search one carries no such
         # token. The property actually being protected is "third-party job
         # board", which is not derivable from a name, so the boards are named.
-        boards = ("jobs", "job", "gojobs", "jobbank", "indeed", "oracle", "workday",
+        boards = ("jobs", "job", "gojobs", "gcjobs", "jobbank", "indeed", "oracle", "workday",
                   "eightfold", "amazon", "google", "apple", "meta", "uber")
         assert all(any(b in name for b in boards) for name in LIVE_SUITE_EXEMPT)
 
@@ -576,7 +576,10 @@ class TestLiveSuiteExemptions:
         # get_gojobs_job: OPS postings close, so a hardcoded Job ID fails on a
         # date nobody chose. get_indeed_job: same, plus Indeed is
         # Cloudflare-fronted and each posting is ~500KB.
-        assert detail_exempt == {"get_gojobs_job", "get_indeed_job"}
+        # get_gcjobs_job: federal postings close too, and the board serves a
+        # closed posting as a normal page, so a fixed id would not even fail
+        # loudly — it would start reporting "Closed" as though the tool broke.
+        assert detail_exempt == {"get_gojobs_job", "get_indeed_job", "get_gcjobs_job"}
 
     def test_core_tools_are_never_exempt(self):
         for name in ("fetch", "search", "browse_reddit", "search_reddit", "search_realtor"):

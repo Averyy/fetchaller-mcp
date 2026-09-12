@@ -503,16 +503,44 @@ class AshbyBoardTooLargeError(Exception):
     """
 
 
-async def fetch_ashby_board(org: str, session) -> dict | None:
-    """Fetch the full job-board listing for ``jobs.ashbyhq.com/{org}``.
+# The hosted board's own GraphQL endpoint. An org can keep its hosted board
+# while switching the public posting API off (EvenUp, 2026-09-11: REST answers
+# ``Not Found`` for every casing of the slug, the board has 40 live reqs), and
+# then the REST 404 is indistinguishable from "no such org". This endpoint is
+# unauthenticated, answers ``{"data": {"jobBoard": null}}`` for an unknown org
+# and the posting briefs for a real one, so it is what settles the question.
+# Introspection is disabled; the selection set below is every field the
+# ``JobPostingBriefsWithIdsAndTeamId`` type was observed to accept — no
+# descriptions, publish dates or apply URLs exist on it.
+_BOARD_GRAPHQL_URL = "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams"
+_BOARD_GRAPHQL_QUERY = (
+    "query ApiJobBoardWithTeams($organizationHostedJobsPageName: String!) { "
+    "jobBoard: jobBoardWithTeams("
+    "organizationHostedJobsPageName: $organizationHostedJobsPageName) { "
+    "teams { id name parentTeamId } "
+    "jobPostings { id title teamId locationId locationName locationAddress "
+    "employmentType workplaceType compensationTierSummary "
+    "secondaryLocations { locationId locationName } } } }"
+)
+_HOSTED_BOARD_BASE = "https://jobs.ashbyhq.com"
 
-    Returns the raw API payload (``{"jobs": [...], "apiVersion": "..."}``) or
-    ``None`` on any error so callers can fall through to the normal HTML fetch.
-    An oversized payload raises :class:`AshbyBoardTooLargeError` instead, because the
-    HTML fall-through cannot represent a board that really does exist.
+
+async def _fetch_ashby_board_graphql(org: str, session) -> dict | None:
+    """Read the board through the hosted page's GraphQL, in the REST shape.
+
+    Returns ``None`` when the org does not exist (``jobBoard`` is null), when
+    the endpoint returns GraphQL errors, or on any transport failure.
     """
     try:
-        resp = await session.get(f"{_BOARD_API_BASE}/{org}")
+        resp = await session.post(
+            _BOARD_GRAPHQL_URL,
+            json={
+                "operationName": "ApiJobBoardWithTeams",
+                "variables": {"organizationHostedJobsPageName": org},
+                "query": _BOARD_GRAPHQL_QUERY,
+            },
+            headers={"Content-Type": "application/json"},
+        )
     except wafer.ResponseTooLarge as exc:
         raise AshbyBoardTooLargeError(str(exc)) from exc
     except Exception:
@@ -520,12 +548,112 @@ async def fetch_ashby_board(org: str, session) -> dict | None:
     if resp.status_code != 200:
         return None
     try:
-        data = json.loads(resp.text)
+        payload = json.loads(resp.text)
     except (json.JSONDecodeError, ValueError):
         return None
-    if not isinstance(data, dict):
+    if not isinstance(payload, dict) or payload.get("errors"):
         return None
-    return data
+    board = (payload.get("data") or {}).get("jobBoard")
+    if not isinstance(board, dict):
+        return None
+    return _normalise_graphql_board(board, org)
+
+
+def _normalise_graphql_board(board: dict, org: str) -> dict:
+    """Map a ``jobBoardWithTeams`` payload onto the posting-api ``jobs`` shape.
+
+    The REST payload names a top-level ``department`` and a leaf ``team``; the
+    GraphQL payload gives each posting a ``teamId`` into a ``teams`` list linked
+    by ``parentTeamId``, so the department is the root of that chain.
+    """
+    teams: dict[str, dict] = {}
+    for t in board.get("teams") or []:
+        if isinstance(t, dict) and t.get("id"):
+            teams[str(t["id"])] = t
+
+    def root_team_name(team_id: str | None) -> str:
+        seen: set[str] = set()
+        cur = teams.get(str(team_id)) if team_id else None
+        name = ""
+        while cur is not None and cur.get("id") not in seen:
+            seen.add(cur["id"])
+            name = (cur.get("name") or "").strip() or name
+            parent = cur.get("parentTeamId")
+            cur = teams.get(str(parent)) if parent else None
+        return name
+
+    jobs: list[dict] = []
+    for p in board.get("jobPostings") or []:
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get("id") or "").strip()
+        team_id = p.get("teamId")
+        leaf = teams.get(str(team_id)) if team_id else None
+        job: dict = {
+            "id": pid,
+            "title": p.get("title"),
+            "department": root_team_name(team_id),
+            "team": (leaf.get("name") or "").strip() if leaf else "",
+            "employmentType": p.get("employmentType"),
+            "location": p.get("locationName"),
+            "secondaryLocations": [
+                {"location": s.get("locationName")}
+                for s in (p.get("secondaryLocations") or [])
+                if isinstance(s, dict) and s.get("locationName")
+            ],
+            "workplaceType": p.get("workplaceType"),
+            "address": p.get("locationAddress"),
+            # The hosted board only ever returns postings that are on it.
+            "isListed": True,
+            "jobUrl": f"{_HOSTED_BOARD_BASE}/{org}/{pid}" if pid else "",
+        }
+        summary = p.get("compensationTierSummary")
+        if summary:
+            job["compensation"] = {"compensationTierSummary": summary}
+        jobs.append(job)
+    return {
+        "jobs": jobs,
+        "source": _BOARD_GRAPHQL_URL,
+        "sourceNote": (
+            "this org has switched off Ashby's public posting API "
+            f"({_BOARD_API_BASE}/{org} answers 404), so the listing was read "
+            "from the hosted board's own GraphQL, which carries titles, "
+            "teams, locations, workplace and employment type, and pay "
+            "summaries but no descriptions or publish dates"
+        ),
+    }
+
+
+async def fetch_ashby_board(org: str, session) -> dict | None:
+    """Fetch the full job-board listing for ``jobs.ashbyhq.com/{org}``.
+
+    Returns the API payload (``{"jobs": [...], "apiVersion": "...",
+    "source": ...}``) or ``None`` when the org has no Ashby board at all, so
+    callers can fall through to the normal HTML fetch. An oversized payload
+    raises :class:`AshbyBoardTooLargeError` instead, because the HTML
+    fall-through cannot represent a board that really does exist.
+
+    The public posting-api REST endpoint is read first: it is one GET and
+    carries descriptions. When it answers anything but a parseable 200 the
+    hosted board's GraphQL is tried, because an org can disable the public API
+    while keeping its board, and that REST 404 looks exactly like a slug that
+    was never an Ashby org. Only a null GraphQL board means the latter.
+    """
+    try:
+        resp = await session.get(f"{_BOARD_API_BASE}/{org}")
+    except wafer.ResponseTooLarge as exc:
+        raise AshbyBoardTooLargeError(str(exc)) from exc
+    except Exception:
+        resp = None
+    if resp is not None and resp.status_code == 200:
+        try:
+            data = json.loads(resp.text)
+        except (json.JSONDecodeError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            data.setdefault("source", f"{_BOARD_API_BASE}/{org}")
+            return data
+    return await _fetch_ashby_board_graphql(org, session)
 
 
 def render_ashby_board(data: dict, org: str, source_url: str | None = None) -> str:
@@ -538,7 +666,10 @@ def render_ashby_board(data: dict, org: str, source_url: str | None = None) -> s
     api_version = (data.get("apiVersion") or "").strip()
     if api_version:
         parts.append(f"**apiVersion**: {api_version}")
-    parts.append(f"**source**: {_BOARD_API_BASE}/{org}")
+    parts.append(f"**source**: {data.get('source') or f'{_BOARD_API_BASE}/{org}'}")
+    source_note = (data.get("sourceNote") or "").strip()
+    if source_note:
+        parts.append(f"**note**: {source_note}")
     if source_url:
         parts.append(f"**boardUrl**: {source_url}")
     parts.append("")
@@ -583,6 +714,10 @@ def render_ashby_board(data: dict, org: str, source_url: str | None = None) -> s
             team = (j.get("team") or "").strip()
             if team and team != dept:
                 details.append(f"team: {team}")
+            comp = j.get("compensation")
+            summary = (comp.get("compensationTierSummary") or "").strip() if isinstance(comp, dict) else ""
+            if summary:
+                details.append(summary)
             if details:
                 line += " — " + " · ".join(details)
             parts.append(line)

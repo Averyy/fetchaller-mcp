@@ -186,6 +186,7 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_workday.py` — Workday URL detection (board + posting, with/without language segment, underscored sites, nested job paths, rejection of stripped-lang ambiguity), `WKQ0` layout-span stripping in description HTML, board render (grouping, link construction, bulletFields)
 - `test_bamboohr.py` — BambooHR URL detection (board + posting, hyphenated tenants, non-numeric ID rejection), widget embed detection (data-domain regex variants, wrong domain rejection), posting render (location flattening, description + additionalInformation), board render (department grouping, atsLocation/location fallback)
 - `test_jazzhr.py` — JazzHR URL detection (board + posting, with/without slug, hyphenated tenants, short ID rejection), multi-tenant embed extraction (dedupe + order), posting render (JSON-LD field passthrough, @context/@type top-level skip), board render (department grouping), multi-board render (per-tenant `##` sections)
+- `test_ashby_postprocessor.py` — Ashby posting extraction from `__appData`, board-index rendering, the oversize budget, and the board fetch's REST → hosted-GraphQL fallback (`TestFetchAshbyBoardGraphqlFallback`: REST 200 never asks GraphQL; REST 404 + board → rendered with the GraphQL `source` and `note` lines; REST 404 + null board → `None`; GraphQL errors/transport failures → `None`; team-chain → department/team mapping, cycle guard). Live regression: `fetch("https://jobs.ashbyhq.com/evenup")` must render ~40 postings including `Senior Financial Analyst, Corporate Consolidation & G&A` at `Toronto (hybrid)` (verified 2026-09-12)
 - `test_ashby_embed_script.py` — Ashby script-tag embed detection (`<script src="https://jobs.ashbyhq.com/{org}/embed">`): basic match, embed-with-query, no-match cases, and the `/api`/`/embed`/`/_next` slug blocklist
 - `test_realtor.py` — realtor.ca: URL detection (listing/SEO/map, EN `/real-estate/` + FR `/immobilier/`), filter encodings (range, sort/property/building/ownership inversion, place-from-slug), `/map` kwarg parsing (bbox + hash, rent params), agent/brokerage extraction (EN "Brokerage" / FR "Bureau de courtage" / no-keyword fallback), listing-HTML parsing (price/address/beds/rooms/agent/MLS/coords), search + listing-detail rendering
 - `test_ubiquiti.py` — ui.com: URL detection (locale store subdomains, techspecs, guides, lookalike-domain rejection), Next.js route dispatch incl. the collection product routes and the unknown-category soft 404 (the store answers 200 with its home page), spec-tree rendering (group nesting via `parentId`, absent flags as `—`, multi-line values, compare-grid skipped on products / used as badges on categories), price (currency exponent — JPY is not /100 — surcharge naming, `from` for multi-variant), availability with sold-out/restock dates, guide discovery for both runtime generations, the JS-literal asset parser (bare identifier keys, `\xNN`/surrogate escapes), SVG reconstruction (CSS class inlining, gradient flattening, dangling paint refs → `none` per SVG 1.1, structural `clip-path` left alone), per-page failure isolation, and slug path-traversal safety
@@ -226,6 +227,9 @@ Twelve gate groups cover the whole module against the live site:
   empty state;
 - `/page/2/` is a hard 404 rather than a second copy of the payload, and the
   `-vs-` and `/embed/` routes 404 with no dataset in them;
+- a structured read of the tool is routed to `compare.vacuumwars.com`, says so
+  with a `[Fetched via: ...]` line, keeps the same heading whichever host
+  answered, and carries the lean host's listing count;
 - the lean host carries everything the Cloudflare-cached WordPress page does,
   with scores agreeing on every shared slug. **Containment, not equality** —
   the lean host is uncached and runs ahead, so an equality assertion passes or
@@ -242,8 +246,13 @@ Twelve gate groups cover the whole module against the live site:
   non-robot article keeps every product it cards up, with its score and without
   the per-card chrome.
 
-It also prints the catalogue's current size and the host lag — those figures
-must never be copied into the docs as constants, only as dated measurements.
+It also prints the catalogue's current size and a dated **HOST LAG** line every
+run. That line is deliberately not a gate: how far the cached WordPress page
+runs behind the tool's own host is the site's cache, not a defect here, and it
+must never block a release. Keep the lines, though — a single reading cannot
+establish the lag's size (the one observed so far was three records and closed
+within hours), and they accumulate into the answer. Neither figure may be
+copied into the docs as a constant, only as a dated measurement.
 
 ## Test URLs for Benchmarking
 
@@ -279,9 +288,11 @@ must never be copied into the docs as constants, only as dated measurements.
   - leaderboard cards (each product must appear once, not three to four times):
     `https://vacuumwars.com/vacuum-wars-best-robot-vacuums/`
   - single review, same card widget: `https://vacuumwars.com/dreame-d30-ultra-review/`
-  - non-robot article, no dataset, prose plus the same `.vwx-` cards. Rebuilt
-    2026-09-11 from score tables to cards, so assert the cards survive, not a
-    header string: `https://vacuumwars.com/vacuum-wars-best-cordless-vacuums/`
+  - non-robot article, no dataset, prose plus the same `.vwx-` cards. Went
+    from score tables to cards between 2026-08-04 and 2026-09-06, though a
+    stale cache still served the table layout on 2026-09-11, so assert the
+    cards survive, never a header string:
+    `https://vacuumwars.com/vacuum-wars-best-cordless-vacuums/`
   - head-to-head URL: 404 serving the real compare template, no dataset in the
     body, must stay an `HTTP 404` to the caller —
     `https://vacuumwars.com/compare/robot-vacuums/dreame_x60_max_ultra_complete-vs-eufy_omni_s2/`

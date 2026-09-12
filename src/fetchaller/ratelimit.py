@@ -85,6 +85,12 @@ aliexpress_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))
 # 2s base is conservative enough for sequential product page fetches.
 soylent_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 
+# GC Jobs: emploisfp-psjobs.cfp-psc.gc.ca (federal public service board)
+# A JSF app that keeps the search in the session: one search is a results GET
+# plus one GET per further page of twenty, each ~130KB and all sequential. A
+# government site with no observed block; this is politeness, not evasion.
+gcjobs_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
+
 # Vacuum Wars: vacuumwars.com, compare.vacuumwars.com, robotvacs.com.
 # The comparison tool has no JSON endpoint -- its bundle makes exactly one
 # network call and it is the feedback form -- so the whole dataset only ever

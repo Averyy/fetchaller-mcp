@@ -56,6 +56,8 @@ EXPECTED_TOOLS = [
     "search_indeed",
     "get_indeed_job",
     "search_jobbank",
+    "search_gcjobs",
+    "get_gcjobs_job",
     "search_meta_jobs",
     "search_uber_jobs",
     "search_realtor",
@@ -100,6 +102,13 @@ LIVE_SUITE_EXEMPT = frozenset(
         # Same reason as get_gojobs_job: a hardcoded posting key expires
         # on a date nobody chose, and each posting is ~500KB.
         "get_indeed_job",
+        # GC Jobs keeps the search in a JSF session and pages it twenty rows
+        # at a time, each page ~130KB and strictly sequential; a filtered
+        # search is several requests against a government site.
+        "search_gcjobs",
+        # Federal postings close, so a hardcoded poster id fails on a date
+        # nobody chose — the same reason as get_gojobs_job.
+        "get_gcjobs_job",
         }
 )
 

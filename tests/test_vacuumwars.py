@@ -10,11 +10,14 @@ import json
 from bs4 import BeautifulSoup
 
 from fetchaller.content.vacuumwars import (
+    LEAN_URL,
     SELECTORS_LIST,
     extract_compare_products,
+    has_dataset,
     is_compare_url,
     is_vacuumwars,
     postprocess_vacuumwars,
+    route_compare_url,
     strip_vacuumwars_junk,
 )
 
@@ -503,3 +506,62 @@ class TestShellDetectionIsNarrow:
         )
         extract_compare_products(soup, "https://vacuumwars.com/compare/")
         assert soup.find(id="vacuumwars-compare-marker") is None
+
+
+class TestCompareRouting:
+    """Only the URLs that are nothing but the tool may move hosts."""
+
+    def test_the_wordpress_tool_url_routes(self):
+        assert route_compare_url(COMPARE_URL) == LEAN_URL
+        assert route_compare_url("https://vacuumwars.com/compare/robot-vacuums") == LEAN_URL
+        assert route_compare_url("https://www.vacuumwars.com/compare/robot-vacuums/") == LEAN_URL
+
+    def test_the_vanity_domain_routes(self):
+        assert route_compare_url("https://robotvacs.com/") == LEAN_URL
+        assert route_compare_url("https://www.robotvacs.com") == LEAN_URL
+
+    def test_the_lean_host_is_already_there(self):
+        assert route_compare_url(LEAN_URL) is None
+
+    def test_settled_routes_do_not_move(self):
+        # Each of these has behaviour that routing would break: a hard 404, a
+        # reverse soft 404, an ordinary article, and a review page.
+        for url in (
+            "https://vacuumwars.com/compare/robot-vacuums/page/2/",
+            "https://vacuumwars.com/compare/robot-vacuums/a-vs-b/",
+            "https://vacuumwars.com/compare/",
+            "https://vacuumwars.com/compare/cordless-vacuums/",
+            "https://vacuumwars.com/dreame-d30-ultra-review/",
+            "https://vacuumwars.com/",
+        ):
+            assert route_compare_url(url) is None, url
+
+    def test_a_query_string_is_never_routed(self):
+        # A query means the caller wanted something specific from that URL.
+        assert route_compare_url(COMPARE_URL + "?brand=dreame") is None
+
+    def test_lookalike_hosts_do_not_route(self):
+        assert route_compare_url("https://notrobotvacs.com/") is None
+        assert route_compare_url("https://evil.com/compare/robot-vacuums/") is None
+
+    def test_missing_url(self):
+        assert route_compare_url(None) is None
+
+
+class TestDatasetDetection:
+    def test_a_page_with_the_array_is_recognised(self):
+        assert has_dataset("<script>window.vwProducts = [{}];</script>")
+
+    def test_the_bare_shell_is_not(self):
+        assert not has_dataset("<html><body>No products found.</body></html>")
+        assert not has_dataset("")
+
+
+class TestHeadingIsStableAcrossHosts:
+    def test_the_lean_host_gets_the_same_heading_as_the_wordpress_path(self):
+        # The lean host serves the tool at a path with no category in it, so
+        # the <h1> fallback would title it "Robot Vacuum Comparison" there and
+        # "robot vacuums" on the WordPress path. Every routed read would carry
+        # that difference.
+        assert "# Vacuum Wars comparison data: robot vacuums" in _render([TESTED])
+        assert "# Vacuum Wars comparison data: robot vacuums" in _render([TESTED], url=LEAN_URL)

@@ -82,6 +82,8 @@ async def test_exact_tool_surface_has_strict_schemas(server):
         "search_indeed",
         "get_indeed_job",
             "search_jobbank",
+        "search_gcjobs",
+        "get_gcjobs_job",
         "search_meta_jobs",
         "search_uber_jobs",
         "search_realtor",
@@ -839,6 +841,7 @@ class TestGuardedBrowserLifecycle:
 
     @pytest.mark.asyncio
     async def test_cleanup_releases_every_new_job_board_session(self):
+        from fetchaller.gcjobs import api as gcjobs_api
         from fetchaller.gojobs import api as gojobs_api
         from fetchaller.indeed import api as indeed_api
         from fetchaller.jobbank import api as jobbank_api
@@ -848,6 +851,8 @@ class TestGuardedBrowserLifecycle:
         gojobs_api._vocab_cache = {"city": {"CITY-TRNT": "Toronto"}}
         indeed_api._session = object()
         jobbank_api._session = object()
+        gcjobs_api._session = object()
+        gcjobs_api._department_cache = {"75": ("Transport Canada", "TC")}
 
         await cleanup_server(SimpleNamespace())
 
@@ -855,6 +860,8 @@ class TestGuardedBrowserLifecycle:
         assert gojobs_api._vocab_cache is None
         assert indeed_api._session is None
         assert jobbank_api._session is None
+        assert gcjobs_api._session is None
+        assert gcjobs_api._department_cache is None
 
     @pytest.mark.asyncio
     async def test_browser_cleanup_is_bounded_while_a_solver_is_busy(self):
