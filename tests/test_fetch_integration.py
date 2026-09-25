@@ -1931,7 +1931,8 @@ class TestSSRFPinning:
             result = await fetch_url("https://public.example/")
 
         assert "error" in result
-        assert "unvalidated host" in result["error"].lower()
+        assert "unvalidated host (127.0.0.1)" in result["error"].lower()
+        assert "internal secret" not in result["error"]
 
     async def test_final_host_empty_is_rejected(self):
         """Fail closed: a response with no determinable final host is rejected,
@@ -2664,3 +2665,49 @@ class TestVacuumWarsReadsTheUncachedHost:
             with _patch_wafer(session):
                 await fetch_url(url)
             assert session.calls == [url], url
+
+
+_FCCID_GATE = (
+    '<!DOCTYPE html><html lang="en"><head><title>Security check | FCC ID</title></head><body>'
+    "<header><strong>FCC ID</strong><small>Device certification information and exhibits.</small></header>"
+    "<main><p>A quick safety check</p><h1>One quick check.<br>Then open your page.</h1>"
+    "<p>Click Continue to open the requested FCC filing page.</p>"
+    '<button id="continue" type="button">Continue to FCCID.io</button></main>'
+    '<script>document.getElementById("continue").addEventListener("click",function(){'
+    'document.cookie="fcc_continue=1; Path=/; Max-Age=1800; Secure; SameSite=Lax";location.reload();});</script>'
+    "</body></html>"
+)
+
+
+class TestFccidContinueGate:
+    """fcc.report now redirects to fccid.io, which can answer 200 with a
+    click-through cookie gate. Rendered, it read as a short, successful page."""
+
+    def test_detector(self):
+        from fetchaller.content.fcc import is_fccid_continue_gate
+
+        assert is_fccid_continue_gate(_FCCID_GATE, "https://fccid.io/2AC7Z-ESPWROOM32")
+        # Same markup elsewhere, or a real fccid.io page, is not the gate.
+        assert not is_fccid_continue_gate(_FCCID_GATE, "https://example.com/2AC7Z")
+        assert not is_fccid_continue_gate("<html><h1>2AC7Z-ESPWROOM32</h1></html>", "https://fccid.io/2AC7Z-ESPWROOM32")
+
+    async def test_gate_is_an_error_not_a_page(self):
+        from fetchaller.tools.fetch import fetch_url
+
+        gate = MockResponse(
+            content=_FCCID_GATE.encode(),
+            content_type="text/html",
+            status_code=200,
+            url="https://fccid.io/2AC7Z-ESPWROOM32",
+        )
+        session = MockWaferSession(responses={"https://fccid.io/2AC7Z-ESPWROOM32": gate})
+
+        async def _rac(_host):
+            return (False, [])
+
+        with patch("fetchaller.tools.fetch.check_host", side_effect=_verdict_from(_rac)), _patch_wafer(session):
+            result = await fetch_url("https://fccid.io/2AC7Z-ESPWROOM32")
+
+        assert "content" not in result
+        assert "Security check" in result["error"]
+        assert "no filing content" in result["error"]

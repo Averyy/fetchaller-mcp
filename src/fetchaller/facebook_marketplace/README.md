@@ -1,6 +1,20 @@
 # Facebook Marketplace GraphQL Client
 
-Facebook Marketplace is 100% CSR with obfuscated CSS — HTML scraping is not viable. `fetch_url()` intercepts Marketplace URLs and routes to the GraphQL API at `https://www.facebook.com/api/graphql/`. No authentication required.
+Facebook Marketplace's visible markup is CSR with obfuscated CSS and is never scraped. `fetch_url()` intercepts Marketplace URLs and reads structured data: the GraphQL API at `https://www.facebook.com/api/graphql/`, and the Relay data a Marketplace page ships with. No authentication required.
+
+## Request form
+
+Every GraphQL call carries `__a=1` and `__comet_req=15`, the logged-out Comet page's own form fields. Without them the search query still answers 200, with no errors and a cursor that counts its matches, but serves none of them (2026-09-25: "bicycle" near Toronto, 12 matched, 0 edges; with the fields, 12 listings). Geocode, listing detail and images answer either way. No page token (`lsd`, `jazoest`) is needed — checked with and without. `decode_graphql_body()` accepts an XSSI prefix and a deferred multi-line answer (the page's current search doc_id streams one).
+
+`withheld_listings_error()` turns "no listings, but the cursor's `c2c.it`/`b2c.it` counts matches" into an error. A genuinely empty search has `it: 0`.
+
+## Reading the page (`page.py`)
+
+A search URL (`/marketplace/{slug}/search?query=...`) is fetched as the page itself. Its `expectedPreloaders` name `CometMarketplaceSearchContentContainerQuery` (doc_id `27517490627932547` on 2026-09-25) with the slug resolved to `buyLocation` and every URL filter applied, and `RelayPrefetchedStreamCache` streams that query's first page of results in the GraphQL shape — one request, identical to facebook.com. If the page ran the search without streaming it, its own doc_id and variables are replayed.
+
+A city browse page (`/marketplace/{slug}/`) runs `MarketplaceCometBrowseFeedLightContainerQuery` and streams it an edge at a time: a `MarketplaceFeedTopPicksUnit` (20 `marketplace_listings`, with `formatted_price.text`) and `MarketplaceFeedGeneralListingObject` nodes (price only as `data.price.amount_with_offset` + currency). That first screen is all the logged-out feed serves (the query over GraphQL with `count=24` answers the same 1 + 6 edges), so it is rendered from the page. `amount_with_offset` is scaled by 100 only for currencies checked live (2500 on a CAD item titled "$25"); others print unscaled and labelled.
+
+Only when the page gives neither (login wall, failed GET) is the search rebuilt: coordinates from the page if it had them, else the slug geocoded as text — the path that put `vancouver` in Washington — and the URL's `minPrice`/`maxPrice`, which are **whole units**, sent as cents.
 
 ## Doc IDs
 
@@ -16,7 +30,8 @@ Discovered from Relay preloader data embedded in page source HTML (`preloaderID`
 ## Modules
 
 - **`graphql.py`** — Low-level GraphQL client. Shared `graphql_request()` with rate limiting (3s base). Variable builders and response parsers for all query types.
-- **`search.py`** — Search entry point. Extracts query, location slug, and price filters (`minPrice`/`maxPrice`) from URL. Geocodes location to lat/lng. Formats results as numbered markdown.
+- **`page.py`** — Reads a Marketplace page's preloaded search (`parse_search_page`): resolved location, radius, doc_id/variables, the streamed search result, or a browse page's streamed feed.
+- **`search.py`** — Search entry point for a Marketplace URL: page first, then the page's own query, then a rebuilt search (see above). Formats results as numbered markdown.
 - **`listing.py`** — Listing detail. Two API calls: detail (title, price, description, condition, category, location, delivery, creation time) + images (URIs with dimensions). Formatted as markdown with photo links.
 - **`../content/facebook_marketplace.py`** — URL detection and parameter extraction. Matches `/marketplace/*` paths. Excludes reserved slugs (`item`, `create`, `you`, `categories`, `category`, `directory`, `groups`, `saved`).
 

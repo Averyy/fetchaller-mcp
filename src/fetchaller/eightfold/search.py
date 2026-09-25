@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 
 from ..jobfilter import broadened_query, filter_by_title
+from ..timeouts import timeout_error
 from . import api
 from .render import render_position, render_search_results
 from .url import KNOWN_EMPLOYERS, board_root, extract_position_id, resolve_employer
@@ -178,8 +179,8 @@ async def search_eightfold_jobs(
                         "\n_(board-wide values, not counts for this search)_\n"
                     )
             return {"content": markdown, "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"Eightfold search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Eightfold search", timeout, exc)}
     except api.EightfoldBlockedError:
         return {"error": "The career site declined the request. Retry shortly."}
     except api.EightfoldUnavailableError:
@@ -232,8 +233,8 @@ async def get_eightfold_job(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"Eightfold job fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Eightfold job fetch", timeout, exc)}
     except api.EightfoldBlockedError:
         return {"error": "The career site declined the request. Retry shortly."}
     except api.EightfoldUnavailableError:

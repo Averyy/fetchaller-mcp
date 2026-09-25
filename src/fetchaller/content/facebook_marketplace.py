@@ -105,10 +105,12 @@ def extract_location_from_url(url: str) -> str:
 def extract_price_filters(url: str) -> tuple[int | None, int | None]:
     """Extract price filters from URL query params.
 
-    Facebook uses ``minPrice`` and ``maxPrice`` in cents.
+    ``minPrice`` and ``maxPrice`` are whole currency units, not cents: the page
+    turns ``minPrice=100`` into a 10000 lower bound (measured 2026-09-25).
+    Treating them as cents sent a $1–$8 band for a $100–$800 URL.
 
     Returns:
-        Tuple of (min_price_cents, max_price_cents), None for unset.
+        Tuple of (min_price, max_price) in whole units, None for unset.
     """
     qs = parse_qs(urlparse(url).query)
     min_price = None

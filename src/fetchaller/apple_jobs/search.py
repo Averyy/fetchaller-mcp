@@ -6,6 +6,7 @@ import asyncio
 import re
 
 from ..jobfilter import broadened_query, filter_by_title, location_matches, tokens
+from ..timeouts import timeout_error
 from . import api
 from .render import render_job, render_search_results
 
@@ -147,8 +148,8 @@ async def search_apple_jobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"jobs.apple.com search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("jobs.apple.com search", timeout, exc)}
     except api.AppleJobsBlockedError:
         return {"error": "jobs.apple.com declined the request. Retry shortly."}
     except api.AppleJobsUnavailableError:
@@ -185,8 +186,8 @@ async def get_apple_job(
             if job is None:
                 return {"error": f"Apple posting {position_id} was not found (it may be closed)."}
             return {"content": render_job(job, locale=locale), "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"jobs.apple.com fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("jobs.apple.com fetch", timeout, exc)}
     except api.AppleJobsBlockedError:
         return {"error": "jobs.apple.com declined the request. Retry shortly."}
     except api.AppleJobsUnavailableError:

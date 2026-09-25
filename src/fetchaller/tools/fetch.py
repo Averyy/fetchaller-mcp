@@ -82,6 +82,7 @@ from ..content.facebook_marketplace import (
 from ..content.facebook_marketplace import (
     is_facebook_marketplace_search as _is_fb_search,
 )
+from ..content.fcc import is_fccid_continue_gate
 from ..content.forums import (
     is_thread_url,
     parse_and_format_feed,
@@ -142,6 +143,15 @@ from ..content.reddit import (
     transform_reddit_url,
 )
 from ..content.soylent import is_soylent as _is_soylent
+from ..content.teamtailor import (
+    BOARD_MAX_RESPONSE_BYTES as TEAMTAILOR_BOARD_MAX_RESPONSE_BYTES,
+)
+from ..content.teamtailor import (
+    fetch_teamtailor_board,
+    is_teamtailor_board_url,
+    render_teamtailor_board,
+    teamtailor_job_id,
+)
 from ..content.ti import extract_ti_part_from_pdf_url, fetch_document_sections, is_ti_document_viewer
 from ..content.url import normalize_url
 from ..content.vacuumwars import (
@@ -2234,6 +2244,34 @@ async def _fetch_url_impl(
             return {"content": content, "content_type": "markdown", "url": url}
         # Parse failed — fall through to normal HTML fetch.
 
+    # Teamtailor board on a Teamtailor host ({slug}.teamtailor.com/jobs): the
+    # HTML list stops at 20 and carries no salary, so read the two feeds. The
+    # feeds answer on the Teamtailor host even where the HTML 301s to the
+    # company's own domain, and redirects are refused here because that domain
+    # is customer-controlled and was never validated. Custom-domain boards are
+    # caught after the HTML fetch instead (preflight.teamtailor_board).
+    if is_teamtailor_board_url(url) and structured:
+        _ttb_hit = _intercept_cache_get(url)
+        if _ttb_hit:
+            return _ttb_hit
+        _ttb_session = wafer.AsyncSession(
+            browser_solver=browser_solver,
+            timeout=timedelta(seconds=timeout),
+            cache_dir=get_wafer_cache_dir(),
+            follow_redirects=False,
+            max_response_size=TEAMTAILOR_BOARD_MAX_RESPONSE_BYTES,
+        )
+        _ttb_board = await fetch_teamtailor_board(url, _ttb_session, timeout=min(float(timeout), 20.0))
+        if _ttb_board is not None:
+            markdown = render_teamtailor_board(_ttb_board)
+            _intercept_cache_set(url, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(
+                f"FETCH {url} -> Teamtailor board ({len(_ttb_board['items'])} jobs, {_ttb_board['json_pages']}+{_ttb_board['rss_pages']} feed pages, {len(content)} chars, {time.monotonic() - start:.1f}s)"
+            )
+            return {"content": content, "content_type": "markdown", "url": url}
+        # No JSON Feed there (not a tenant, or the feed is down) — fall through.
+
     # Canonicalize Reddit URLs to New Reddit. Normal mapped URLs use compact
     # anonymous JSON; explicit .json stays raw and raw=True fetches New Reddit
     # HTML through the generic path below.
@@ -2758,7 +2796,16 @@ async def _fetch_url_impl(
     final_host = _canon_host(urlparse(result.final_url).hostname or "")
     if not final_host or final_host not in validated_hosts:
         _log(f"FETCH {url} -> ERROR: final host {final_host!r} was not validated")
-        return {"error": "Response from an unvalidated host is not allowed."}
+        # Naming the host tells the caller what to fetch instead: this is how
+        # a browser solve that followed a cross-site redirect (fcc.report ->
+        # fccid.io) surfaces, and the page it ended on is a separate request.
+        landed = f" ({final_host})" if final_host else ""
+        return {
+            "error": (
+                f"Response from an unvalidated host{landed} is not allowed. The request was "
+                "redirected there while a bot challenge was being solved; fetch that host's URL directly."
+            )
+        }
 
     # Downstream board/embed handlers (Greenhouse/Dayforce/Ashby/BambooHR/JazzHR
     # embeds, the TI doc viewer) reuse this session for SECONDARY fetches to OTHER
@@ -3040,6 +3087,7 @@ async def _fetch_url_impl(
         # Every parser above runs in the disposable worker. Only bounded,
         # validated metadata crosses back into the async network orchestrator.
         _structured_embed_detected = preflight.greenhouse_detected
+        _fallback_note = None
         if preflight.greenhouse_params:
             _gh_params = preflight.greenhouse_params
             if _gh_params:
@@ -3163,6 +3211,43 @@ async def _fetch_url_impl(
                     "url": result.final_url,
                 }
 
+        # Teamtailor career site on any domain (careers.oatly.com/jobs). The
+        # feeds live on the page's own host, which is already validated and
+        # pinned, so they are read on this session.
+        if preflight.teamtailor_board:
+            _structured_embed_detected = True
+            try:
+                _tt_board = await fetch_teamtailor_board(
+                    effective_url, session, timeout=min(float(timeout), 20.0)
+                )
+            except Exception as exc:
+                _log(f"FETCH {url} -> Teamtailor feeds raised {type(exc).__name__}: {exc}")
+                _tt_board = None
+            if _tt_board is not None:
+                markdown = render_teamtailor_board(_tt_board)
+                # A posting URL that landed on the board is not that posting.
+                if teamtailor_job_id(url):
+                    markdown = f"[{url} is not a live posting; the site sent it to the job board below.]\n\n{markdown}"
+                if cache and cache_key:
+                    cache.set(cache_key, markdown, "markdown")
+                content = truncate(markdown, max_tokens)
+                _log(
+                    f"FETCH {url} -> Teamtailor board via feeds ({len(_tt_board['items'])} jobs, {_tt_board['json_pages']}+{_tt_board['rss_pages']} feed pages, {len(content)} chars, {time.monotonic() - start:.1f}s)"
+                )
+                return {"content": content, "content_type": "markdown", "url": result.final_url}
+            _fallback_note = (
+                "[Teamtailor job board, but its jobs.json feed could not be read. This is the page "
+                "as served, which lists at most 20 postings and no salaries.]"
+            )
+
+        if preflight.teamtailor_job:
+            markdown = preflight.teamtailor_job
+            if cache and cache_key:
+                cache.set(cache_key, markdown, "markdown")
+            content = truncate(markdown, max_tokens)
+            _log(f"FETCH {url} -> Teamtailor posting ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": result.final_url}
+
         # Tier 2: Forum autodiscovery
         if preflight.feed_url:
             try:
@@ -3230,6 +3315,18 @@ async def _fetch_url_impl(
         if vacuumwars_routed and not _vw_has_dataset(html):
             return {"error": "compare.vacuumwars.com answered without the dataset"}
 
+        # fccid.io (where fcc.report now redirects) can answer 200 with a
+        # "Continue" cookie gate. Rendered, it reads as a short real page.
+        if is_fccid_continue_gate(html, effective_url):
+            _log(f"FETCH {url} -> fccid.io Continue gate, not a filing")
+            return {
+                "error": (
+                    f"{effective_url} served fccid.io's \"Security check\" click-through instead of the "
+                    "filing (a Continue button that only sets a cookie and reloads), so there is no filing "
+                    "content to return. fcc.report filings now redirect to fccid.io."
+                )
+            }
+
         try:
             markdown, _ = await html_to_markdown(
                 html,
@@ -3285,6 +3382,8 @@ async def _fetch_url_impl(
         # the fetch that produced it — the page does not stop being a shell.
         if js_render_note:
             markdown = f"{js_render_note}\n\n{markdown}"
+        if _fallback_note:
+            markdown = f"{_fallback_note}\n\n{markdown}"
 
         # Cache full content, truncate only for response
         if cache and cache_key and not _structured_embed_detected:

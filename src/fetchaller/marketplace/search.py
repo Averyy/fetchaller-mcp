@@ -197,6 +197,7 @@ async def _search_facebook(
         geocode_location,
         graphql_request,
         parse_search_response,
+        withheld_listings_error,
     )
     from ..facebook_marketplace.search import format_search_results
 
@@ -249,6 +250,9 @@ async def _search_facebook(
         return {"platform": "facebook", "error": f"Facebook Marketplace error: {err_msg}"}
 
     listings = parse_search_response(data)
+    withheld = withheld_listings_error(data, listings)
+    if withheld:
+        return {"platform": "facebook", "error": withheld}
     content = format_search_results(listings, query, location_name)
     return {"platform": "facebook", "content": content}
 

@@ -12,6 +12,7 @@ from ..jobfilter import (
     strip_country_tokens,
     tokens,
 )
+from ..timeouts import timeout_error
 from . import api
 from .render import render_job, render_search_results
 
@@ -157,8 +158,8 @@ async def search_amazon_jobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"amazon.jobs search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("amazon.jobs search", timeout, exc)}
     except api.AmazonJobsBlockedError:
         return {"error": "amazon.jobs declined the request. Retry shortly."}
     except api.AmazonJobsUnavailableError:
@@ -196,8 +197,8 @@ async def get_amazon_job(
             if job is None:
                 return {"error": "That amazon.jobs posting was not found (it may be closed)."}
             return {"content": render_job(job), "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"amazon.jobs fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("amazon.jobs fetch", timeout, exc)}
     except api.AmazonJobsBlockedError:
         return {"error": "amazon.jobs declined the request. Retry shortly."}
     except api.AmazonJobsUnavailableError:

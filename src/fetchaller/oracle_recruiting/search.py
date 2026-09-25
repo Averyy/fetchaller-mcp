@@ -15,6 +15,7 @@ from ..jobfilter import (
     location_matches,
     tokens,
 )
+from ..timeouts import timeout_error
 from . import api
 from .employers import KNOWN_EMPLOYERS, OracleEmployer, resolve_employer
 
@@ -299,8 +300,8 @@ async def search_oracle_jobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"Oracle Recruiting search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Oracle Recruiting search", timeout, exc)}
     except api.OracleRecruitingBlockedError:
         return {"error": "The career site declined the request. Retry shortly."}
     except api.OracleRecruitingUnavailableError:
@@ -337,8 +338,8 @@ async def get_oracle_job(
             if job is None:
                 return {"error": f"Posting {requisition_id} was not found (it may be closed)."}
             return {"content": _render_job(job, employer=record), "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"Oracle Recruiting fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Oracle Recruiting fetch", timeout, exc)}
     except api.OracleRecruitingBlockedError:
         return {"error": "The career site declined the request. Retry shortly."}
     except api.OracleRecruitingUnavailableError:

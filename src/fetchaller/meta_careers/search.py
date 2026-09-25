@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from ..jobfilter import counts_line, filter_by_title, location_matches, tokens
+from ..timeouts import timeout_error
 from . import api
 
 _MARKDOWN_ESCAPE = str.maketrans({ch: "\\" + ch for ch in "\\`*_[]()#<>|"})
@@ -165,8 +166,8 @@ async def search_meta_jobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"Meta careers search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Meta careers search", timeout, exc)}
     except api.MetaCareersBlockedError:
         return {"error": "Meta declined the request. Retry shortly."}
     except api.MetaCareersUnavailableError:
@@ -248,8 +249,8 @@ async def get_meta_job(
             if detail is None:
                 return {"error": f"Meta posting {job_id} was not found (it may be closed)."}
             return {"content": _render_detail(detail), "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"Meta careers fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Meta careers fetch", timeout, exc)}
     except api.MetaCareersBlockedError:
         return {"error": "Meta declined the request. Retry shortly."}
     except api.MetaCareersUnavailableError:

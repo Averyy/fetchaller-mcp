@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
+import wafer
+
 from ..jobfilter import filter_by_title, location_matches, tokens
+from ..timeouts import timeout_error
 from . import api
 from .render import render_search_results
 
@@ -158,13 +161,11 @@ async def search_jobbank(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {
-            "error": (
-                f"jobbank.gc.ca search timed out after {timeout:.0f}s. The board "
-                "is slow; try a narrower query or a smaller radius_km."
-            )
-        }
+    except TimeoutError as exc:
+        advice = "" if isinstance(exc, wafer.WaferTimeout) else (
+            " The board is slow; try a narrower query or a smaller radius_km."
+        )
+        return {"error": timeout_error("jobbank.gc.ca search", timeout, exc) + advice}
     except api.JobBankBlockedError:
         return {"error": "jobbank.gc.ca declined the request. Retry shortly."}
     except api.JobBankUnavailableError:

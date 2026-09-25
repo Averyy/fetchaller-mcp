@@ -14,6 +14,7 @@ from ..jobfilter import (
     location_matches,
     tokens,
 )
+from ..timeouts import timeout_error
 from . import api
 
 # How many postings one search examines, independent of `limit`. `limit`
@@ -241,8 +242,8 @@ async def search_google_jobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"Google careers search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Google careers search", timeout, exc)}
     except api.GoogleJobsBlockedError:
         return {"error": "Google declined the request. Retry shortly."}
     except api.GoogleJobsUnavailableError:
@@ -269,8 +270,8 @@ async def get_google_job(
             if job is None:
                 return {"error": f"Google posting {job_id} was not found (it may be closed)."}
             return {"content": _render_job(job), "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"Google careers fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Google careers fetch", timeout, exc)}
     except api.GoogleJobsBlockedError:
         return {"error": "Google declined the request. Retry shortly."}
     except api.GoogleJobsUnavailableError:

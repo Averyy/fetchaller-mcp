@@ -25,6 +25,7 @@ from ..jobfilter import (
     location_matches,
     tokens,
 )
+from ..timeouts import timeout_error
 from .employers import KNOWN_EMPLOYERS, resolve_employer
 
 _MAX_RESPONSE = 10 * 1024 * 1024
@@ -430,8 +431,8 @@ async def search_workday_jobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"Workday search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Workday search", timeout, exc)}
     except Exception as exc:  # noqa: BLE001 - surfaced as a tool error
         # Only the type: wafer exceptions embed the request URL and body.
         return {"error": f"Workday search failed ({type(exc).__name__})."}

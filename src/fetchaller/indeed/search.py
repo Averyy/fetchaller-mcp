@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from ..jobfilter import filter_by_title, location_matches, tokens
+from ..timeouts import timeout_error
 from . import api
 from .render import render_job, render_search_results
 
@@ -145,8 +146,8 @@ async def search_indeed(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"Indeed search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Indeed search", timeout, exc)}
     except api.IndeedBlockedError:
         return {
             "error": (
@@ -198,8 +199,8 @@ async def get_indeed_job(
                     )
                 }
             return {"content": render_job(job), "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"Indeed fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("Indeed fetch", timeout, exc)}
     except api.IndeedBlockedError:
         return {"error": "Indeed declined the request or served a challenge. Retry shortly."}
     except api.IndeedUnavailableError:

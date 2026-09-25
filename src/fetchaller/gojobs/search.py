@@ -6,6 +6,7 @@ import asyncio
 import re
 
 from ..jobfilter import filter_by_title, location_matches, tokens
+from ..timeouts import timeout_error
 from . import api
 from .render import render_job, render_search_results
 
@@ -263,8 +264,8 @@ async def search_gojobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"gojobs.gov.on.ca search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("gojobs.gov.on.ca search", timeout, exc)}
     except api.GoJobsBlockedError:
         return {"error": "gojobs.gov.on.ca declined the request. Retry shortly."}
     except api.GoJobsUnavailableError:
@@ -314,8 +315,8 @@ async def get_gojobs_job(
                     )
                 }
             return {"content": render_job(job), "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"gojobs.gov.on.ca fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("gojobs.gov.on.ca fetch", timeout, exc)}
     except api.GoJobsBlockedError:
         return {"error": "gojobs.gov.on.ca declined the request. Retry shortly."}
     except api.GoJobsUnavailableError:

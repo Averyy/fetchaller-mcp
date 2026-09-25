@@ -243,6 +243,7 @@ class TestRequestPlumbing:
             "https://jobs.ashbyhq.com/example",
             "https://jobs.lever.co/example",
             "https://example.bamboohr.com/careers",
+            "https://example.teamtailor.com/jobs",
             "https://www.reddit.com/r/python/",
             "https://github.com/owner/repo/blob/main/README.md",
             "https://wellfound.com/jobs",
@@ -601,6 +602,34 @@ class TestPostSkipsPostFetchEmbedHandlers:
         seen, _ = await self._post_html(monkeypatch, html)
 
         assert seen == [("POST", "https://careers.example.com/")], seen
+
+    async def test_teamtailor_board_does_not_hijack_a_post(self, monkeypatch):
+        html = (
+            "<html><body><h1>Our openings</h1>"
+            '<script src="https://assets-aws.teamtailor-cdn.com/assets/careersite-1.js"></script>'
+            '<a href="https://app.teamtailor.com/companies/abc@eu/dashboard">Log in</a>'
+            "</body></html>"
+        )
+        seen = []
+
+        async def _fake_request(self, method, target, **kwargs):
+            seen.append((method, target))
+            return _HtmlResponse(target, html)
+
+        async def _fake_get(self, target, **kwargs):
+            seen.append(("GET", target))
+            return _HtmlResponse(target, "<html><body>secondary</body></html>")
+
+        monkeypatch.setattr("wafer.AsyncSession.request", _fake_request)
+        monkeypatch.setattr("wafer.AsyncSession.get", _fake_get)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+
+        result = await _fetch_url_impl(
+            "https://careers.example.com/jobs", method="POST", body="{}", timeout=20
+        )
+
+        assert seen == [("POST", "https://careers.example.com/jobs")], seen
+        assert "Our openings" in result.get("content", "")
 
     async def test_feed_autodiscovery_does_not_hijack_a_post(self, monkeypatch):
         html = (

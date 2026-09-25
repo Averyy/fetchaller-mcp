@@ -208,6 +208,22 @@ times. Drop the collapsed `.vwx-row`; it carries nothing the panel lacks. Drop
 in the DOM behind `nth-of-type` CSS — verify that before treating any other
 "more" affordance as noise. fetchaller has NO credentialed path to vacuumwars.com.
 
+### Facebook Marketplace
+
+Search failed by rendering "No listings found", which reads as an empty market.
+Every GraphQL call must carry the logged-out Comet form's `__a=1` and
+`__comet_req=15`: without them the search query answers 200, no errors, a
+cursor that counts its matches, and zero edges (geocode and listing detail
+answer either way, so nothing else went quiet). When the cursor (`end_cursor` →
+`c2c.it`/`b2c.it`) counts matches and no listing comes back, that is an error,
+never an empty result. A search or city URL is read from **the page it names**:
+its preloaded `CometMarketplaceSearchContentContainerQuery` already has the slug
+resolved and the URL's filters applied, and its first page of results streams
+with it. Rebuilding it by hand put `/marketplace/vancouver/` in Washington
+(free-text geocode) and sent `minPrice=100` as one dollar — URL prices are whole
+units. A city browse page streams a feed of ~26 listings, which is all the
+logged-out feed serves; an empty-query search for the same city returns nothing.
+
 ### Job boards
 
 Every job board ranks rather than filters: a title query returns adjacent roles
@@ -305,6 +321,26 @@ null means no such org, anything else is the board. It carries no descriptions,
 so the render says which path it came from. A first-party ATS 404 is ambiguous
 on every board; only Ashby has been given the second read so far.
 
+**Teamtailor** (`{slug}[.{region}].teamtailor.com`, or the company's own domain
+recognised from the page) looks complete as HTML and is not: the list stops at
+20 with no salaries. The board is `jobs.json` (salary band, dates) joined to
+`jobs.rss` (department, location name, `remoteStatus`) on the posting UUID. The
+trap is that the two feeds **page differently with a filter than without**:
+unfiltered, JSON pages at 100 with `next_url` and RSS returns 100, ignores
+`page`, and honours `per_page`; with any board filter both page at 20, emit no
+`next_url`, and honour `page=N`. Trusting `next_url` there stops at 20 with no
+sign, and trusting RSS's default stops at 100 — walk both to the end, and never
+report a JSON posting missing from RSS as "no location", or an RSS posting
+missing from JSON as "salary not published"; both are *unknown*. The JSON-LD
+street address is the location record's address on file, usually an office, so
+it is never the job's location. `remoteStatus: none` is Teamtailor's default,
+not "on-site" (that is `onsite`): its filter labels it "No Remote Work", its
+posting pages show nothing for it, and employers leave it on postings located
+"United States - Remote". Keep the enum and gloss only `none`. The subdomain's
+HTML 301s to the customer's domain; the feeds answer on the subdomain, and that
+redirect is never followed from the interceptor, because the target is
+customer-controlled and unvalidated.
+
 ### robots.txt — settled, do not re-open
 
 **fetchaller is a user-directed fetcher, not a crawler, and robots.txt is not
@@ -376,6 +412,6 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR. Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). emploisfp-psjobs.cfp-psc.gc.ca (GC Jobs: two-flag second-part listing, session-stored search and paging, criteria echo, external/legacy posting shapes). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR, Teamtailor (JSON Feed + RSS joined on the posting UUID; filtered vs unfiltered paging). Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). emploisfp-psjobs.cfp-psc.gc.ca (GC Jobs: two-flag second-part listing, session-stored search and paging, criteria echo, external/legacy posting shapes). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
 - `docs/spa-discovery.md` — SPA API discovery (`src/fetchaller/discovery/`): observing a page in a browser and replaying what it made, so an endpoint's shape never needs bundle archaeology again. Ranking (why coverage and record count are directly opposed), the oracle (why a 200 that means "malformed" is the core problem), minimization, mint steps, and the measured per-board results
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

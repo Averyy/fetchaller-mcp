@@ -6,6 +6,7 @@ import asyncio
 import re
 
 from ..jobfilter import filter_by_title, location_matches, tokens
+from ..timeouts import timeout_error
 from . import api
 from .render import render_external, render_job, render_search_results
 
@@ -388,8 +389,8 @@ async def search_gcjobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"GC Jobs search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("GC Jobs search", timeout, exc)}
     except api.GCJobsBlockedError:
         return {"error": "GC Jobs declined the request. Retry shortly."}
     except (api.GCJobsUnavailableError, api.GCJobsNotFoundError):
@@ -440,8 +441,8 @@ async def get_gcjobs_job(
             if job["kind"] == "external":
                 return {"content": render_external(job), "content_type": "markdown"}
             return {"content": render_job(job), "content_type": "markdown"}
-    except TimeoutError:
-        return {"error": f"GC Jobs fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("GC Jobs fetch", timeout, exc)}
     except api.GCJobsBlockedError:
         return {"error": "GC Jobs declined the request. Retry shortly."}
     except api.GCJobsUnavailableError:

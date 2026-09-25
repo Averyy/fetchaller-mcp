@@ -29,6 +29,22 @@ _FCC_REPORT_HOST_RE = re.compile(r"^(?:www\.)?fcc\.report$")
 _FCC_GOV_HOST_RE = re.compile(r"^apps\.fcc\.gov$")
 
 
+_FCCID_HOST_RE = re.compile(r"^(?:www\.)?fccid\.io$")
+
+
+def is_fccid_continue_gate(html: str, url: str) -> bool:
+    """fccid.io's "Security check" click-through, served in place of a filing.
+
+    fcc.report now 301s to fccid.io (2026-09-25), which answers 200 with a page
+    whose only control is a "Continue" button that sets an ``fcc_continue``
+    cookie and reloads. Rendered as markdown it reads as a short, successful
+    page. Getting past it is a clearance-cookie solve, which is wafer's job;
+    recognising it so it is never returned as the filing is this module's.
+    """
+    host = (urlparse(url).hostname or "").lower()
+    return bool(_FCCID_HOST_RE.match(host)) and "fcc_continue=1" in html and 'id="continue"' in html
+
+
 def is_fcc(url: str) -> bool:
     """Check if URL is an FCC filing page (fcc.report or fcc.gov EAS)."""
     parsed = urlparse(url)

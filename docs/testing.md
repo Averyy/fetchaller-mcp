@@ -138,7 +138,8 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 ## Test Organization
 
 - `test_site_detection.py` — Tests `_detect_site()` directly (URL-based, HTML-based, priority rules)
-- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors)
+- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors; an unvalidated final host is refused and named; fccid.io's Continue cookie gate is an error, not a page)
+- `test_timeouts.py` — A single request exceeding its wafer session limit (`WaferTimeout`, a `TimeoutError` subclass) is reported as that request, not as the tool's whole budget running out; the budget itself still says so (end to end through `search_oracle_jobs`)
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
 - `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP
@@ -179,6 +180,7 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_mouser_postprocessor.py` — Mouser URL detection and regex postprocessor unit tests
 - `test_mouser_api.py` — Mouser API client: URL parsing, part formatting, search, error handling
 - `test_facebook_marketplace_graphql.py` — Facebook Marketplace URL detection (search/listing/browse/reserved paths), price filter extraction, GraphQL variable building (search + listing), response parsing (search + listing detail + images), search result formatting
+- `test_facebook_marketplace_page.py` — Facebook Marketplace request form (every GraphQL call carries `__a`/`__comet_req`), body decoding (deferred multi-line answers, XSSI prefix, non-objects), the withheld-results guard (cursor counts matches but no edges → error; genuine empty and unreadable cursors → no alarm), page reading (search page: resolved coordinates, radius, doc_id and streamed result; browse page: top-picks + streamed feed listings, duplicate edges once, CAD `amount_with_offset` scaled, unverified currencies printed unscaled; login wall → None), and the fetch path end to end (streamed result needs no second request, unstreamed search replayed with the page's own doc_id, empty browse feed is an error, no-page fallback sends whole-unit URL prices as cents)
 - `test_marketplace_search.py` — Unified marketplace search: Craigslist location resolution (exact/alias/fuzzy/province), Kijiji location cross-check, cross-platform alias mapping (sort/category/condition completeness + resolution), orchestrator tests (all-succeed, partial-fail, all-fail, exception handling, platform filtering, price headers, FB location disambiguation for Canadian cities)
 - `test_dayforce.py` — Dayforce URL detection (posting + board), `__NEXT_DATA__` parsing, posting render (metadata, postingLocations, jobPostingAttributes, jobDescriptionHeader/Body/Footer, skipped internal handles), board render (header, posting lines, link construction)
 - `test_dayforce_whitelabel.py` — White-label Dayforce detection: `extract_dayforce_canonical_board_url()` parses `__NEXT_DATA__` from company-domain candidate portals (BASE_URL gate, clientNamespace + careerSiteXRefCode required, locale default)
@@ -186,6 +188,7 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_workday.py` — Workday URL detection (board + posting, with/without language segment, underscored sites, nested job paths, rejection of stripped-lang ambiguity), `WKQ0` layout-span stripping in description HTML, board render (grouping, link construction, bulletFields)
 - `test_bamboohr.py` — BambooHR URL detection (board + posting, hyphenated tenants, non-numeric ID rejection), widget embed detection (data-domain regex variants, wrong domain rejection), posting render (location flattening, description + additionalInformation), board render (department grouping, atsLocation/location fallback)
 - `test_jazzhr.py` — JazzHR URL detection (board + posting, with/without slug, hyphenated tenants, short ID rejection), multi-tenant embed extraction (dedupe + order), posting render (JSON-LD field passthrough, @context/@type top-level skip), board render (department grouping), multi-board render (per-tenant `##` sections)
+- `test_teamtailor.py` — Teamtailor: host/board/posting URL detection (regional `*.na.teamtailor.com`, locale prefixes, Teamtailor's own non-tenant hosts, lookalike rejection), page markers (a CDN image alone is not a career site), query-parameter classification (empties and `split_view` dropped, known filters vs forwarded unknowns vs ignored paging), salary formatting (string bounds, single `value`, empty currency said not guessed, decimals normalised so equal bounds collapse), RSS parsing (namespaced multi-location, U+202F in a role), both paging modes (unfiltered `next_url` + RSS sized by `per_page`; filtered `page=N` at 20 with no `next_url`, stopping on a short page; no extra request for an unfiltered board of exactly 20; an off-host `next_url` is not followed), the join (JSON-only and RSS-only postings render as *unknown*, not unpublished; a republished posting shows both dates), `remote: none (not set)`, the office street address never rendered, the posting page (escaped JSON-LD, header badge added only when the facts omit it, a related-job card's badge ignored), the preflight, and a custom-domain board through `_fetch_url_impl` including the unreadable-feed note
 - `test_ashby_postprocessor.py` — Ashby posting extraction from `__appData`, board-index rendering, the oversize budget, and the board fetch's REST → hosted-GraphQL fallback (`TestFetchAshbyBoardGraphqlFallback`: REST 200 never asks GraphQL; REST 404 + board → rendered with the GraphQL `source` and `note` lines; REST 404 + null board → `None`; GraphQL errors/transport failures → `None`; team-chain → department/team mapping, cycle guard). Live regression: `fetch("https://jobs.ashbyhq.com/evenup")` must render ~40 postings including `Senior Financial Analyst, Corporate Consolidation & G&A` at `Toronto (hybrid)` (verified 2026-09-12)
 - `test_ashby_embed_script.py` — Ashby script-tag embed detection (`<script src="https://jobs.ashbyhq.com/{org}/embed">`): basic match, embed-with-query, no-match cases, and the `/api`/`/embed`/`/_next` slug blocklist
 - `test_realtor.py` — realtor.ca: URL detection (listing/SEO/map, EN `/real-estate/` + FR `/immobilier/`), filter encodings (range, sort/property/building/ownership inversion, place-from-slug), `/map` kwarg parsing (bbox + hash, rent params), agent/brokerage extraction (EN "Brokerage" / FR "Bureau de courtage" / no-keyword fallback), listing-HTML parsing (price/address/beds/rooms/agent/MLS/coords), search + listing-detail rendering
@@ -274,6 +277,21 @@ copied into the docs as a constant, only as a dated measurement.
     `https://ui.com/qig/u6-pro` (legacy multi-page, heavy gradients),
     `https://ui.com/qig/udm-pro` (legacy single-page), and
     `https://dl.ui.com/qig/definitely-not-real/` (must report "no guide", not an empty one)
+- Facebook Marketplace — each has already hidden a bug:
+  - search (must list real listings; an empty result with a cursor counting matches is the degraded answer): `https://www.facebook.com/marketplace/toronto/search?query=desk`
+  - slug + price filter (must be Vancouver **BC**, every price between $100 and $800): `https://www.facebook.com/marketplace/vancouver/search?query=kayak&minPrice=100&maxPrice=800`
+  - city browse page, no search term (must render the feed's first screen, not "No listings found"): `https://www.facebook.com/marketplace/toronto/`
+  - listing detail: any `https://www.facebook.com/marketplace/item/{id}/` from the above
+- Teamtailor — each exercises a distinct shape (counts drift; assert structure):
+  - subdomain board, every posting with a salary band: `https://wagepoint.teamtailor.com/jobs`
+  - custom-domain board past the HTML's 20 (must list every posting): `https://careers.oatly.com/jobs`
+  - bands with an empty currency and a single value: `https://careers.deepki.com/jobs`
+  - custom domain only, no bands: `https://careers.steel-eye.com/jobs`
+  - over 100 postings (3 JSON pages + one RSS read with `per_page`): `https://uniflex.teamtailor.com/jobs`
+  - filtered, paged at 20 with no `next_url` (must reach 70-ish, not 20): `https://sats.teamtailor.com/jobs?department=Gym`
+  - empty per-language listing (must say why): `https://wagepoint.teamtailor.com/fr-CA/jobs`
+  - posting, `onsite` (badge only, absent from the facts list): `https://careers.oatly.com/jobs/8427035-laboratory-technician-at-oatly`
+  - posting, `none` on a "Remote" location (must say not set): `https://careers.oatly.com/jobs/8399088-national-account-manager-albertsons`
 - vacuumwars.com — each shape has already hidden a bug:
   - comparison tool (the dataset; must list hundreds of models, never
     "No products found."): `https://vacuumwars.com/compare/robot-vacuums/`

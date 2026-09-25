@@ -21,6 +21,12 @@ from .greenhouse import (
     is_greenhouse_html,
 )
 from .jazzhr import extract_jazzhr_embed_tenants
+from .teamtailor import (
+    is_teamtailor_board_path,
+    is_teamtailor_html,
+    render_teamtailor_job,
+    teamtailor_job_id,
+)
 
 _MAX_PREFLIGHT_TEXT_CHARS = 4 * 1024 * 1024
 _MAX_JAZZHR_TENANTS = 32
@@ -36,6 +42,8 @@ class HtmlPreflight:
     ashby_slug: str | None = None
     bamboohr_tenant: str | None = None
     jazzhr_tenants: tuple[str, ...] = ()
+    teamtailor_board: bool = False
+    teamtailor_job: str | None = None
     feed_url: str | None = None
     aliexpress_search: str | None = None
     github_issue: str | None = None
@@ -75,6 +83,16 @@ def inspect_html_preflight(
     bamboohr_tenant = extract_bamboohr_embed_tenant(html)
     jazzhr_tenants = tuple(extract_jazzhr_embed_tenants(html)[:_MAX_JAZZHR_TENANTS])
 
+    # A Teamtailor career site on any domain. The board is read from its feeds
+    # by the orchestrator; a posting is rendered here from the page itself.
+    teamtailor_board = False
+    teamtailor_job = None
+    if is_teamtailor_html(html):
+        if is_teamtailor_board_path(page_url):
+            teamtailor_board = True
+        elif teamtailor_job_id(page_url):
+            teamtailor_job = _bounded(render_teamtailor_job(html, page_url))
+
     feed_url = None
     if known_forum_listing:
         feed_url = discover_feed_url(html, page_url)
@@ -100,6 +118,8 @@ def inspect_html_preflight(
         ashby_slug=ashby_slug,
         bamboohr_tenant=bamboohr_tenant,
         jazzhr_tenants=jazzhr_tenants,
+        teamtailor_board=teamtailor_board,
+        teamtailor_job=teamtailor_job,
         feed_url=feed_url,
         aliexpress_search=aliexpress_search,
         github_issue=github_issue,

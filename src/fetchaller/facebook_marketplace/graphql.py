@@ -35,6 +35,15 @@ _HEADERS = {
     "Sec-Fetch-Site": "same-origin",
 }
 
+# Every request goes out in the logged-out Comet page's own form. Without
+# `__a=1` and `__comet_req=15` the search query still answers 200, with no
+# errors and a cursor that counts its matches, but serves none of them: on
+# 2026-09-25 "bicycle" near Toronto came back with 12 matched and 0 edges, and
+# with these two fields, 12 listings. Geocode and listing detail answer either
+# way, which is why only search went quiet. No page token (lsd, jazoest) is
+# needed; the replay was checked with and without one.
+_COMET_FORM = {"__a": "1", "__comet_req": "15"}
+
 # Module-level session for cookie persistence across requests.
 # Facebook uses IP reputation + cookies — reusing a session with
 # seeded cookies from visiting the marketplace page helps avoid blocks.
@@ -43,14 +52,16 @@ _session_seeded: bool = False
 _session_lock = asyncio.Lock()
 
 
-async def _get_session() -> wafer.AsyncSession:
+async def _get_session(seed: bool = True) -> wafer.AsyncSession:
     """Get or create the shared AsyncSession.
 
     On first use, seeds the session by visiting the marketplace page
     to pick up anonymous session cookies (matches real browser behavior).
+    ``seed=False`` is for a caller about to visit a Marketplace page itself,
+    which seeds the session just as well (see ``mark_session_seeded``).
     """
     global _session, _session_seeded
-    if _session is None or not _session_seeded:
+    if _session is None or (seed and not _session_seeded):
         async with _session_lock:
             if _session is None:
                 _session = wafer.AsyncSession(
@@ -60,7 +71,7 @@ async def _get_session() -> wafer.AsyncSession:
                 )
                 _session_seeded = False
 
-            if not _session_seeded:
+            if seed and not _session_seeded:
                 try:
                     _log("Seeding session cookies from marketplace page...")
                     await _session.get(
@@ -74,6 +85,13 @@ async def _get_session() -> wafer.AsyncSession:
                     _session_seeded = True  # Don't retry on every request
 
     return _session
+
+
+def mark_session_seeded() -> None:
+    """A Marketplace page was visited on the shared session; no seed needed."""
+    global _session_seeded
+    if _session is not None:
+        _session_seeded = True
 
 
 async def close_session() -> None:
@@ -110,6 +128,7 @@ async def graphql_request(doc_id: str, variables: dict) -> dict:
     await facebook_limiter.wait()
 
     form_data = {
+        **_COMET_FORM,
         "doc_id": doc_id,
         "variables": json.dumps(variables),
     }
@@ -123,9 +142,74 @@ async def graphql_request(doc_id: str, variables: dict) -> dict:
     )
     resp.raise_for_status()
     try:
-        return resp.json()
+        return decode_graphql_body(resp.text)
     except (ValueError, UnicodeDecodeError) as e:
         raise wafer.WaferError(f"Invalid JSON response: {e}") from e
+
+
+_XSSI_PREFIX = "for (;;);"
+
+
+def decode_graphql_body(text: str) -> dict:
+    """Decode a GraphQL answer, which is not always a single JSON document.
+
+    A query carrying ``@defer`` streams one JSON object per line, the result
+    first and the deferred parts after it (the page's current search doc_id
+    does this). The first object is the one every parser here reads.
+    """
+    body = text.lstrip()
+    if body.startswith(_XSSI_PREFIX):
+        body = body[len(_XSSI_PREFIX):]
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise
+        data = json.loads(body[: exc.pos])
+    if not isinstance(data, dict):
+        raise ValueError("GraphQL answer is not a JSON object")
+    return data
+
+
+def matched_count(data: dict) -> int:
+    """How many listings the search says it matched on this page.
+
+    The ``end_cursor`` is itself JSON, and its ``c2c`` / ``b2c`` blocks carry
+    ``it``: the consumer and business listings this page matched. It is 0 for a
+    search that genuinely matches nothing, and it stays at the real count when
+    the listings are withheld. Returns 0 when the cursor is missing or
+    unreadable, so an unrecognised shape never raises a false alarm.
+    """
+    try:
+        cursor = data["data"]["marketplace_search"]["feed_units"]["page_info"]["end_cursor"]
+        blocks = json.loads(cursor)
+    except (KeyError, TypeError, ValueError):
+        return 0
+    total = 0
+    for key in ("c2c", "b2c"):
+        block = blocks.get(key) if isinstance(blocks, dict) else None
+        count = block.get("it") if isinstance(block, dict) else None
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            total += count
+    return total
+
+
+def withheld_listings_error(data: dict, listings: list[dict]) -> str | None:
+    """The error to report instead of "No listings found", when that is false.
+
+    An empty answer whose cursor counts matches is a search that was not
+    served, and rendering it as an empty market is the failure this guards.
+    """
+    if listings:
+        return None
+    count = matched_count(data)
+    if not count:
+        return None
+    return (
+        f"Facebook Marketplace matched {count} listing{'s' if count != 1 else ''} for this "
+        "search but returned none of them. The answer was not served in full, so this is "
+        "not an empty result."
+    )
 
 
 def build_search_variables(

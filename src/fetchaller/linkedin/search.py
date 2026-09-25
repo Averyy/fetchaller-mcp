@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 from ..jobfilter import location_matches, tokens
 from ..security.xss import safe_log_text
+from ..timeouts import timeout_error
 from . import api
 from .parse import parse_job_detail, parse_search_fragment
 from .render import render_job_detail, render_search_results
@@ -290,8 +291,8 @@ async def search_linkedin_jobs(
                 ),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"LinkedIn search timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("LinkedIn search", timeout, exc)}
     except api.LinkedInBlockedError:
         return {"error": "LinkedIn declined the request. Slow down and retry later."}
     except api.LinkedInUnavailableError:
@@ -327,8 +328,8 @@ async def get_linkedin_job(
                 "content": render_job_detail(detail, max_tokens=max_tokens),
                 "content_type": "markdown",
             }
-    except TimeoutError:
-        return {"error": f"LinkedIn job fetch timed out after {timeout:.0f}s."}
+    except TimeoutError as exc:
+        return {"error": timeout_error("LinkedIn job fetch", timeout, exc)}
     except api.LinkedInBlockedError:
         return {"error": "LinkedIn declined the request. Slow down and retry later."}
     except api.LinkedInUnavailableError:
