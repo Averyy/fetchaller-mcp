@@ -38,8 +38,10 @@ def is_fccid_continue_gate(html: str, url: str) -> bool:
     fcc.report now 301s to fccid.io (2026-09-25), which answers 200 with a page
     whose only control is a "Continue" button that sets an ``fcc_continue``
     cookie and reloads. Rendered as markdown it reads as a short, successful
-    page. Getting past it is a clearance-cookie solve, which is wafer's job;
-    recognising it so it is never returned as the filing is this module's.
+    page. wafer >= 0.6.2 solves it inline (``ChallengeType.COOKIE_GATE``) and
+    the filing comes back; this stays as the backstop so that a gate wafer does
+    not recognise, or one re-served after a solve, is never returned as the
+    filing.
     """
     host = (urlparse(url).hostname or "").lower()
     return bool(_FCCID_HOST_RE.match(host)) and "fcc_continue=1" in html and 'id="continue"' in html

@@ -277,6 +277,7 @@ copied into the docs as a constant, only as a dated measurement.
     `https://ui.com/qig/u6-pro` (legacy multi-page, heavy gradients),
     `https://ui.com/qig/udm-pro` (legacy single-page), and
     `https://dl.ui.com/qig/definitely-not-real/` (must report "no guide", not an empty one)
+- FCC — fcc.report now 301s to fccid.io behind a Cloudflare challenge and a "Continue" cookie gate (wafer >= 0.6.2 solves both); must render the filing's device details, frequencies and exhibits, never the "Security check" page: `https://fcc.report/FCC-ID/2AC7Z-ESPWROOM32`
 - Facebook Marketplace — each has already hidden a bug:
   - search (must list real listings; an empty result with a cursor counting matches is the degraded answer): `https://www.facebook.com/marketplace/toronto/search?query=desk`
   - slug + price filter (must be Vancouver **BC**, every price between $100 and $800): `https://www.facebook.com/marketplace/vancouver/search?query=kayak&minPrice=100&maxPrice=800`

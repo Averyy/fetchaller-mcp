@@ -3316,7 +3316,8 @@ async def _fetch_url_impl(
             return {"error": "compare.vacuumwars.com answered without the dataset"}
 
         # fccid.io (where fcc.report now redirects) can answer 200 with a
-        # "Continue" cookie gate. Rendered, it reads as a short real page.
+        # "Continue" cookie gate. wafer >= 0.6.2 solves it; if one ever gets
+        # through anyway, rendered it would read as a short real page.
         if is_fccid_continue_gate(html, effective_url):
             _log(f"FETCH {url} -> fccid.io Continue gate, not a filing")
             return {
