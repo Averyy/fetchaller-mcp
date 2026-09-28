@@ -281,9 +281,12 @@ top-level array). It never slices a string, substitutes a value, or reports
 invalid JSON as success; a budget too small for both useful content and the
 marker returns an explicit error.
 
-fetchaller reads Reddit **anonymously only** and has no credential path: there
-is no OAuth flow, no client ID/secret, and no refresh or access token. Every
-Reddit read uses New Reddit's logged-out path. The wiki page index is served by
+fetchaller reads Reddit **anonymously only** and holds no credential: there is
+no account, login, OAuth user token, or client ID/secret in fetchaller. Every
+read is logged out. Its transport, wafer (>=0.7.0), serves JSON reads through
+Reddit's Android app API on an anonymous install token it mints and caches
+itself, and HTML through New Reddit's logged-out web path; neither needs a
+browser. The wiki page index is served by
 the SSR tree or New Reddit's logged-out page-tree route. Routes Reddit serves
 only to a logged-in account — exact moderator rosters, and account-private
 upvoted/downvoted activity — return an explicit error saying so; no names or

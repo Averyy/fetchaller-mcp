@@ -20,17 +20,32 @@ seven boards, and discarded because none of them needed a challenge solved
 
 ### Reddit
 
-Normal Reddit URLs use New Reddit's logged-out anonymous JSON path, except the
+Normal Reddit URLs map to New Reddit's logged-out JSON URLs, except the
 wiki page index, which first reads New Reddit's canonical SSR page tree and,
 when that exact tree is unavailable or its exact anonymous route returns an
 unstructured 403, posts `WikiPageRevisionsV2` to the fixed
 `www.reddit.com/svc/shreddit/graphql` route using the same anonymous session's
-`csrf_token` cookie. Public wiki parity must pass anonymously. fetchaller has
-NO Reddit credential path at all -- no OAuth, no client ID/secret, no refresh
-or access token -- and must never gain one. Routes Reddit serves only to a
+`csrf_token` cookie. Public wiki parity must pass anonymously.
+
+**Two logged-out routes, both wafer's (>=0.7.0).** JSON reads go through
+Reddit's Android app API on an anonymous install token that wafer mints and
+caches itself (`cache_dir/reddit-app.state`); HTML, and any read the app route
+cannot serve, take the web route's anonymous cookie bootstrap, which is
+browser-free. fetchaller holds no Reddit credential of its own -- no account,
+no login, no OAuth user token, no client ID or secret in this repo -- and must
+never gain one; the anonymous app token is a transport detail of wafer's, like
+the web route's anonymous cookies. Never put a `Cookie` or `Authorization`
+header on the Reddit session: wafer reads either as an account request and
+skips the app route. Explicit `.json` URLs take the generic fetch path, whose
+SSRF pins cover only the validated host, so they stay on the web route.
+Neither route may ever need the browser; the strict parity gate audits that
+(`REDDIT_SESSION_AUDIT`, `BROWSER_DISPATCH_SUMMARY`). Routes Reddit serves only to a
 logged-in account (exact moderator rosters, account-private vote activity)
 return an explicit account-gated error and are covered offline as
-`fixture_only`. Wafer >=0.4.6 owns verification/cookie persistence;
+`fixture_only`. The sitewide comment stream (`/comments/`, `r/all`, `r/popular`
+comments) now answers anonymous reads with no children and reddit.com's own
+`/comments/` page is "Page not found"; it renders with a statement that Reddit
+withdrew it, never as a bare "0 items returned". Wafer owns verification, the app token and their persistence;
 fetchaller owns strict URL mapping, SSR/API schema validation, and compact
 rendering. Never add an Old Reddit fallback or copy wafer's
 verification parser into this repo. Explicit `.json` stays raw JSON and

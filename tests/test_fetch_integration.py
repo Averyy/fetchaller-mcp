@@ -666,6 +666,49 @@ class TestRedditUrlTransform:
         assert len(result["content"]) <= 30 * 4
         assert session.calls == [canonical]
 
+    @_PATCH_SSRF
+    async def test_reddit_server_error_page_is_an_error_not_content(self, _mock_ssrf):
+        """Reddit answered /premium/ once with its own error template and a 2xx
+        (2026-09-28). Rendered, that is a short plausible page."""
+        from fetchaller.tools.fetch import fetch_url
+
+        url = "https://www.reddit.com/premium/"
+        html = (
+            "<html><head><title>Reddit - The heart of the internet</title></head><body>"
+            '<a href="#main-content">Skip to main content</a>'
+            "<main><h1>Server error</h1>"
+            "<p>We have encountered an error. Please try again later.</p></main>"
+            "</body></html>"
+        )
+        session = MockWaferSession(default=_html_response(html, url))
+        with patch(
+            "fetchaller.tools.browse_reddit._get_session",
+            AsyncMock(return_value=session),
+        ):
+            result = await fetch_url(url)
+
+        assert "content" not in result
+        assert 'Reddit answered with its own "Server error" page' in result["error"]
+
+    @_PATCH_SSRF
+    async def test_reddit_page_merely_mentioning_server_errors_is_content(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        url = "https://www.reddit.com/premium/"
+        html = (
+            "<html><body><main><h1>Reddit Premium</h1>"
+            "<p>Server error pages are rare. We have encountered an error before.</p>"
+            "</main></body></html>"
+        )
+        session = MockWaferSession(default=_html_response(html, url))
+        with patch(
+            "fetchaller.tools.browse_reddit._get_session",
+            AsyncMock(return_value=session),
+        ):
+            result = await fetch_url(url)
+
+        assert "Reddit Premium" in result["content"]
+
     async def test_cached_old_html_fallback_note_stays_inside_output_budget(self):
         from types import SimpleNamespace
 

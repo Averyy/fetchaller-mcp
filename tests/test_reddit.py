@@ -7977,3 +7977,40 @@ class TestRemainingFilteredNumbering:
         assert "Verified" in _render_user_about(
             {"data": {"name": "a", "verified": True}}
         )
+
+
+class TestSitewideCommentStreamWithdrawn:
+    """The sitewide comment stream now answers anonymous reads with no children
+    (and reddit.com's own /comments/ page is "Page not found"). "0 items
+    returned" alone read as a quiet site; the gap has to be said."""
+
+    _EMPTY = {"kind": "Listing", "data": {"after": None, "children": []}}
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.reddit.com/comments/?limit=5",
+            "https://www.reddit.com/r/all/comments/",
+            "https://www.reddit.com/r/popular/comments/",
+        ],
+    )
+    def test_empty_sitewide_stream_says_it_was_withdrawn(self, url):
+        route = route_reddit_url(url)
+        rendered = render_reddit_route(route, [self._EMPTY], max_tokens=2000)
+
+        assert "0 items returned" in rendered
+        assert "no longer serves the sitewide comment stream to logged-out readers" in rendered
+        assert "This is not an empty stream." in rendered
+
+    def test_empty_community_stream_is_only_empty(self):
+        route = route_reddit_url("https://www.reddit.com/r/Python/comments/")
+        rendered = render_reddit_route(route, [self._EMPTY], max_tokens=2000)
+
+        assert "0 items returned" in rendered
+        assert "sitewide" not in rendered
+
+    def test_gilded_stream_carries_no_note(self):
+        gilded = render_reddit_route(
+            route_reddit_url("https://www.reddit.com/comments/gilded/"), [self._EMPTY], max_tokens=2000
+        )
+        assert "sitewide" not in gilded

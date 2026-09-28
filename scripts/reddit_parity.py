@@ -134,13 +134,16 @@ _COMMENT_ITEM_URL = re.compile(
     r"(https://www\.reddit\.com/(?:r/[A-Za-z0-9_+-]+/)?comments/"
     r"[A-Za-z0-9]{2,16}/[^/?#\s]+/[A-Za-z0-9]{2,16}/)$"
 )
+# A post on a user profile (r/u_<name>) has its permalink under /user/<name>/,
+# which is what Reddit returns and what fetchaller renders; counting only /r/
+# links scored a correct five-card duplicates page as four posts (2026-09-28).
 _POST_ITEM_URL = re.compile(
     r"(?m)^\s{3}"
-    r"(https://www\.reddit\.com/r/[A-Za-z0-9_+-]+/comments/"
+    r"(https://www\.reddit\.com/(?:r|user)/[A-Za-z0-9_+-]+/comments/"
     r"[A-Za-z0-9]{2,16}/(?:[^/?#\s]+/)?)$"
 )
 _BARE_POST_ITEM_URL = re.compile(
-    r"(?m)^(https://www\.reddit\.com/r/[A-Za-z0-9_+-]+/comments/"
+    r"(?m)^(https://www\.reddit\.com/(?:r|user)/[A-Za-z0-9_+-]+/comments/"
     r"[A-Za-z0-9]{2,16}/(?:[^/?#\s]+/)?)$"
 )
 _DIRECTORY_ITEM_URL = re.compile(
@@ -194,12 +197,28 @@ _BROWSER_DISPATCH_SUMMARY = re.compile(
     r"(?m)BROWSER_DISPATCH_SUMMARY "
     r"total=(?P<total>\d+) reddit=(?P<reddit>\d+)\s*$"
 )
+# The exact line `fetchaller.server._log_reddit_session_audit` writes. It was
+# rewritten in 3.3.1 (wafer's own bootstrap telemetry) without this pattern,
+# and every strict run failed the audit from then on; the corpus tests now
+# render the line through the server's own function so the two cannot drift.
+# `hydrated_anonymous` is whether the session holds Reddit's anonymous cookie
+# evidence at shutdown, not whether it loaded any at startup.
 _REDDIT_SESSION_AUDIT = re.compile(
     r"(?m)REDDIT_SESSION_AUDIT "
     r"hydrated_anonymous=(?P<hydrated>[01]) "
     r"hydrated_cookie_count=(?P<count>\d+) "
-    r"bootstrap_instrumented=(?P<instrumented>[01]) "
-    r"bootstrap_network_attempts=(?P<attempts>\d+)\s*$"
+    r"bootstrap_network_attempts=(?P<attempts>\d+|None) "
+    r"successes=(?P<successes>\d+|None) "
+    r"last_outcome=(?P<outcome>\S+) "
+    r"last_status=(?P<status>\S+) "
+    r"browser_attempts=(?P<browser>\d+|None) "
+    r"last_browser_outcome=(?P<browser_outcome>\S+) "
+    r"last_browser_budget=(?P<budget>\S+) "
+    r"app_reads=(?P<app_reads>\d+|None) "
+    r"app_token_mints=(?P<app_mints>\d+|None) "
+    r"app_fallbacks=(?P<app_fallbacks>\d+|None) "
+    r"app_last_outcome=(?P<app_outcome>\S+) "
+    r"app_last_status=(?P<app_status>\S+)\s*$"
 )
 _PROCESS_IDENTITY = re.compile(
     r"PROCESS_IDENTITY "
@@ -226,11 +245,11 @@ _DYNAMIC_MULTI_URL = re.compile(
     r"m/(?P<multi>[A-Za-z0-9_-]{1,64})/",
     re.IGNORECASE,
 )
-_DYNAMIC_LIVE_UPDATE_URL = re.compile(
-    r"https://www\.reddit\.com/live/(?P<thread>[A-Za-z0-9]{2,16})/"
-    r"updates/(?P<update>[A-Za-z0-9-]{2,128})/?",
+_DYNAMIC_LIVE_THREAD_URL = re.compile(
+    r"https://www\.reddit\.com/live/(?P<thread>[A-Za-z0-9]{2,16})(?=[/\s)\]]|$)",
     re.IGNORECASE,
 )
+_LIVE_UPDATE_ID = re.compile(r"(?m)^Update ID: (?P<update>[A-Za-z0-9-]{2,128})$")
 _DYNAMIC_COLLECTION_URL = re.compile(
     r"https://www\.reddit\.com/r/(?P<subreddit>[A-Za-z0-9_]{1,21})/"
     r"collection/(?P<collection>[0-9a-f]{8}-[0-9a-f]{4}-"
@@ -415,35 +434,51 @@ def _audit_harness_identity(
 
 
 def _audit_reddit_cookie_cache(cache_dir: Path, stage: str) -> Evidence:
-    """Prove the fresh runtime wrote a readable, unexpired Reddit cache."""
+    """Prove the fresh runtime wrote a durable, owner-only Reddit cache.
 
-    cache_path = cache_dir / "reddit.com.json"
+    wafer >=0.7.0 keeps its Reddit app install and anonymous token in
+    ``reddit-app.state``; that file is what lets a recreated process read
+    without minting again, so it must exist and be owner-only. Its contents
+    hold the token and are never read here. The web route's cookie file,
+    ``reddit.com.json``, is written only when the web bootstrap ran (the
+    2026-09-28 run needed none), so it is validated whenever it exists.
+    """
+
+    app_state = cache_dir / "reddit-app.state"
+    cookie_path = cache_dir / "reddit.com.json"
     try:
-        if cache_path.is_symlink() or not cache_path.is_file():
-            raise ValueError("reddit.com.json was not durably created")
-        payload = json.loads(cache_path.read_text())
-        if not isinstance(payload, list) or not payload:
-            raise ValueError("reddit.com.json is not a non-empty cookie list")
-        now = time.time()
-        active = [
-            entry
-            for entry in payload
-            if isinstance(entry, dict)
-            and isinstance(entry.get("name"), str)
-            and bool(entry["name"])
-            and isinstance(entry.get("raw"), str)
-            and bool(entry["raw"])
-            and isinstance(entry.get("expires"), (int, float))
-            and not isinstance(entry.get("expires"), bool)
-            and float(entry["expires"]) > now
-        ]
-        if not active:
-            raise ValueError("reddit.com.json has no unexpired cookies")
-        if len(active) != len(payload):
-            raise ValueError("reddit.com.json contains malformed or expired entries")
-        mode = cache_path.stat().st_mode & 0o777
-        if mode & 0o077:
-            raise ValueError("reddit.com.json is not owner-only")
+        if app_state.is_symlink() or not app_state.is_file():
+            raise ValueError("reddit-app.state was not durably created")
+        if app_state.stat().st_size == 0:
+            raise ValueError("reddit-app.state is empty")
+        if app_state.stat().st_mode & 0o077:
+            raise ValueError("reddit-app.state is not owner-only")
+        active: list[object] = []
+        if cookie_path.exists() or cookie_path.is_symlink():
+            if cookie_path.is_symlink() or not cookie_path.is_file():
+                raise ValueError("reddit.com.json is not a regular file")
+            payload = json.loads(cookie_path.read_text())
+            if not isinstance(payload, list) or not payload:
+                raise ValueError("reddit.com.json is not a non-empty cookie list")
+            now = time.time()
+            active = [
+                entry
+                for entry in payload
+                if isinstance(entry, dict)
+                and isinstance(entry.get("name"), str)
+                and bool(entry["name"])
+                and isinstance(entry.get("raw"), str)
+                and bool(entry["raw"])
+                and isinstance(entry.get("expires"), (int, float))
+                and not isinstance(entry.get("expires"), bool)
+                and float(entry["expires"]) > now
+            ]
+            if not active:
+                raise ValueError("reddit.com.json has no unexpired cookies")
+            if len(active) != len(payload):
+                raise ValueError("reddit.com.json contains malformed or expired entries")
+            if cookie_path.stat().st_mode & 0o077:
+                raise ValueError("reddit.com.json is not owner-only")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return Evidence(
             "durable_reddit_cookie_cache",
@@ -451,14 +486,16 @@ def _audit_reddit_cookie_cache(cache_dir: Path, stage: str) -> Evidence:
             "failed",
             str(exc),
         )
+    cookies = (
+        f"; {len(active)} unexpired owner-only web cookies"
+        if active
+        else "; no web cookie file (the web bootstrap never ran)"
+    )
     return Evidence(
         "durable_reddit_cookie_cache",
         stage,
         "passed",
-        (
-            f"fresh runtime cache is readable with {len(active)} "
-            "unexpired owner-only Reddit cookies"
-        ),
+        "owner-only reddit-app.state is durable" + cookies,
     )
 
 
@@ -642,7 +679,19 @@ def _audit_reddit_session(
     expect_hydrated: bool,
     require_no_bootstrap: bool,
 ) -> Evidence:
-    """Prove cache hydration and count Reddit's pure-HTTP verification legs."""
+    """Prove how the Reddit session got its anonymous access.
+
+    wafer >=0.7.0 has two routes: JSON reads go through Reddit's Android app
+    API on an anonymous token it mints and caches, and HTML (or any read the
+    app route cannot serve) goes through the web route's cookie bootstrap.
+
+    Cold (``expect_hydrated=False``): the session ends with anonymous access
+    and set it up itself (a token mint or a web bootstrap), so nothing was
+    inherited. Recreated (``expect_hydrated=True``, ``require_no_bootstrap``):
+    it ends with anonymous access after no token mint, no web bootstrap and no
+    browser attempt, so both came from the durable cache. Neither stage may
+    use the browser.
+    """
 
     try:
         text = path.read_text()
@@ -663,52 +712,73 @@ def _audit_reddit_session(
             "expected exactly one Reddit session shutdown audit",
             artifact=str(path),
         )
-    hydrated = matches[0].group("hydrated") == "1"
-    cookie_count = int(matches[0].group("count"))
-    instrumented = matches[0].group("instrumented") == "1"
-    attempts = int(matches[0].group("attempts"))
-    if not instrumented:
+    audit = matches[0]
+    if audit.group("attempts") == "None" or audit.group("app_reads") == "None":
         return Evidence(
             "reddit_session_persistence",
             stage,
             "failed",
-            "Reddit pure-HTTP verification counter was not instrumented",
+            "Reddit bootstrap or app-route counters were not instrumented",
             artifact=str(path),
         )
-    if hydrated != expect_hydrated:
-        return Evidence(
-            "reddit_session_persistence",
-            stage,
-            "failed",
-            (
-                "Reddit anonymous cache hydration state was "
-                f"{int(hydrated)}, expected {int(expect_hydrated)}"
-            ),
-            artifact=str(path),
-        )
-    if require_no_bootstrap and attempts:
-        return Evidence(
-            "reddit_session_persistence",
-            stage,
-            "failed",
-            (
-                "recreated Reddit session reran pure-HTTP verification "
-                f"{attempts} time(s) after cache hydration"
-            ),
-            artifact=str(path),
-        )
-    return Evidence(
-        "reddit_session_persistence",
-        stage,
-        "passed",
-        (
-            f"hydrated_anonymous={int(hydrated)}, "
-            f"hydrated_cookie_count={cookie_count}, "
-            "bootstrap_instrumented=1, "
-            f"bootstrap_network_attempts={attempts}"
-        ),
-        artifact=str(path),
+
+    def _count(name: str) -> int:
+        value = audit.group(name)
+        return 0 if value == "None" else int(value)
+
+    has_cookies = audit.group("hydrated") == "1"
+    cookie_count = int(audit.group("count"))
+    attempts = _count("attempts")
+    browser_attempts = _count("browser")
+    app_reads = _count("app_reads")
+    app_mints = _count("app_mints")
+    app_fallbacks = _count("app_fallbacks")
+    summary = (
+        f"app_reads={app_reads}, app_token_mints={app_mints}, "
+        f"app_fallbacks={app_fallbacks}, "
+        f"app_last_outcome={audit.group('app_outcome')}, "
+        f"web_cookie_evidence={int(has_cookies)}, "
+        f"hydrated_cookie_count={cookie_count}, "
+        f"bootstrap_network_attempts={attempts}, "
+        f"browser_attempts={browser_attempts}"
     )
+    if not (has_cookies or app_reads):
+        return Evidence(
+            "reddit_session_persistence",
+            stage,
+            "failed",
+            "Reddit session ended with neither app-route reads nor web cookies: " + summary,
+            artifact=str(path),
+        )
+    if browser_attempts:
+        return Evidence(
+            "reddit_session_persistence",
+            stage,
+            "failed",
+            "Reddit anonymous access needed the browser: " + summary,
+            artifact=str(path),
+        )
+    if not expect_hydrated and not (attempts or app_mints):
+        return Evidence(
+            "reddit_session_persistence",
+            stage,
+            "failed",
+            (
+                "cold Reddit session read without minting a token or running a "
+                "bootstrap, so its access was inherited rather than established: "
+                + summary
+            ),
+            artifact=str(path),
+        )
+    if require_no_bootstrap and (attempts or app_mints):
+        return Evidence(
+            "reddit_session_persistence",
+            stage,
+            "failed",
+            "recreated Reddit session re-established access instead of using the cache: " + summary,
+            artifact=str(path),
+        )
+    return Evidence("reddit_session_persistence", stage, "passed", summary, artifact=str(path))
 
 
 def _legacy_variant_inventory_error(
@@ -1154,6 +1224,35 @@ _LIVE_CONTRIBUTOR_CARD = re.compile(
     r"(?m)^\d+\. \*\*u/(?P<name>[A-Za-z0-9_-]+)\*\*\n"
     r"\s+https://www\.reddit\.com/user/(?P=name)/$"
 )
+
+
+def _is_short_final_page(
+    entry: CorpusEntry,
+    text: str,
+    *,
+    item_pattern: re.Pattern[str] | None = None,
+) -> bool:
+    """A page holding fewer items than the corpus URL asked for.
+
+    Reddit returns a continuation cursor only when more items exist, so a
+    page shorter than ``limit`` is the end of the listing: requiring a cursor
+    there fails a correct render (python.org had 4 controversial posts in the
+    year on 2026-09-27, against limit=5). Items are the "N items returned"
+    count, or matches of ``item_pattern`` for renders that print no count
+    (live updates).
+    """
+    try:
+        limit = int(parse_qs(urlparse(entry.url or "").query).get("limit", [""])[0])
+    except ValueError:
+        return False
+    if item_pattern is not None:
+        count = len(item_pattern.findall(text))
+    else:
+        match = re.search(r"(?m)^([\d,]+) items returned$", text)
+        if not match:
+            return False
+        count = int(match.group(1).replace(",", ""))
+    return 0 < count < limit
 
 
 def _has_positive_count(text: str, *labels: str) -> bool:
@@ -1988,10 +2087,11 @@ def _semantic_contract_error(entry: CorpusEntry, text: str) -> str | None:
                     "matching outbound domain",
                     re.compile(r"https?://(?:[a-z0-9-]+\.)*python\.org/"),
                 ),
-                ("pagination continuation", _NEXT_PAGE_URL),
             )
         ):
             return error
+        if not _is_short_final_page(entry, text) and not _NEXT_PAGE_URL.search(text):
+            return "missing legacy semantic field: pagination continuation"
         return None
 
     if entry.id == "comments_global":
@@ -2652,8 +2752,12 @@ def _semantic_contract_error(entry: CorpusEntry, text: str) -> str | None:
                     ),
                     ("live update body", _LIVE_UPDATE_BODY),
                     ("live update identity", re.compile(r"(?m)^Update ID: [0-9a-f-]{36}$")),
-                    ("pagination continuation", _NEXT_PAGE_URL),
                 )
+            ) or (
+                None
+                if _is_short_final_page(entry, text, item_pattern=_LIVE_UPDATE_ID)
+                or _NEXT_PAGE_URL.search(text)
+                else "missing legacy semantic field: pagination continuation"
             )
         return require(
             "exact about route",
@@ -3166,7 +3270,9 @@ async def _verify_tool_surface(session: ClientSession, stage: str) -> Evidence:
             "failed",
             f"expected {EXPECTED_TOOLS!r}, got {names!r}",
         )
-    return Evidence("tool_surface", stage, "passed", "exact ten-tool MCP surface")
+    return Evidence(
+        "tool_surface", stage, "passed", f"exact {len(EXPECTED_TOOLS)}-tool MCP surface"
+    )
 
 
 class _Pacer:
@@ -3606,28 +3712,61 @@ async def _discover_live_targets(
         targets["multi_profile"] = multi_base
         targets["multi_about"] = f"{multi_base}about/"
 
-    live_search, evidence = await _discovery_call(
+    # A live thread is found through Reddit's own search for posts linking one
+    # (r/worldnews opens one a day), then one of its updates is read off the
+    # thread itself. The web search this replaced ("site:reddit.com/live/*/
+    # updates/") indexes almost none and came back empty on 2026-09-27, so the
+    # four live routes never ran.
+    live_source, evidence = await _discovery_call(
         session,
         directory,
-        "current_live_update",
-        "search",
+        "current_live_thread",
+        "fetch",
         {
-            "query": "site:reddit.com/live/*/updates/ reddit",
-            "page": 1,
+            "url": (
+                "https://www.reddit.com/search/"
+                "?q=url%3Areddit.com%2Flive&sort=new&limit=25"
+            ),
         },
     )
     records.append(evidence)
-    live_match = _DYNAMIC_LIVE_UPDATE_URL.search(live_search or "")
-    if live_match is not None:
-        live_base = (
-            f"https://www.reddit.com/live/{live_match.group('thread')}/"
+    thread_match = _DYNAMIC_LIVE_THREAD_URL.search(live_source or "")
+    live_base = (
+        f"https://www.reddit.com/live/{thread_match.group('thread')}/"
+        if thread_match is not None
+        else None
+    )
+    live_updates, evidence = (
+        await _discovery_call(
+            session,
+            directory,
+            "current_live_update",
+            "fetch",
+            {"url": f"{live_base}?limit=1"},
         )
+        if live_base is not None
+        else (
+            None,
+            Evidence(
+                "discovery_current_live_update",
+                "discovery",
+                "failed",
+                "no current live thread was found to read an update from",
+            ),
+        )
+    )
+    records.append(evidence)
+    update_match = _LIVE_UPDATE_ID.search(live_updates or "")
+    if live_base is not None and update_match is not None:
         targets.update(
             {
-                "live": live_base,
+                # limit=5 makes a cursor mandatory for any thread longer than
+                # five updates; unbounded, a small thread (22 updates on
+                # 2026-09-28) fits one page and correctly has none.
+                "live": f"{live_base}?limit=5",
                 "live_about": f"{live_base}about/",
                 "live_contributors": f"{live_base}contributors/",
-                "live_update": live_match.group(0).rstrip("/") + "/",
+                "live_update": f"{live_base}updates/{update_match.group('update')}/",
             }
         )
 
@@ -3785,6 +3924,7 @@ _REQUIRED_DISCOVERY_STAGES = {
     "discovery_current_gallery_listing": frozenset({"discovery"}),
     "discovery_current_wiki_revisions": frozenset({"discovery"}),
     "discovery_current_public_multireddit": frozenset({"discovery"}),
+    "discovery_current_live_thread": frozenset({"discovery"}),
     "discovery_current_live_update": frozenset({"discovery"}),
     "discovery_official_deprecated_collection": frozenset({"discovery"}),
     "dynamic_target_inventory": frozenset({"discovery"}),
@@ -3922,6 +4062,7 @@ def _configure_fresh_cache(
             "WAFER_CACHE_DIR",
             "PUID",
             "PGID",
+            "BROWSER_PREFLIGHT",
         )
         if any(_docker_env_override(docker_arguments, name) for name in protected_environment) or any(
             argument == "--env-file" or argument.startswith("--env-file=")
@@ -3948,6 +4089,15 @@ def _configure_fresh_cache(
             f"type=bind,src={host_cache_dir},dst={server_cache_dir}",
             "--env",
             f"WAFER_CACHE_DIR={server_cache_dir}",
+            # The image sets BROWSER_PREFLIGHT=1, which launches Chrome at
+            # startup; Chrome's own background traffic then crosses the guarded
+            # proxy (31 connections in a recreated container run, 2026-09-28,
+            # with zero solver dispatches) and the zero-egress audit could never
+            # pass. Off, the browser starts only if something asks it to solve,
+            # as it does in a direct run, so zero egress again means what the
+            # audit claims: Reddit never needed the browser.
+            "--env",
+            "BROWSER_PREFLIGHT=0",
         ]
         host_uid = os.getuid()
         host_gid = os.getgid()

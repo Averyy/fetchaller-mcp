@@ -56,20 +56,32 @@ the seven boards it was validated against needed a challenge solved. See
 ### Reddit read path
 
 Mapped normal-URL `fetch` calls, `browse_reddit`, and `search_reddit` share the
-server's `RedditRequestQueue`. Every read is logged out: one long-lived
-`wafer.AsyncSession` with a persistent anonymous cookie jar. There is no
-credentialed transport -- no OAuth origin, no DART-profile session -- because
-fetchaller holds no Reddit credential to select one with. Wafer >=0.4.6 owns
-that transport; fetchaller never parses a verification
-challenge. Direct/library
+server's `RedditRequestQueue`, which runs them one at a time within a rolling
+per-minute budget (`REDDIT_MAX_REQUESTS_PER_MINUTE`, default 10, slowing from
+`REDDIT_PROACTIVE_THRESHOLD`, default 8). Every read is logged out, on one
+long-lived `wafer.AsyncSession`. wafer >=0.7.0 serves the JSON reads through
+Reddit's Android app API on an anonymous install token it mints and caches
+itself, honouring the API's `x-ratelimit-*` headers, and serves HTML (and any
+read the app route cannot take) through the web route's browser-free anonymous
+cookie bootstrap. fetchaller holds no Reddit credential: no account, no user
+token, no client ID; the session carries no `Cookie` or `Authorization`
+header, which would make wafer treat reads as account requests and skip the
+app route. fetchaller never parses a verification challenge. Direct/library
 `fetch_url` calls without the injected queue use the process-wide Reddit domain
 limiter. Caller-selected `.json`, `raw=true`, and unmapped HTML fallbacks still
-use the generic fetch path and its Reddit domain limiter.
+use the generic fetch path and its Reddit domain limiter. On that path a page
+Reddit answers with its own "Server error" template and a 2xx status (seen once
+on `/premium/`, 2026-09-28) is returned as an error, never rendered as content
+or cached.
 
 Every mapped route is an anonymous read; fetchaller has no Reddit credential
 path of any kind. Routes Reddit serves only to a logged-in account -- exact
 moderator rosters and account-private upvoted/downvoted activity -- return an
-explicit account-gated error. No roster, vote count, or wiki page is ever
+explicit account-gated error. The sitewide comment stream (`/comments/`,
+`r/all/comments`, `r/popular/comments`) answers anonymous reads with no
+children and reddit.com's own `/comments/` page is "Page not found"; an empty
+one renders with a statement that Reddit withdrew it rather than as an empty
+site. No roster, vote count, or wiki page is ever
 inferred or reconstructed. Anonymous roster pages are merged until Reddit
 removes its cursor; invalid/repeated cursors or the bounded page cap are
 explicit errors, never silent truncation.
@@ -196,7 +208,7 @@ Each site module exports the same interface: `is_<site>(url)`, `SELECTORS_LIST`,
 `src/fetchaller/search/` handles web search:
 
 - **`__init__.py`** — Main `search()` function, result merging/dedup, 5-minute query cache, per-engine rate limiters (2s Google, 1s DDG), CAPTCHA escalating backoff (2m→5m→15m), lazy session lifecycle.
-- **`google.py`** — Google search result extraction, CAPTCHA detection. Returns `(results, is_captcha, error)`.
+- **`google.py`** — Google search result extraction, CAPTCHA detection. Returns `(results, is_captcha, error)`. A 200 with no parsed results is an error ("Unexpected Google response shape") unless it is recognizably an empty result: either Google's explicit "did not match" wording, or its silent empty page, where `#main` holds only the search-tools bar and the footer with no text anywhere else (Google served that for `site:reddit.com/live/*/updates/ reddit` on 2026-09-27). Results that merely moved to new markup still have their text in `#main` and keep failing loudly.
 - **`ddg.py`** — DuckDuckGo HTML endpoint. Only queried on page 1. Returns `(results, error)`.
 - **`models.py`** — `SearchResult` dataclass.
 - **`tools/search.py`** — MCP tool wrapper.

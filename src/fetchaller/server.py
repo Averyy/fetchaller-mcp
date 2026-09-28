@@ -196,7 +196,15 @@ def _log_reddit_session_audit() -> None:
         f"last_status={audit.get('last_status')} "
         f"browser_attempts={audit.get('browser_attempts')} "
         f"last_browser_outcome={audit.get('last_browser_outcome')} "
-        f"last_browser_budget={audit.get('last_browser_budget')}"
+        f"last_browser_budget={audit.get('last_browser_budget')} "
+        # wafer >=0.7.0 reads Reddit JSON through the Android app API with an
+        # anonymous token it mints and caches itself; these say whether that
+        # route served, minted, or handed reads back to the web route.
+        f"app_reads={audit.get('app_reads')} "
+        f"app_token_mints={audit.get('app_token_mints')} "
+        f"app_fallbacks={audit.get('app_fallbacks')} "
+        f"app_last_outcome={audit.get('app_last_outcome')} "
+        f"app_last_status={audit.get('app_last_status')}"
     )
 
 

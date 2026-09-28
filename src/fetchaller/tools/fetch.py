@@ -181,6 +181,9 @@ from ..wellfound.api import is_wellfound as _is_wellfound
 
 MAX_RESPONSE_SIZE = 50 * 1024 * 1024  # Config permits PDFs up to 50MB.
 MAX_REDIRECTS = 10  # Manual redirect cap (matches wafer's default max_redirects)
+_REDDIT_SERVER_ERROR_PAGE = re.compile(
+    r"(?m)^# Server error\s*\n+\s*We have encountered an error\. Please try again later\.\s*$"
+)
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 # Methods this tool will issue.
@@ -3338,6 +3341,18 @@ async def _fetch_url_impl(
             return {"error": str(exc)}
         if is_reddit:
             markdown = canonicalize_reddit_links(markdown)
+            # Reddit can answer a page with its own error template and a 2xx
+            # status (seen on /premium/ 2026-09-28, fine on the next request).
+            # Rendered, it is a short, plausible page; say what it is instead,
+            # before anything caches it.
+            if structured and _REDDIT_SERVER_ERROR_PAGE.search(markdown):
+                _log(f"FETCH {url} -> Reddit server-error page, not content")
+                return {
+                    "error": (
+                        'Reddit answered with its own "Server error" page instead of the '
+                        "content (a transient Reddit fault). Retry shortly."
+                    )
+                }
 
         # Prepend file listing if found
         if file_listing:

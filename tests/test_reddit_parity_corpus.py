@@ -876,18 +876,36 @@ def test_docker_parity_runner_injects_a_verified_fresh_cache_bind(tmp_path):
         "server_cache_dir": "/app/data/reddit-parity-cache",
         "runtime_owner": f"{os.getuid()}:{os.getgid()}",
     }
-    assert parameters.args[:10] == [
+    assert parameters.args[:12] == [
         "run",
         "--mount",
         f"type=bind,src={tmp_path},dst=/app/data/reddit-parity-cache",
         "--env",
         "WAFER_CACHE_DIR=/app/data/reddit-parity-cache",
+        # The image's startup Chrome launch would put its own background
+        # traffic through the guarded proxy and fail the zero-egress audit.
+        "--env",
+        "BROWSER_PREFLIGHT=0",
         "--env",
         f"PUID={os.getuid()}",
         "--env",
         f"PGID={os.getgid()}",
         "--rm",
     ]
+
+
+def test_docker_parity_runner_rejects_a_caller_preflight_override(tmp_path):
+    parameters = SimpleNamespace(
+        command="docker",
+        args=["run", "--env", "BROWSER_PREFLIGHT=1", "image"],
+        env={},
+    )
+    try:
+        _configure_fresh_cache(parameters, tmp_path, None)
+    except ValueError as exc:
+        assert "must not set parity-managed" in str(exc)
+    else:
+        raise AssertionError("a caller-set BROWSER_PREFLIGHT was accepted")
 
 
 def test_docker_parity_runner_rejects_ambient_cache_or_ownership_configuration(tmp_path):
@@ -937,9 +955,19 @@ def test_docker_parity_cache_must_be_entrypoint_owned(tmp_path):
             raise AssertionError(f"unsafe Docker cache target was accepted: {target}")
 
 
-def test_cache_audit_requires_a_readable_owner_only_unexpired_reddit_cache(
+def test_cache_audit_requires_owner_only_app_state_and_valid_web_cookies(
     tmp_path,
 ):
+    app_state = tmp_path / "reddit-app.state"
+    # Stand-in content: the audit checks presence and mode, never the token.
+    app_state.write_text('{"token": "redacted"}')
+    app_state.chmod(0o600)
+
+    evidence = _audit_reddit_cookie_cache(tmp_path, "after_warm")
+    assert evidence.status == "passed", evidence.detail
+    assert "redacted" not in evidence.detail
+    assert "no web cookie file" in evidence.detail
+
     cache_file = tmp_path / "reddit.com.json"
     cache_file.write_text(
         json.dumps(
@@ -955,15 +983,22 @@ def test_cache_audit_requires_a_readable_owner_only_unexpired_reddit_cache(
         )
     )
     cache_file.chmod(0o600)
-
     evidence = _audit_reddit_cookie_cache(tmp_path, "after_warm")
-
-    assert evidence.status == "passed"
+    assert evidence.status == "passed", evidence.detail
     assert "redacted" not in evidence.detail
-    assert "1 unexpired owner-only" in evidence.detail
+    assert "1 unexpired owner-only web cookies" in evidence.detail
 
     cache_file.chmod(0o644)
-    assert _audit_reddit_cookie_cache(tmp_path, "after_warm").status == "failed"
+    assert "reddit.com.json is not owner-only" in _audit_reddit_cookie_cache(tmp_path, "after_warm").detail
+    cache_file.chmod(0o600)
+
+    app_state.chmod(0o644)
+    assert "reddit-app.state is not owner-only" in _audit_reddit_cookie_cache(tmp_path, "after_warm").detail
+
+    app_state.unlink()
+    assert "reddit-app.state was not durably created" in _audit_reddit_cookie_cache(
+        tmp_path, "after_warm"
+    ).detail
 
 
 def test_recreated_browser_audit_rejects_any_hidden_solver_egress(tmp_path):
@@ -1009,51 +1044,108 @@ def test_browser_dispatch_audit_requires_zero_reddit_solver_calls(tmp_path):
     assert "1 Reddit dispatches" in failed.detail
 
 
-def test_recreated_reddit_audit_requires_hydration_without_http_verification(
-    tmp_path,
-):
+def _server_audit_line(monkeypatch, **state) -> str:
+    """The exact line the server writes, rendered by the server's own code."""
+
+    import importlib
+
+    import fetchaller.server as server
+
+    # The package re-exports a *function* named browse_reddit, which shadows
+    # the submodule on attribute import.
+    browse_reddit = importlib.import_module("fetchaller.tools.browse_reddit")
+
+    snapshot = {
+        "attempts": 0, "successes": 0, "last_outcome": None, "last_status": None,
+        "browser_attempts": 0, "last_browser_outcome": None, "last_browser_budget": None,
+        "cookie_names": ["csrf_token", "csv", "edgebucket", "loid", "token_v2"],
+        "has_cookie_evidence": True,
+        "app_reads": 0, "app_token_mints": 0, "app_fallbacks": 0,
+        "app_last_outcome": None, "app_last_status": None,
+    }
+    snapshot.update(state)
+    snapshot["hydrated_cookie_count"] = len(snapshot["cookie_names"])
+    snapshot["hydrated_anonymous"] = int(bool(snapshot["has_cookie_evidence"]))
+    snapshot["bootstrap_network_attempts"] = snapshot["attempts"]
+    lines: list[str] = []
+    monkeypatch.setattr(browse_reddit, "reddit_session_audit", lambda: snapshot)
+    monkeypatch.setattr(server, "_log", lines.append)
+    server._log_reddit_session_audit()
+    assert len(lines) == 1
+    return f"[2026-09-27T15:21:58.297221+00:00] {lines[0]}\n"
+
+
+def _audit(tmp_path, line, **kwargs):
     audit_log = tmp_path / "server.stderr.log"
-    audit_log.write_text(
-        "REDDIT_SESSION_AUDIT hydrated_anonymous=1 "
-        "hydrated_cookie_count=4 bootstrap_instrumented=1 "
-        "bootstrap_network_attempts=0\n"
-    )
-    evidence = _audit_reddit_session(
-        audit_log,
-        "recreated_shutdown",
-        expect_hydrated=True,
-        require_no_bootstrap=True,
-    )
-    assert evidence.status == "passed"
-    assert "hydrated_cookie_count=4" in evidence.detail
+    audit_log.write_text(line)
+    return _audit_reddit_session(audit_log, kwargs.pop("stage", "stage"), **kwargs)
 
-    audit_log.write_text(
-        "REDDIT_SESSION_AUDIT hydrated_anonymous=1 "
-        "hydrated_cookie_count=4 bootstrap_instrumented=1 "
-        "bootstrap_network_attempts=1\n"
-    )
-    evidence = _audit_reddit_session(
-        audit_log,
-        "recreated_shutdown",
-        expect_hydrated=True,
-        require_no_bootstrap=True,
-    )
-    assert evidence.status == "failed"
-    assert "reran pure-HTTP verification" in evidence.detail
 
-    audit_log.write_text(
-        "REDDIT_SESSION_AUDIT hydrated_anonymous=1 "
-        "hydrated_cookie_count=4 bootstrap_instrumented=0 "
-        "bootstrap_network_attempts=0\n"
+def test_cold_reddit_audit_requires_an_established_not_inherited_session(
+    tmp_path, monkeypatch,
+):
+    # wafer >=0.7.0: JSON reads minted one app token; HTML needed one web bootstrap.
+    established = _server_audit_line(
+        monkeypatch, attempts=1, successes=1, last_outcome="established", last_status=200,
+        app_reads=40, app_token_mints=1, app_last_outcome="served", app_last_status=200,
     )
-    evidence = _audit_reddit_session(
-        audit_log,
-        "recreated_shutdown",
-        expect_hydrated=True,
-        require_no_bootstrap=True,
+    evidence = _audit(tmp_path, established, expect_hydrated=False, require_no_bootstrap=False)
+    assert evidence.status == "passed", evidence.detail
+    assert "app_token_mints=1" in evidence.detail
+
+    # App route only: no web cookies at all is fine when the app route served.
+    app_only = _server_audit_line(
+        monkeypatch, cookie_names=[], has_cookie_evidence=False,
+        app_reads=12, app_token_mints=1, app_last_outcome="served",
     )
+    evidence = _audit(tmp_path, app_only, expect_hydrated=False, require_no_bootstrap=False)
+    assert evidence.status == "passed", evidence.detail
+
+    inherited = _server_audit_line(monkeypatch, app_reads=5)
+    evidence = _audit(tmp_path, inherited, expect_hydrated=False, require_no_bootstrap=False)
     assert evidence.status == "failed"
-    assert "counter was not instrumented" in evidence.detail
+    assert "inherited rather than established" in evidence.detail
+
+    nothing = _server_audit_line(
+        monkeypatch, attempts=1, cookie_names=["csv", "edgebucket"],
+        has_cookie_evidence=False, last_outcome="verification_structure",
+    )
+    evidence = _audit(tmp_path, nothing, expect_hydrated=False, require_no_bootstrap=False)
+    assert evidence.status == "failed"
+    assert "neither app-route reads nor web cookies" in evidence.detail
+
+    # The 2026-09-27 failure: the inline parse failed and the browser recovered.
+    browser = _server_audit_line(
+        monkeypatch, attempts=1, last_outcome="verification_structure", last_status=200,
+        browser_attempts=1, last_browser_outcome="established", last_browser_budget=84.0,
+    )
+    evidence = _audit(tmp_path, browser, expect_hydrated=False, require_no_bootstrap=False)
+    assert evidence.status == "failed"
+    assert "needed the browser" in evidence.detail
+
+
+def test_recreated_reddit_audit_requires_hydration_without_verification(
+    tmp_path, monkeypatch,
+):
+    hydrated = _server_audit_line(monkeypatch, app_reads=40, app_last_outcome="served")
+    evidence = _audit(tmp_path, hydrated, expect_hydrated=True, require_no_bootstrap=True)
+    assert evidence.status == "passed", evidence.detail
+    assert "hydrated_cookie_count=5" in evidence.detail
+
+    reminted = _server_audit_line(monkeypatch, app_reads=40, app_token_mints=1)
+    evidence = _audit(tmp_path, reminted, expect_hydrated=True, require_no_bootstrap=True)
+    assert evidence.status == "failed"
+    assert "re-established access instead of using the cache" in evidence.detail
+
+    reran_http = _server_audit_line(monkeypatch, attempts=1, successes=1, last_outcome="established")
+    evidence = _audit(tmp_path, reran_http, expect_hydrated=True, require_no_bootstrap=True)
+    assert evidence.status == "failed"
+    assert "re-established access" in evidence.detail
+
+    uninstrumented = _server_audit_line(monkeypatch, attempts=None)
+    evidence = _audit(tmp_path, uninstrumented, expect_hydrated=True, require_no_bootstrap=True)
+    assert evidence.status == "failed"
+    assert "counters were not instrumented" in evidence.detail
 
 
 class _Session:
@@ -1235,9 +1327,14 @@ async def test_dynamic_discovery_materializes_every_opaque_public_route(tmp_path
         }),
         f"revision `{revision_one}`\nrevision `{revision_two}`",
         "https://www.reddit.com/user/the-magic-sword/m/pathfinderstarfinder_2e/",
+        # Reddit search for posts linking a live thread, then the thread.
         (
-            "https://www.reddit.com/live/18hnzysb1elcs/updates/"
-            "ecf7aa3e-5567-11f1-87f8-660b88d038df"
+            "2. /r/WorldNews Live Thread: Russian Invasion of Ukraine Day 1677\n"
+            "   https://www.reddit.com/live/18hnzysb1elcs\n"
+        ),
+        (
+            "## Updates\n\n1. **u/reporter · 2026-09-27 12:00 UTC**\n\n"
+            "Something happened.\n\nUpdate ID: ecf7aa3e-5567-11f1-87f8-660b88d038df\n"
         ),
         (
             "# Deprecating Post Collections, Mark as OC, and Community "
@@ -2510,3 +2607,85 @@ def test_moderator_route_requires_the_gated_error_and_rejects_any_roster():
         "1. **u/alice** · all\n   https://www.reddit.com/user/alice/\n"
     )
     assert _semantic_contract_error(moderators, fabricated) is not None
+
+
+def _domain_page(count: int, *, cursor: bool) -> str:
+    cards = "\n\n".join(
+        f"{i}. Python Release Python 3.14.{i}\n"
+        f"   r/programming · score 241 · 96% upvoted · 68 comments · u/BrewedDoritos · 11mo\n"
+        f"   https://www.python.org/downloads/release/python-314{i}/\n"
+        f"   https://www.reddit.com/r/programming/comments/1o0ik{i}m/"
+        for i in range(1, count + 1)
+    )
+    page = f"# Reddit · domain python.org · controversial · time year\n\n{count} items returned\n\n{cards}\n"
+    if cursor:
+        page += "\n[Next page: https://www.reddit.com/domain/python.org/controversial/?t=year&limit=5&after=t3_x]\n"
+    return page
+
+
+def test_domain_variant_short_final_page_needs_no_cursor():
+    """Reddit gives no cursor when the listing is exhausted: python.org had 4
+    controversial posts in the year on 2026-09-27, against limit=5."""
+    entry = next(e for e in load_corpus(DEFAULT_CORPUS) if e.id == "domain_controversial_year")
+
+    assert _semantic_contract_error(entry, _domain_page(4, cursor=False)) is None
+    # A full page still has to carry the cursor; dropping it is the regression
+    # this check exists for.
+    assert _semantic_contract_error(entry, _domain_page(5, cursor=False)) == (
+        "missing legacy semantic field: pagination continuation"
+    )
+    assert _semantic_contract_error(entry, _domain_page(5, cursor=True)) is None
+
+
+def _live_page(updates: int, *, cursor: bool) -> str:
+    body = "\n\n".join(
+        f"{i}. **u/SyntheticSweetener · 2026-09-2{i} 18:35 UTC**\n\n"
+        f"https://twitter.com/wartranslated/status/210209631292584777{i}\n\n"
+        f"Update ID: 362ac036-b5eb-11f1-946d-ceb77989b01{i}"
+        for i in range(1, updates + 1)
+    )
+    page = (
+        "# Ukraine-Russia War\n\n**State:** live\n\n**Live thread:** "
+        "https://www.reddit.com/live/1hnbhsgiy1dhh/\n\n## Updates\n\n" + body + "\n"
+    )
+    if cursor:
+        page += "\n[Next page: https://www.reddit.com/live/1hnbhsgiy1dhh/?limit=5&after=LiveUpdate_x]\n"
+    return page
+
+
+def test_live_thread_shorter_than_its_limit_needs_no_cursor():
+    """The discovered thread had 22 updates in total on 2026-09-28; Reddit
+    returns no cursor for the last page, and discovery now asks for limit=5 so
+    any longer thread must still show one."""
+    base = next(e for e in load_corpus(DEFAULT_CORPUS) if e.id == "live")
+    entry = _materialize_entry(base, {"live": "https://www.reddit.com/live/1hnbhsgiy1dhh/?limit=5"})
+
+    assert _semantic_contract_error(entry, _live_page(3, cursor=False)) is None
+    assert _semantic_contract_error(entry, _live_page(5, cursor=False)) == (
+        "missing legacy semantic field: pagination continuation"
+    )
+    assert _semantic_contract_error(entry, _live_page(5, cursor=True)) is None
+
+
+def test_profile_post_counts_as_a_post_identity():
+    """A crosspost on a user profile has its permalink under /user/<name>/;
+    counting only /r/ links scored five correct duplicates as four."""
+    from scripts.reddit_parity import _post_result_cardinality
+
+    cards = []
+    for i, (place, link) in enumerate(
+        [
+            ("r/UpliftingNews", "https://www.reddit.com/r/UpliftingNews/comments/1wrkv4w/"),
+            ("r/u_FineBumblebee8744", "https://www.reddit.com/user/FineBumblebee8744/comments/1wrw1fc/"),
+        ],
+        start=1,
+    ):
+        cards.append(
+            f"{i}. Hungary to impose wealth tax\n"
+            f"   {place} · score 1 · 100% upvoted · 0 comments · u/someone · 16h\n"
+            f"   https://aroundprague.cz/en/news/hungary\n"
+            f"   {link}"
+        )
+    text = "## Other discussions\n\n2 items returned\n\n" + "\n\n".join(cards) + "\n"
+
+    assert _post_result_cardinality(text) is None

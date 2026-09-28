@@ -83,7 +83,10 @@ collection URL, validates its genuine archived Redux metadata, hydrates its
 post IDs against current Reddit `/api/info`, and rejects shells, empty data, or
 missing posts. `--include-unstable` dynamically discovers current real
 post/comment, revision, multireddit, live, and collection IDs, records the
-discovery bodies, and requires every such entry. Strict mode requires stable
+discovery bodies, and requires every such entry. A live thread is found through
+Reddit's own search for posts linking one (`url:reddit.com/live`, newest first;
+r/worldnews opens one a day) and an update ID is read off that thread; the web
+search it replaced indexes almost none. Strict mode requires stable
 live targets and any live class explicitly selected by `--include-unstable`.
 Every corpus route is an anonymous public read and needs no configuration, but
 the live Reddit gates are waived on GitHub's hosted runners
@@ -92,14 +95,20 @@ the live Reddit gates are waived on GitHub's hosted runners
 the smoke gates and the parity gate, every waived run is annotated, and the
 offline contract still runs. Run the command above locally to exercise Reddit
 for real. The runner injects a fresh host-directory bind beneath `/app/data`,
-aligns the container UID/GID to its host owner, verifies an unexpired
-owner-only Reddit cookie file after warm and recreated stages, requires
-successful anonymous-cookie hydration with zero pure-HTTP Reddit verification
-attempts after recreation, and separately requires zero guarded-browser
-connections. It rejects a
+sets `BROWSER_PREFLIGHT=0` (the image's startup Chrome launch otherwise sends
+Chrome's own background traffic through the guarded proxy, so the recreated
+zero-egress audit could never pass),
+aligns the container UID/GID to its host owner, verifies wafer's owner-only
+`reddit-app.state` (the app install and anonymous token) after warm and
+recreated stages, plus an unexpired owner-only Reddit cookie file whenever the
+web bootstrap wrote one, requires
+that after recreation the session read with no app-token mint, no web
+verification and no browser attempt (both wafer's anonymous app token and its
+anonymous cookies came from the cache), and separately requires zero
+guarded-browser connections. It rejects a
 conflicting cache/ownership environment or `--env-file`, so evidence cannot use
 ambient cookies or silently re-solve. No Reddit credential is ever forwarded,
-because none exists. `report.json` derives its publication denominator from
+because fetchaller holds none; wafer mints its own anonymous app token. `report.json` derives its publication denominator from
 the corpus and lists every offline entry and reason separately.
 
 ## Waived live gates on GitHub runners
@@ -138,11 +147,11 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 ## Test Organization
 
 - `test_site_detection.py` — Tests `_detect_site()` directly (URL-based, HTML-based, priority rules)
-- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors; an unvalidated final host is refused and named; fccid.io's Continue cookie gate is an error, not a page)
+- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors; an unvalidated final host is refused and named; fccid.io's Continue cookie gate is an error, not a page; Reddit's 2xx "Server error" page is an error, a page that merely mentions one is content)
 - `test_timeouts.py` — A single request exceeding its wafer session limit (`WaferTimeout`, a `TimeoutError` subclass) is reported as that request, not as the tool's whole budget running out; the budget itself still says so (end to end through `search_oracle_jobs`)
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
-- `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP
+- `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP; Google's silent empty results page is an honest zero while results in unrecognized markup still fail loudly
 - `test_reddit.py` — Strict Reddit host recognition; normal URL→structured routing;
   thread/listing/profile/rules/wiki renderers; score/upvote-ratio semantics;
   nested/deleted/rich-media comments; gallery/video/crosspost/poll/status
@@ -153,9 +162,18 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
   `WikiPageRevisionsV2` page tree (CSRF, fixed route, identity, node/path
   agreement, uniqueness); strict
   archived-collection identity/Redux parsing plus current-post
-  hydration; failure truth, queue, deadline, and backoff behavior
+  hydration; failure truth, queue, deadline, and backoff behavior; an empty
+  sitewide comment stream (`/comments/`, `r/all`, `r/popular`) says Reddit
+  withdrew it rather than rendering a bare "0 items returned"
 - `test_reddit_parity_corpus.py` — Checked-in zero-gap corpus coverage for every
-  routed representation, access-state contract, and fixture gating
+  routed representation, access-state contract, and fixture gating; the Reddit
+  session audit is parsed from the line the server's own
+  `_log_reddit_session_audit` renders (the two drifted apart in 3.3.1 and the
+  strict gate could not pass until 3.8.2) and covers both of wafer's routes:
+  cold must mint an app token or run the web bootstrap itself, recreated must
+  do neither, and neither may use the browser; a short final page needs no
+  continuation cursor while a full one does; live-thread discovery through
+  Reddit's own search
 - `test_reddit_legacy_contract.py` — Independent versioned Old Reddit surface
   inventory; detects omissions from both corpus and production routing; missing
   route/schema/renderer/MCP fixture coverage

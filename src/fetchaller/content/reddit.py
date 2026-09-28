@@ -2668,6 +2668,21 @@ def _render_thread(payload: object, route: RedditRoute, max_chars: int) -> str:
     )
 
 
+# The sitewide comment stream (/comments/, r/all, r/popular) is never really
+# empty, yet anonymous reads of it now answer 200 with no children and
+# reddit.com's own /comments/ page is "Page not found" (2026-09-27). Rendering
+# "0 items returned" alone read as a quiet site; say what it is instead.
+# Per-subreddit streams still return data and can be genuinely empty, so they
+# are left alone.
+_SITEWIDE_COMMENT_STREAMS = frozenset({"", "all", "popular"})
+_SITEWIDE_COMMENTS_WITHDRAWN = (
+    "Reddit no longer serves the sitewide comment stream to logged-out "
+    "readers: the listing answers with no comments and reddit.com's own "
+    "/comments/ page is \"Page not found\". This is not an empty stream. "
+    "Per-community streams (/r/<name>/comments/) still return comments."
+)
+
+
 def _render_listing(payload: object, route: RedditRoute, max_chars: int) -> str:
     children = _listing_children(payload)
     listing_data = payload.get("data") if isinstance(payload, dict) else {}
@@ -2713,6 +2728,13 @@ def _render_listing(payload: object, route: RedditRoute, max_chars: int) -> str:
         if requested_time in _TIME_FILTERS:
             label = f"{label} · time {requested_time}"
     prefix = f"# {place} · {label}\n\n{len(children)} items returned"
+    if (
+        not children
+        and route.kind == "comment_listing"
+        and route.label == "comments"
+        and (route.subreddit or "").lower() in _SITEWIDE_COMMENT_STREAMS
+    ):
+        prefix += "\n\n" + _SITEWIDE_COMMENTS_WITHDRAWN
     if (
         isinstance(payload, dict)
         and payload.get("_fetchaller_reddit_provenance")

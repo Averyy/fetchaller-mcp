@@ -555,6 +555,55 @@ class TestEngineErrorReturns:
         assert expected in error
 
 
+    # Skeleton of the page Google returned on 2026-09-27 for
+    # "site:reddit.com/live/*/updates/ reddit": full chrome, no result, and none
+    # of the "did not match" wording the explicit check looks for.
+    _EMPTY_SERP = (
+        '<html><head><title>q - Google Search</title></head><body>'
+        '<div id="hdr"><form id="sf"><input name="q" value="q"></form></div>'
+        '<div id="main">'
+        '<div><div id="st-toggle">Search tools</div><div id="st-card">Any time Past hour All results '
+        'Verbatim</div></div>'
+        '<style>.x{}</style>'
+        '<div></div>'
+        '<footer><div id="ewlSqd">From your IP address - Learn more Sign in Settings Privacy Terms</div>'
+        '<a href="/url?q=https://support.google.com/websearch">Learn more</a></footer>'
+        '<script>var a=1;</script>'
+        '</div></body></html>'
+    )
+
+    async def test_silent_empty_results_page_is_an_honest_zero(self):
+        resp = MagicMock()
+        resp.text = self._EMPTY_SERP
+        resp.url = "https://www.google.com/search?q=q"
+        resp.status_code = 200
+        session = MagicMock()
+        session.get = AsyncMock(return_value=resp)
+
+        results, captcha, error = await google_search(session, "q", 1)
+
+        assert (results, captcha, error) == ([], False, None)
+
+    async def test_results_in_unrecognized_markup_still_fail_loudly(self):
+        """If Google moved its results into markup the extractor does not read,
+        their text is still inside #main, and that must not read as zero."""
+        moved = self._EMPTY_SERP.replace(
+            "<div></div>",
+            "<div><div>Python's asyncio: A Hands-On Walkthrough realpython.com</div></div>",
+        )
+        resp = MagicMock()
+        resp.text = moved
+        resp.url = "https://www.google.com/search?q=q"
+        resp.status_code = 200
+        session = MagicMock()
+        session.get = AsyncMock(return_value=resp)
+
+        results, captcha, error = await google_search(session, "q", 1)
+
+        assert results == []
+        assert "Unexpected Google response shape" in error
+
+
 # ---------------------------------------------------------------------------
 # Integration: search() function with mocked HTTP
 # ---------------------------------------------------------------------------

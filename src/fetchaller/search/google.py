@@ -84,6 +84,35 @@ def is_explicit_no_results(html: str) -> bool:
     )
 
 
+def is_empty_results_page(html: str) -> bool:
+    """Recognize Google's zero-results page that says nothing about it.
+
+    For some queries (``site:reddit.com/live/*/updates/ reddit``, 2026-09-27)
+    Google answers with its full results page, search-tools bar and footer
+    included, and no result and no "did not match" wording at all. The
+    generic check then reported an engine failure for what was an honest
+    zero. This recognizes that page by structure: ``#main`` holds the search
+    tools and the footer and nothing else with any text in it. A page whose
+    results merely moved to new markup still has their text in ``#main``, so
+    it keeps failing loudly.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    main = soup.find(id="main")
+    if main is None or main.find(id="st-card") is None or main.find("footer") is None:
+        return False
+    for child in main.children:
+        name = getattr(child, "name", None)
+        if name is None:
+            if str(child).strip():
+                return False
+            continue
+        if name in ("style", "script", "footer") or child.find(id="st-card") is not None:
+            continue
+        if child.get_text(strip=True):
+            return False
+    return True
+
+
 def extract_results(html: str) -> list[SearchResult]:
     """Extract search results from Google SSR HTML."""
     soup = BeautifulSoup(html, "html.parser")
@@ -223,7 +252,7 @@ def extract_results(html: str) -> list[SearchResult]:
 
 def _parse_response(html: str) -> tuple[list[SearchResult], bool]:
     results = extract_results(html)
-    return results, not results and is_explicit_no_results(html)
+    return results, not results and (is_explicit_no_results(html) or is_empty_results_page(html))
 
 
 async def search_google(session, query: str, page: int = 1) -> tuple[list[SearchResult], bool, str | None]:
