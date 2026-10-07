@@ -62,10 +62,12 @@ class CaReadError(LookupError):
     """homedepot.ca answered, but not with the data asked for."""
 
 
-# When this session last loaded a homedepot.ca page. Akamai's session cookies
-# (bm_sz) live four hours; re-warming well inside that keeps a long-running
-# server from drifting back into cold service calls.
-_last_page_at: float = 0.0
+# When this session last loaded a homedepot.ca page (None: never). Akamai's
+# session cookies (bm_sz) live four hours; re-warming well inside that keeps a
+# long-running server from drifting back into cold service calls. Not 0.0:
+# time.monotonic() counts from boot, so on a host up less than _WARM_FOR a zero
+# read as "loaded just now" and the first service call went out cold.
+_last_page_at: float | None = None
 _WARM_FOR = 30 * 60
 
 
@@ -115,7 +117,7 @@ async def _service(url: str, *, page_url: str, timeout: float):
     Loads ``page_url`` first unless this session has loaded a page recently,
     and repeats that once if the service still answers with a challenge.
     """
-    if time.monotonic() - _last_page_at > _WARM_FOR:
+    if _last_page_at is None or time.monotonic() - _last_page_at > _WARM_FOR:
         await _get_page(page_url, timeout=timeout)
     try:
         return await _get(url, timeout=timeout, referer=page_url)

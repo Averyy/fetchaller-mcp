@@ -40,7 +40,7 @@ def _no_spacing(monkeypatch):
 
     monkeypatch.setattr(ratelimit, "homedepot_com_limiter", _NoWait())
     monkeypatch.setattr(ratelimit, "homedepot_ca_limiter", _NoWait())
-    monkeypatch.setattr(ca, "_last_page_at", 0.0)
+    monkeypatch.setattr(ca, "_last_page_at", None)
 
 
 # ---------------------------------------------------------------------------
@@ -857,3 +857,23 @@ def test_a_not_found_product_is_never_replaced_by_another_product_on_the_page():
     # No entry for the code at all: only an unambiguous single product stands in.
     assert ca.state_product({"product-1000000001": sibling}, "999") == sibling
     assert ca.state_product({"product-1": sibling, "product-2": {"code": "2"}}, "999") is None
+
+
+async def test_the_first_service_call_loads_a_page_even_just_after_boot(monkeypatch):
+    """time.monotonic() counts from boot. A zero "last page" time read as fresh
+    on a host up under 30 minutes (a new CI runner, a rebooted server), and the
+    first service call went out cold."""
+    calls = []
+
+    async def fake_get_page(url, *, timeout):
+        calls.append(("page", url))
+
+    async def fake_get(url, *, timeout, referer=None):
+        calls.append(("service", url))
+        return "ok"
+
+    monkeypatch.setattr(ca.time, "monotonic", lambda: 5.0)
+    monkeypatch.setattr(ca, "_get_page", fake_get_page)
+    monkeypatch.setattr(ca, "_get", fake_get)
+    assert await ca._service("https://www.homedepot.ca/api/x", page_url="https://www.homedepot.ca/product/x/1", timeout=5) == "ok"
+    assert calls[0] == ("page", "https://www.homedepot.ca/product/x/1")
