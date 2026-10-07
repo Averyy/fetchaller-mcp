@@ -126,6 +126,13 @@ craigslist_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 # Conservative rate limit — API key rotation on 401 means we want to be gentle.
 costco_limiter = DomainRateLimiter(min_interval=2.0, jitter=(0.3, 1.0))
 
+# The Home Depot. homedepot.com is read through its federation gateway (one
+# GraphQL request per page); homedepot.ca through its server-rendered pages and
+# the JSON services those pages call. Separate hosts, separate limiters. No
+# block has been observed on either read; this is politeness, not evasion.
+homedepot_com_limiter = DomainRateLimiter(min_interval=1.0, jitter=(0.2, 0.6))
+homedepot_ca_limiter = DomainRateLimiter(min_interval=1.0, jitter=(0.2, 0.6))
+
 # Facebook: www.facebook.com/api/graphql/ (unauthenticated GraphQL)
 # IP reputation is a concern — conservative rate limiting.
 facebook_limiter = DomainRateLimiter(min_interval=3.0, jitter=(0.5, 1.5))

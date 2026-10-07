@@ -35,9 +35,6 @@ from fetchaller.tools.browse_reddit import (
 )
 from fetchaller.tools.reddit_fetch import (
     _hydrate_user_directory,
-    _parse_archived_collection,
-    _parse_archived_gilded,
-    _parse_collection_cdx,
     _payload_schema_error,
     _restore_reverse_listing_after,
     fetch_mapped_reddit,
@@ -2967,33 +2964,131 @@ class TestRedditTransportAndTools:
         assert "A compact Reddit post" in public["content"]
         assert queue.backoffs == []
 
-    async def test_gildings_given_is_exact_account_private_access_state(
+    async def test_retired_gilded_listing_reports_reddits_own_403_without_backoff(
         self,
     ):
-        route = route_reddit_url(
-            "https://www.reddit.com/user/spez/gilded/"
-            "?show=given&limit=2"
-        )
-        assert route is not None
-        assert route.label == "gilded given"
+        """Reddit answers /comments/gilded with a structured 403.
 
-        with patch(
-            "fetchaller.tools.reddit_fetch._get_session",
-            AsyncMock(),
-        ) as get_session:
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=5_000,
-                timeout=30,
-            )
+        Gilded listings are retired and Reddit answers them itself; that answer
+        is reported as it is. Treated as a block, this one 403 held every
+        Reddit read for five minutes.
+        """
+
+        class ImmediateQueue:
+            def __init__(self):
+                self.backoffs = []
+
+            async def enqueue(self, callback, *_args, **_kwargs):
+                return await callback()
+
+            def set_backoff(self, status_code, retry_after=None, **_kwargs):
+                self.backoffs.append((status_code, retry_after))
+
+        session = _JsonSession([
+            _JsonResponse({"message": "Forbidden", "error": 403}, status_code=403),
+            _JsonResponse({"kind": "Listing", "data": {"children": [_post()]}}),
+        ])
+        queue = ImmediateQueue()
+        gilded_route = route_reddit_url("https://www.reddit.com/comments/gilded/?limit=2")
+        public_route = route_reddit_url("https://www.reddit.com/r/Python/?limit=1")
+        assert gilded_route is not None and public_route is not None
+
+        with patch("fetchaller.tools.reddit_fetch._get_session", AsyncMock(return_value=session)):
+            gilded = await fetch_mapped_reddit(gilded_route, max_tokens=5_000, timeout=30, queue=queue)
+            public = await fetch_mapped_reddit(public_route, max_tokens=5_000, timeout=30, queue=queue)
+
+        assert gilded == {"error": "Reddit returned HTTP 403."}
+        assert "A compact Reddit post" in public["content"]
+        assert queue.backoffs == []
+        assert not any("archive.org" in call for call in session.calls)
+
+    async def test_an_opaque_403_on_a_gilded_listing_is_still_a_block(self):
+        """Only Reddit's structured answer is exempt; an opaque 403 keeps the backoff."""
+
+        class ImmediateQueue:
+            def __init__(self):
+                self.backoffs = []
+
+            async def enqueue(self, callback, *_args, **_kwargs):
+                return await callback()
+
+            def set_backoff(self, status_code, retry_after=None, **_kwargs):
+                self.backoffs.append((status_code, retry_after))
+
+        session = _JsonSession([_JsonResponse(None, status_code=403)])
+        queue = ImmediateQueue()
+        route = route_reddit_url("https://www.reddit.com/comments/gilded/?limit=2")
+        with patch("fetchaller.tools.reddit_fetch._get_session", AsyncMock(return_value=session)):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30, queue=queue)
+
+        assert result == {"error": "Access forbidden by Reddit (HTTP 403)."}
+        assert [status for status, _ in queue.backoffs] == [403]
+
+    async def test_wafers_session_gate_on_a_gilded_listing_keeps_its_retry_path(self):
+        """A 403 wafer tagged as Reddit's session gate is not a retired-listing answer."""
+        gate = _JsonResponse({"message": "Forbidden", "error": 403}, status_code=403)
+        gate.challenge_type = "reddit"
+        session = _JsonSession([gate, gate])
+        route = route_reddit_url("https://www.reddit.com/comments/gilded/?limit=2")
+        with patch("fetchaller.tools.reddit_fetch._get_session", AsyncMock(return_value=session)):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert result["error"] != "Reddit returned HTTP 403."
+        assert "session gate" in result["error"]
+
+    @pytest.mark.parametrize(
+        ("url", "response", "error"),
+        [
+            (
+                "https://www.reddit.com/r/Python/gilded/?limit=2",
+                _JsonResponse({"message": "Bad Request", "error": 400}, status_code=400),
+                "Reddit returned HTTP 400.",
+            ),
+            (
+                "https://www.reddit.com/user/spez/gilded/?show=given",
+                _JsonResponse(None, status_code=301, headers={"location": "https://www.reddit.com/user/spez/"}),
+                "Reddit redirects this request to https://www.reddit.com/user/spez/ "
+                "instead of answering it; not followed.",
+            ),
+        ],
+    )
+    async def test_retired_gilded_listings_answer_what_reddit_answers(self, url, response, error):
+        session = _JsonSession([response])
+        route = route_reddit_url(url)
+        assert route is not None
+        with patch("fetchaller.tools.reddit_fetch._get_session", AsyncMock(return_value=session)):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert result == {"error": error}
+        assert len(session.calls) == 1  # one read of Reddit, nothing followed or reconstructed
+
+    async def test_retired_gold_directory_reports_reddits_redirect_to_premium(self):
+        """Reddit sends /subreddits/gold to the premium directory; that is the answer.
+
+        It used to be rebuilt from a 2018 Wayback snapshot. The redirect comes
+        from the API host the read went to and is named as the public page.
+        """
+        session = _JsonSession([
+            _JsonResponse(None, status_code=302, headers={"location": "https://api.reddit.com/subreddits/premium.json"}),
+        ])
+        route = route_reddit_url("https://www.reddit.com/subreddits/gold/?limit=3")
+        assert route is not None
+        with patch("fetchaller.tools.reddit_fetch._get_session", AsyncMock(return_value=session)):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
 
         assert result == {
-            "error": (
-                "Reddit account-private gildings given are not publicly "
-                "readable."
-            )
+            "error": "Reddit redirects this request to https://www.reddit.com/subreddits/premium/ "
+            "instead of answering it; not followed."
         }
-        get_session.assert_not_awaited()
+        assert len(session.calls) == 1
+        assert not any("archive.org" in call for call in session.calls)
+
+    async def test_a_cross_origin_redirect_is_never_named(self):
+        session = _JsonSession([
+            _JsonResponse(None, status_code=302, headers={"location": "https://evil.example/x.json"}),
+        ])
+        result = await fetch_reddit_json("https://www.reddit.com/r/Python/hot.json", session)
+        assert result == {"error": "Reddit returned an unsafe JSON redirect."}
 
     async def test_randomrising_uses_exact_live_rising_pool_and_scope(
         self,
@@ -3624,559 +3719,6 @@ class TestRedditTransportAndTools:
 
         assert "error" not in result
         assert "A compact Reddit post" in result["content"]
-
-    def test_archived_gilded_parser_requires_awarded_exact_scope_things(self):
-        html = """
-        <div class="thing gilded" data-fullname="t1_comment1"
-             data-subreddit="Python"></div>
-        <div class="thing gilded" data-fullname="t3_post1"
-             data-subreddit="Python" data-gildings="2"></div>
-        <div class="thing" data-fullname="t3_notgilded"
-             data-subreddit="Python" data-gildings="0"></div>
-        <div class="thing gilded" data-fullname="t3_foreign"
-             data-subreddit="learnpython" data-gildings="1"></div>
-        <span class="next-button">
-          <a href="https://www.reddit.com/r/Python/gilded/?after=t3_post1">
-            next
-          </a>
-        </span>
-        """
-
-        assert _parse_archived_gilded(
-            html,
-            subreddit="Python",
-            username=None,
-            comments_only=False,
-        ) == (
-            ["t1_comment1", "t3_post1"],
-            {"t1_comment1": None, "t3_post1": 2},
-            "https://www.reddit.com/r/Python/gilded/?after=t3_post1",
-        )
-        assert _parse_archived_gilded(
-            html,
-            subreddit="Python",
-            username=None,
-            comments_only=True,
-        ) == (
-            ["t1_comment1"],
-            {"t1_comment1": None},
-            "https://www.reddit.com/r/Python/gilded/?after=t3_post1",
-        )
-        assert _parse_archived_gilded(
-            '<div class="thing" data-fullname="t3_post1"></div>',
-            subreddit=None,
-            username=None,
-            comments_only=False,
-        ) is None
-
-    async def test_retired_gilded_uses_archived_order_and_current_hydration(
-        self,
-    ):
-        timestamp = "20230530081438"
-        original = "https://www.reddit.com/r/Python/gilded/"
-        archive_html = """
-        <div class="thing gilded" data-fullname="t1_comment1"
-             data-subreddit="Python" data-gildings="1"></div>
-        <div class="thing gilded" data-fullname="t3_post1"
-             data-subreddit="Python" data-gildings="2"></div>
-        <span class="next-button">
-          <a href="https://www.reddit.com/r/Python/gilded/?count=2&amp;after=t3_post1">
-            next
-          </a>
-        </span>
-        """
-        next_archive_html = """
-        <div class="thing gilded" data-fullname="t1_comment2"
-             data-subreddit="Python"></div>
-        """
-        comment = _comment(
-            "comment1",
-            "Current hydrated comment body",
-            parent_id="t3_post1",
-            permalink="/r/Python/comments/post1/title/comment1/",
-            gilded=1,
-        )
-        post = _post(gilded=2)
-        session = _JsonSession([
-            _JsonResponse([
-                ["timestamp", "original", "statuscode", "mimetype"],
-                [timestamp, original, "200", "text/html"],
-            ]),
-            _HtmlResponse(archive_html),
-            _HtmlResponse(next_archive_html),
-            _JsonResponse({
-                "kind": "Listing",
-                "data": {"children": [comment, post]},
-            }),
-        ])
-        route = route_reddit_url(
-            "https://www.reddit.com/r/Python/gilded/?limit=2",
-            max_tokens=5_000,
-        )
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-
-        assert "error" not in result
-        assert result["content"].startswith("# r/Python · gilded")
-        assert (
-            "Gilded ordering source: archived Reddit snapshot "
-            "(Wayback, 2023-05-30). Item details: current Reddit API."
-        ) in result["content"]
-        assert "Current hydrated comment body" in result["content"]
-        assert "A compact Reddit post" in result["content"]
-        assert (
-            "Archived gilding evidence: 1 gilding in the exact archived "
-            "Reddit snapshot"
-        ) in result["content"]
-        assert (
-            "Archived gilding evidence: 2 gildings in the exact archived "
-            "Reddit snapshot"
-        ) in result["content"]
-        assert "[Next page:" in result["content"]
-        assert "/r/Python/gilded.json" not in "\n".join(session.calls)
-        assert "/api/info.json?" in session.calls[-1]
-
-    async def test_archived_gilded_next_previous_round_trip_preserves_count(
-        self,
-    ):
-        timestamp = "20230530081438"
-        original = "https://www.reddit.com/r/Python/gilded/"
-        archive_html = "\n".join(
-            (
-                f'<div class="thing gilded" data-fullname="t1_comment{index}" '
-                'data-subreddit="Python" data-gildings="1"></div>'
-            )
-            for index in range(1, 5)
-        )
-
-        def current(index: int) -> dict:
-            return _comment(
-                f"comment{index}",
-                f"CURRENT GILDED COMMENT {index}",
-                name=f"t1_comment{index}",
-                parent_id="t3_post1",
-                link_id="t3_post1",
-                subreddit="Python",
-                subreddit_name_prefixed="r/Python",
-                permalink=(
-                    "/r/Python/comments/post1/title/"
-                    f"comment{index}/"
-                ),
-                gilded=0,
-            )
-
-        cdx = _JsonResponse([
-            ["timestamp", "original", "statuscode", "mimetype"],
-            [timestamp, original, "200", "text/html"],
-        ])
-        session = _JsonSession([
-            cdx,
-            _HtmlResponse(archive_html),
-            _JsonResponse({
-                "kind": "Listing",
-                "data": {"children": [current(1), current(2)]},
-            }),
-            cdx,
-            _HtmlResponse(archive_html),
-            _JsonResponse({
-                "kind": "Listing",
-                "data": {"children": [current(3), current(4)]},
-            }),
-            cdx,
-            _HtmlResponse(archive_html),
-            _JsonResponse({
-                "kind": "Listing",
-                "data": {"children": [current(1), current(2)]},
-            }),
-        ])
-        first_route = route_reddit_url(
-            "https://www.reddit.com/r/Python/gilded/?limit=2"
-        )
-        assert first_route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-        ):
-            first = await fetch_mapped_reddit(
-                first_route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-            next_link = re.search(
-                r"\[Next page: (https://www\.reddit\.com/[^\]]+)\]",
-                first["content"],
-            )
-            assert next_link is not None
-            second_route = route_reddit_url(next_link.group(1))
-            assert second_route is not None
-            second = await fetch_mapped_reddit(
-                second_route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-            previous_link = re.search(
-                r"\[Previous page: (https://www\.reddit\.com/[^\]]+)\]",
-                second["content"],
-            )
-            assert previous_link is not None
-            assert parse_qs(
-                urlparse(previous_link.group(1)).query
-            )["count"] == ["0"]
-            previous_route = route_reddit_url(previous_link.group(1))
-            assert previous_route is not None
-            previous = await fetch_mapped_reddit(
-                previous_route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-
-        assert "CURRENT GILDED COMMENT 1" in first["content"]
-        assert "CURRENT GILDED COMMENT 2" in first["content"]
-        assert "CURRENT GILDED COMMENT 3" in second["content"]
-        assert "CURRENT GILDED COMMENT 4" in second["content"]
-        assert previous["content"].count("CURRENT GILDED COMMENT") == 2
-        assert "CURRENT GILDED COMMENT 1" in previous["content"]
-        assert "CURRENT GILDED COMMENT 2" in previous["content"]
-        assert "[Previous page:" not in previous["content"]
-        next_round_trip = re.search(
-            r"\[Next page: (https://www\.reddit\.com/[^\]]+)\]",
-            previous["content"],
-        )
-        assert next_round_trip is not None
-        assert parse_qs(
-            urlparse(next_round_trip.group(1)).query
-        )["count"] == ["2"]
-
-    @pytest.mark.parametrize(
-        ("url", "timestamp", "original", "heading"),
-        [
-            (
-                "https://www.reddit.com/gilded/?limit=2",
-                "20170523232153",
-                "https://www.reddit.com/gilded/",
-                "# Reddit · gilded",
-            ),
-            (
-                "https://www.reddit.com/comments/gilded/?limit=2",
-                "20150509040515",
-                "http://www.reddit.com:80/comments/gilded",
-                "# Reddit · comments gilded",
-            ),
-        ],
-    )
-    async def test_global_gilded_surfaces_use_exact_pinned_historical_identity(
-        self,
-        url,
-        timestamp,
-        original,
-        heading,
-    ):
-        archive_html = """
-        <div class="thing gilded" data-fullname="t1_comment1"
-             data-gildings="1"></div>
-        <div class="thing gilded" data-fullname="t1_comment2"
-             data-gildings="1"></div>
-        """
-        comments = [
-            _comment(
-                f"comment{index}",
-                f"Current comment {index}",
-                name=f"t1_comment{index}",
-                parent_id="t3_post1",
-                link_id="t3_post1",
-                subreddit="Python",
-                subreddit_name_prefixed="r/Python",
-                permalink=(
-                    "/r/Python/comments/post1/title/"
-                    f"comment{index}/"
-                ),
-                gilded=0 if index == 1 else 1,
-            )
-            for index in (1, 2)
-        ]
-        snapshot_url = (
-            f"https://web.archive.org/web/{timestamp}id_/{original}"
-        )
-        session = _JsonSession([
-            _HtmlResponse(archive_html, url=snapshot_url),
-            _JsonResponse({
-                "kind": "Listing",
-                "data": {"children": comments},
-            }),
-        ])
-        route = route_reddit_url(url, max_tokens=5_000)
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-
-        assert "error" not in result
-        assert result["content"].startswith(heading)
-        assert result["content"].count("Permalink:") == 2
-        assert result["content"].count("Parent context:") == 2
-        assert result["content"].count("Archived gilding evidence:") == 2
-        assert session.calls[0] == snapshot_url
-        assert all("/cdx/" not in call for call in session.calls)
-        if "comments/gilded" in url:
-            assert all(
-                "/web/" not in call or "/comments/gilded" in call
-                for call in session.calls
-            )
-
-    async def test_gilded_archive_boundary_never_emits_unusable_next_page(
-        self,
-    ):
-        archive_html = """
-        <div class="thing gilded" data-fullname="t1_comment1"></div>
-        <div class="thing gilded" data-fullname="t1_comment2"></div>
-        <div class="thing gilded" data-fullname="t1_comment3"></div>
-        <span class="next-button">
-          <a href="https://www.reddit.com/gilded/?count=3&amp;after=t1_comment3">
-            next
-          </a>
-        </span>
-        """
-        unavailable_next = (
-            "https://web.archive.org/web/20170523232153id_/"
-            "https://www.reddit.com/gilded/?count=3&after=t1_comment3"
-        )
-        current = _comment(
-            "comment3",
-            "CURRENT FINAL ARCHIVED GILDED ITEM",
-            name="t1_comment3",
-            parent_id="t3_post1",
-            link_id="t3_post1",
-            subreddit="Python",
-            subreddit_name_prefixed="r/Python",
-            permalink="/r/Python/comments/post1/title/comment3/",
-            gilded=0,
-        )
-        session = _JsonSession([
-            _HtmlResponse(
-                archive_html,
-                url=(
-                    "https://web.archive.org/web/20170523232153id_/"
-                    "https://www.reddit.com/gilded/"
-                ),
-            ),
-            _HtmlResponse("", status_code=404, url=unavailable_next),
-            _JsonResponse({
-                "kind": "Listing",
-                "data": {"children": [current]},
-            }),
-        ])
-        route = route_reddit_url(
-            "https://www.reddit.com/gilded/"
-            "?limit=2&after=t1_comment2&count=2"
-        )
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-
-        assert "error" not in result
-        assert "CURRENT FINAL ARCHIVED GILDED ITEM" in result["content"]
-        assert "Archived gilding evidence: Gilded in the exact" in result["content"]
-        assert "[Next page:" not in result["content"]
-        assert unavailable_next in session.calls
-
-    async def test_retired_gold_directory_preserves_exact_archived_empty_state(
-        self,
-    ):
-        timestamp = "20180823171238"
-        original = "https://www.reddit.com/subreddits/gold/"
-        snapshot_url = (
-            f"https://web.archive.org/web/{timestamp}id_/{original}"
-        )
-        html = """
-        <html>
-          <head>
-            <link rel="canonical"
-                  href="https://www.reddit.com/subreddits/gold/">
-          </head>
-          <body>
-            <div id="siteTable" class="sitetable linklisting">
-              <p id="noresults" class="error">
-                there doesn't seem to be anything here
-              </p>
-            </div>
-          </body>
-        </html>
-        """
-        session = _JsonSession([
-            _HtmlResponse(html, url=snapshot_url),
-        ])
-        route = route_reddit_url(
-            "https://www.reddit.com/subreddits/gold/?limit=3"
-        )
-        assert route is not None
-        assert route.kind == "subreddit_directory"
-        assert route.label == "gold"
-
-        with patch(
-            "fetchaller.tools.reddit_fetch._get_session",
-            AsyncMock(return_value=session),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-
-        assert "error" not in result
-        assert result["content"].startswith(
-            "# Reddit communities · gold\n\n0 items returned"
-        )
-        assert (
-            "Directory state source: exact archived Reddit snapshot "
-            "(Wayback, 2018-08-23). No gold-only communities were listed."
-        ) in result["content"]
-        assert session.calls == [snapshot_url]
-
-    @pytest.mark.parametrize(
-        "html",
-        [
-            '<link rel="canonical" href="https://www.reddit.com/subreddits/gold/">',
-            """
-            <link rel="canonical"
-                  href="https://www.reddit.com/subreddits/popular/">
-            <div id="siteTable" class="sitetable linklisting">
-              <p id="noresults" class="error">empty</p>
-            </div>
-            """,
-            """
-            <link rel="canonical"
-                  href="https://www.reddit.com/subreddits/gold/">
-            <div id="siteTable" class="sitetable linklisting">
-              <div class="thing" data-fullname="t5_substitute"></div>
-              <p id="noresults" class="error">empty</p>
-            </div>
-            """,
-        ],
-    )
-    async def test_retired_gold_directory_rejects_inexact_archive(
-        self,
-        html,
-    ):
-        timestamp = "20180823171238"
-        original = "https://www.reddit.com/subreddits/gold/"
-        snapshot_url = (
-            f"https://web.archive.org/web/{timestamp}id_/{original}"
-        )
-        session = _JsonSession([
-            _HtmlResponse(html, url=snapshot_url),
-        ])
-        route = route_reddit_url(original)
-        assert route is not None
-
-        with patch(
-            "fetchaller.tools.reddit_fetch._get_session",
-            AsyncMock(return_value=session),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-
-        assert "error" in result
-
-    async def test_retired_gilded_rejects_substituted_current_hydration(self):
-        timestamp = "20230530081438"
-        original = "https://www.reddit.com/r/Python/gilded/"
-        archive_html = """
-        <div class="thing gilded" data-fullname="t3_post1"
-             data-subreddit="Python" data-gildings="1"></div>
-        """
-        session = _JsonSession([
-            _JsonResponse([
-                ["timestamp", "original", "statuscode", "mimetype"],
-                [timestamp, original, "200", "text/html"],
-            ]),
-            _HtmlResponse(archive_html),
-            _JsonResponse({
-                "kind": "Listing",
-                "data": {
-                    "children": [_post(id="substitute", name="t3_substitute")]
-                },
-            }),
-        ])
-        route = route_reddit_url(
-            "https://www.reddit.com/r/Python/gilded/?limit=1",
-            max_tokens=5_000,
-        )
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=5_000,
-                timeout=30,
-            )
-
-        assert result == {
-            "error": (
-                "No exact archived Reddit gilded listing with complete current "
-                "hydration was available."
-            )
-        }
 
     def test_user_directory_routes_bound_each_fully_hydrated_page_to_one_user(
         self,
@@ -5177,7 +4719,13 @@ class TestRedditTransportAndTools:
 
         result = await fetch_reddit_json(source, session)
 
-        assert result == {"error": "Reddit returned an unsafe JSON redirect."}
+        # A same-origin target is Reddit's answer and is named as its public page; still not followed.
+        assert result == {
+            "error": (
+                "Reddit redirects this request to https://www.reddit.com/subreddits/search/?q=Python&extra=unexpected "
+                "instead of answering it; not followed."
+            )
+        }
         assert session.calls == [_transport_url(source)]
 
     async def test_missing_subreddit_redirect_matches_immediately_preceding_hop(
@@ -5197,7 +4745,13 @@ class TestRedditTransportAndTools:
 
         result = await fetch_reddit_json(source, session)
 
-        assert result == {"error": "Reddit returned an unsafe JSON redirect."}
+        # A same-origin target is Reddit's answer and is named as its public page; still not followed.
+        assert result == {
+            "error": (
+                "Reddit redirects this request to https://www.reddit.com/r/Rust/hot/ "
+                "instead of answering it; not followed."
+            )
+        }
         assert session.calls == [_transport_url(source)]
 
     async def test_safe_same_origin_json_redirect_is_followed_under_one_deadline(self):
@@ -5282,7 +4836,13 @@ class TestRedditTransportAndTools:
 
         result = await fetch_reddit_json(source, session)
 
-        assert result == {"error": "Reddit returned an unsafe JSON redirect."}
+        # A same-origin target is Reddit's answer and is named as its public page; still not followed.
+        assert result == {
+            "error": (
+                "Reddit redirects this request to https://www.reddit.com/r/Rust/comments/abc123/sticky_title/ "
+                "instead of answering it; not followed."
+            )
+        }
         assert session.calls == [_transport_url(source)]
 
     async def test_same_origin_redirect_cannot_substitute_another_route(self):
@@ -5294,7 +4854,13 @@ class TestRedditTransportAndTools:
 
         result = await fetch_reddit_json(source, session)
 
-        assert result == {"error": "Reddit returned an unsafe JSON redirect."}
+        # A same-origin target is Reddit's answer and is named as its public page; still not followed.
+        assert result == {
+            "error": (
+                "Reddit redirects this request to https://www.reddit.com/r/Python/new/ "
+                "instead of answering it; not followed."
+            )
+        }
         assert session.calls == [_transport_url(source)]
 
     async def test_redirected_moderator_403_cannot_trigger_oauth(self):
@@ -5999,165 +5565,6 @@ class TestRedditTransportAndTools:
         assert reddit_session_audit() is None
         await close_session()
 
-    def test_archived_collection_parser_requires_exact_redux_identity(self):
-        collection_id = "36910c41-231f-45ea-8057-a4e061048541"
-        model = {
-            "id": collection_id,
-            "title": "A real archived collection",
-            "description": "Preserved metadata",
-            "postIds": ["t3_post1", "t3_post2"],
-            "primaryPostId": "t3_post1",
-            "subredditId": "t5_python",
-            "permalink": (
-                "https://www.reddit.com/r/Python/collection/"
-                f"{collection_id}"
-            ),
-        }
-        html = (
-            "<!doctype html><html><body><script>"
-            "window.___r = "
-            + json.dumps(
-                {"postCollection": {"models": {collection_id: model}}}
-            )
-            + ";</script></body></html>"
-        )
-
-        parsed = _parse_archived_collection(
-            html,
-            subreddit="Python",
-            collection_id=collection_id,
-            timestamp="20230206225353",
-        )
-
-        assert parsed == {
-            "title": "A real archived collection",
-            "description": "Preserved metadata",
-            "link_ids": ["t3_post1", "t3_post2"],
-            "_fetchaller_reddit_provenance": "wayback",
-            "_fetchaller_reddit_archive_timestamp": "20230206225353",
-        }
-        wrong_identity = json.loads(json.dumps(model))
-        wrong_identity["permalink"] = (
-            "https://www.reddit.com/r/Other/collection/" + collection_id
-        )
-        wrong_html = (
-            "<script>window.___r = "
-            + json.dumps(
-                {
-                    "postCollection": {
-                        "models": {collection_id: wrong_identity}
-                    }
-                }
-            )
-            + ";</script>"
-        )
-        assert (
-            _parse_archived_collection(
-                wrong_html,
-                subreddit="Python",
-                collection_id=collection_id,
-                timestamp="20230206225353",
-            )
-            is None
-        )
-        assert (
-            _parse_archived_collection(
-                "<h1>Welcome to Reddit</h1>",
-                subreddit="Python",
-                collection_id=collection_id,
-                timestamp="20230206225353",
-            )
-            is None
-        )
-        assert (
-            _parse_archived_collection(
-                "<i>x</i>" * 500_000,
-                subreddit="Python",
-                collection_id=collection_id,
-                timestamp="20230206225353",
-            )
-            is None
-        )
-        assert (
-            _parse_archived_collection(
-                html + html,
-                subreddit="Python",
-                collection_id=collection_id,
-                timestamp="20230206225353",
-            )
-            is None
-        )
-        unhashable_ids = json.loads(json.dumps(model))
-        unhashable_ids["postIds"] = [{"id": "post1"}]
-        assert (
-            _parse_archived_collection(
-                "<script>window.___r = "
-                + json.dumps(
-                    {
-                        "postCollection": {
-                            "models": {
-                                collection_id: unhashable_ids,
-                            }
-                        }
-                    }
-                )
-                + ";</script>",
-                subreddit="Python",
-                collection_id=collection_id,
-                timestamp="20230206225353",
-            )
-            is None
-        )
-
-    def test_collection_cdx_parser_rejects_wrong_hosts_and_post_removal_dates(
-        self,
-    ):
-        collection_id = "36910c41-231f-45ea-8057-a4e061048541"
-        original = (
-            "https://www.reddit.com/r/Python/collection/" + collection_id
-        )
-        payload = [
-            ["timestamp", "original", "statuscode", "mimetype"],
-            ["20230206225353", original, "200", "text/html"],
-            [
-                "20230206225354",
-                "https://evil.example/r/Python/collection/" + collection_id,
-                "200",
-                "text/html",
-            ],
-            ["20250101000000", original, "200", "text/html"],
-            ["20230206225355", original, "302", "text/html"],
-        ]
-
-        assert _parse_collection_cdx(
-            payload,
-            subreddit="Python",
-            collection_id=collection_id,
-        ) == [("20230206225353", original)]
-        assert (
-            _parse_collection_cdx(
-                [
-                    [
-                        "timestamp",
-                        "original",
-                        "statuscode",
-                        "mimetype",
-                        "unexpected",
-                    ],
-                    [
-                        "20230206225353",
-                        original,
-                        "200",
-                        "text/html",
-                        "value",
-                    ],
-                ],
-                subreddit="Python",
-                collection_id=collection_id,
-            )
-            == []
-        )
-
     def test_collection_transport_allowlist_is_exact(self):
         endpoint = (
             "https://www.reddit.com/api/v1/collections/collection?"
@@ -6197,100 +5604,6 @@ class TestRedditTransportAndTools:
         assert _reddit_json_transport_url(canonical) == transport
         assert _validated_reddit_json_url(transport) is None
         assert _validated_reddit_json_url(transport, transport=True) is not None
-
-    async def test_removed_collection_recovers_exact_archive_and_current_posts(
-        self,
-    ):
-        collection_id = "36910c41-231f-45ea-8057-a4e061048541"
-        original = (
-            "https://www.reddit.com/r/YUROP/collection/" + collection_id
-        )
-        model = {
-            "id": collection_id,
-            "title": "Vendredo sen la angla lingvo",
-            "description": "Archived collection metadata",
-            "postIds": ["t3_post1", "t3_post2"],
-            "primaryPostId": "t3_post1",
-            "subredditId": "t5_2wivw",
-            "permalink": original,
-        }
-        archive_html = (
-            "<!doctype html><html><body><script>"
-            "window.___r = "
-            + json.dumps(
-                {"postCollection": {"models": {collection_id: model}}}
-            )
-            + ";</script></body></html>"
-        )
-        current_posts = {
-            "kind": "Listing",
-            "data": {
-                "children": [
-                    _post(id="post1", title="Current post one"),
-                    _post(id="post2", title="Current post two"),
-                ]
-            },
-        }
-        session = _JsonSession(
-            [
-                _JsonResponse({}, status_code=500),
-                _JsonResponse(
-                    [
-                        [
-                            "timestamp",
-                            "original",
-                            "statuscode",
-                            "mimetype",
-                        ],
-                        [
-                            "20230206225353",
-                            original,
-                            "200",
-                            "text/html",
-                        ],
-                    ]
-                ),
-                _HtmlResponse(archive_html),
-                _JsonResponse(current_posts),
-            ]
-        )
-        route = route_reddit_url(original + "/")
-        assert route is not None
-
-        with (
-            patch(
-                "fetchaller.tools.reddit_fetch._get_session",
-                AsyncMock(return_value=session),
-            ),
-            patch(
-                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
-                AsyncMock(),
-            ),
-        ):
-            result = await fetch_mapped_reddit(
-                route,
-                max_tokens=10_000,
-                timeout=10,
-            )
-
-        assert result["content_type"] == "markdown"
-        assert "# Vendredo sen la angla lingvo" in result["content"]
-        assert (
-            "Metadata source: archived New Reddit snapshot "
-            "(Wayback, 2023-02-06)."
-        ) in result["content"]
-        assert "Post details: current Reddit API." in result["content"]
-        assert "Current post one" in result["content"]
-        assert "Current post two" in result["content"]
-        assert "2 items returned" in result["content"]
-        assert len(session.calls) == 4
-        assert urlparse(session.calls[1]).hostname == "web.archive.org"
-        assert session.calls[2] == (
-            "https://web.archive.org/web/20230206225353id_/" + original
-        )
-        assert parse_qs(urlparse(session.calls[3]).query)["id"] == [
-            "t3_post1,t3_post2"
-        ]
 
     @pytest.mark.parametrize(
         "children",
@@ -6452,22 +5765,13 @@ class TestRedditTransportAndTools:
                 timeout=10,
             )
 
-        assert result["error"].startswith(
-            "Reddit collection is unavailable: "
-        )
+        # Reddit retired post collections; its own failure is the answer. One
+        # read, no archive lookup, and never an empty collection.
+        assert result["error"]
         assert len(result["error"]) < 400
         assert "content" not in result
         assert "0 items returned" not in result["error"]
-        assert session.calls[0] == _transport_url(route.requests[0])
-        assert len(session.calls) == 2
-        archive_query = urlparse(session.calls[1])
-        assert archive_query.scheme == "https"
-        assert archive_query.netloc == "web.archive.org"
-        assert archive_query.path == "/cdx/search/cdx"
-        assert parse_qs(archive_query.query)["url"] == [
-            "www.reddit.com/r/Python/collection/"
-            "22222222-2222-4222-8222-222222222222"
-        ]
+        assert session.calls == [_transport_url(route.requests[0])]
 
     async def test_all_independent_profile_legs_failing_is_a_tool_error(self):
         session = _JsonSession(

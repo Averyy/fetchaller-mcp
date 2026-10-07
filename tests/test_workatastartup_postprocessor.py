@@ -25,11 +25,12 @@ class TestIsWorkAtAStartup:
     def test_job_detail_bare_host(self):
         assert is_workatastartup("https://workatastartup.com/jobs/93227")
 
-    def test_company_page_not_job(self):
-        assert not is_workatastartup("https://www.workatastartup.com/companies/agave")
-
-    def test_root(self):
-        assert not is_workatastartup("https://www.workatastartup.com/")
+    def test_listing_pages_are_on_site(self):
+        # What a page *is* comes from its Inertia component, not its path:
+        # these used to be excluded here and rendered only their <title>.
+        assert is_workatastartup("https://www.workatastartup.com/companies/agave")
+        assert is_workatastartup("https://www.workatastartup.com/jobs?role=eng")
+        assert is_workatastartup("https://www.workatastartup.com/")
 
     def test_different_host(self):
         assert not is_workatastartup("https://example.com/jobs/93227")
@@ -43,8 +44,8 @@ class TestSiteDetection:
         )
 
 
-def _build_page_html(props: dict) -> str:
-    payload = {"component": "jobs/public/pages/JobDetailPage", "props": props}
+def _build_page_html(props: dict, component: str = "jobs/public/pages/JobDetailPage") -> str:
+    payload = {"component": component, "props": props}
     # Inertia puts the JSON in an HTML attribute; BeautifulSoup decodes
     # HTML entities on attribute read, so we escape like the real page does.
     blob = escape(json.dumps(payload), quote=True)
@@ -211,3 +212,87 @@ class TestPostprocessNoMarker:
     def test_passthrough_when_no_marker(self):
         md = "# Something\n\nNo marker here.\n"
         assert postprocess_workatastartup(md) == md
+
+
+def _render(props: dict, component: str, url: str) -> str:
+    soup = BeautifulSoup(_build_page_html(props, component), "html.parser")
+    extract_workatastartup_data(soup, url)
+    return postprocess_workatastartup(soup.get_text())
+
+
+class TestListingPages:
+    """Measured 2026-10-05: /jobs rendered 86 chars for a page carrying 30 of
+    2,893 jobs, a company page 62 chars. Each listing component is read now."""
+
+    def test_job_list_page(self):
+        props = {
+            "title": "Software Engineer jobs at Y Combinator startups",
+            "totalJobsCount": 2893,
+            "currentRole": "eng",
+            "jobs": [
+                {
+                    "id": 53662,
+                    "title": "Full Stack Developer - Bountiful ",
+                    "jobType": "Full-time",
+                    "location": "San Francisco, CA, US",
+                    "roleType": "Full stack",
+                    "salary": "$185K - $210K",
+                    "companyName": "Bountiful",
+                    "companySlug": "bountiful",
+                    "companyBatch": "W17",
+                    "companyLogoUrl": "https://example.test/logo.png",
+                    "applyUrl": "https://account.ycombinator.com/authenticate?x",
+                }
+            ],
+            "roleLinks": [{"label": "Design", "path": "/jobs/l/designer"}],
+            "nav": {"noise": True},
+        }
+        out = _render(props, "jobs/public/pages/JobsV2Page", "https://www.workatastartup.com/jobs")
+        assert out.startswith("# Software Engineer jobs at Y Combinator startups")
+        assert "**totalJobsCount**: 2,893" in out
+        assert "**shown**: 1" in out
+        assert "**Full Stack Developer - Bountiful** — Full-time — San Francisco, CA, US" in out
+        assert "$185K - $210K — Bountiful — W17" in out
+        assert "https://www.workatastartup.com/jobs/53662 · https://www.workatastartup.com/companies/bountiful" in out
+        assert "- Design: https://www.workatastartup.com/jobs/l/designer" in out
+        assert "logo.png" not in out and "authenticate" not in out and "noise" not in out
+
+    def test_company_page(self):
+        props = {
+            "company": {
+                "name": "Bountiful",
+                "slug": "bountiful",
+                "batch": "W17",
+                "description": "An Operating System for agriculture.",
+                "hiringDescriptionHtml": "<p>We hire builders.</p>",
+                "founders": [{"name": "Ada", "bio": "Farmer"}],
+                "jobs": [{"id": 53662, "title": "Full Stack Developer", "location": "SF"}],
+                "logoUrl": "https://example.test/logo.png",
+            },
+            "otherCompanies": [{"name": "Albedo", "slug": "albedo"}],
+        }
+        out = _render(props, "jobs/public/pages/CompanyV2Page", "https://www.workatastartup.com/companies/bountiful")
+        assert out.startswith("# Bountiful (W17)")
+        assert "- **description**: An Operating System for agriculture." in out
+        assert "We hire builders." in out
+        assert "**Ada**" in out
+        assert "- Full Stack Developer — SF" in out and "/jobs/53662" in out
+        assert "- Albedo — https://www.workatastartup.com/companies/albedo" in out
+
+    def test_home_page_lists_jobs_and_hiring_companies_without_marketing(self):
+        props = {
+            "jobs": [{"id": 1, "title": "Engineer", "companyName": "Acme", "companySlug": "acme"}],
+            "hiringCompanies": [{"name": "Albedo", "path": "/companies/albedo"}],
+            "slideshow": [{"big": "marketing"}],
+            "news": [{"headline": "press"}],
+        }
+        out = _render(props, "jobs/public/pages/HomeV2Page", "https://www.workatastartup.com/")
+        assert "**Engineer** — Acme" in out
+        assert "- Albedo — https://www.workatastartup.com/companies/albedo" in out
+        assert "marketing" not in out and "press" not in out
+
+    def test_unknown_component_is_left_to_the_html_path(self):
+        html = _build_page_html({"something": "else"}, "jobs/public/pages/SomethingNew")
+        soup = BeautifulSoup(html, "html.parser")
+        extract_workatastartup_data(soup, "https://www.workatastartup.com/x")
+        assert _MARKER not in str(soup)

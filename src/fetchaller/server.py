@@ -392,6 +392,11 @@ async def cleanup_server(server) -> None:
     except ImportError:
         pass
     try:
+        from .homedepot.com import close_session as close_homedepot_session
+        cleanup_fns.append(close_homedepot_session)
+    except ImportError:
+        pass
+    try:
         from .gojobs.api import close_session as close_gojobs_session
         cleanup_fns.append(close_gojobs_session)
     except ImportError:

@@ -116,6 +116,80 @@ class TestGoogleExtraction:
         assert results[0].url == "https://example.com/real-result"
         assert results[0].title == "Real Result"
 
+    def test_result_links_with_a_parameter_before_q(self):
+        """Google prefixes the destination since 2026-10-05: /url?opi=..&q=<dest>.
+
+        Matching the literal ``/url?q=`` dropped every organic result, and the
+        engine reported an unexpected response shape on a full results page.
+        """
+        html = """
+        <html><body><div><div>
+        <a data-ved="x" href="/url?opi=89978449&amp;q=https://www.youtube.com/watch%3Fv%3DoAkLSJNr5zY&amp;sa=U&amp;ved=2ah&amp;usg=AOv">
+            <h3><div>Python Tutorial: AsyncIO</div></h3>
+        </a></div>
+        <div>Aug 20, 2025 · In this video, we'll be learning all about AsyncIO in Python
+            <a href="/url?opi=89978449&amp;q=https://www.youtube.com/watch%3Fv%3Dother&amp;sa=U">Stacked</a>
+        </div></div>
+        <a href="/url?opi=89978449&amp;q=https://medium.com/%40moraneus/guide&amp;sa=U">
+            <h3>Mastering asyncio</h3>
+        </a>
+        <a href="/url?opi=89978449&amp;sa=U">No destination</a>
+        </body></html>
+        """
+        results = google_extract(html)
+        assert [r.url for r in results[:2]] == [
+            "https://www.youtube.com/watch?v=oAkLSJNr5zY",
+            "https://medium.com/@moraneus/guide",
+        ]
+        assert results[0].title == "Python Tutorial: AsyncIO"
+        assert "Stacked" not in results[0].snippet
+        assert "learning all about AsyncIO" in results[0].snippet
+
+    def test_tokenized_result_links_are_kept_for_resolution(self):
+        """Some responses carry an opaque token in ``q`` instead of the destination.
+
+        Seen on 2026-10-07 in about one response in thirty: every organic link
+        was ``/url?opi=..&q=CAES..&uoh=3``, so the parser found nothing and the
+        engine failed on a full results page. The link is kept as Google's own
+        redirect URL; the stacked sitelink beside it is still dropped.
+        """
+        html = """
+        <html><body><div><div>
+        <a href="/url?opi=89978449&amp;q=CAESaQHrOzAVksU_7NBcPkha_kdOtf6&amp;sa=U&amp;uoh=3&amp;usg=AOv">
+            <div><h3><div>asyncio — Asynchronous I/O</div></h3></div>
+            <div><div>docs.python.org › library › asyncio</div></div>
+        </a></div>
+        <div><div>asyncio is a library to write concurrent code using the async/await syntax.
+            <span><a href="/url?opi=89978449&amp;q=CAESbAHrOzAVMYDJue--s-xHAICox3&amp;sa=U&amp;uoh=3">
+            <span>Asynchronous I/O</span></a></span>
+        </div></div></div>
+        <a href="/url?q=javascript:void(0)&amp;sa=U"><h3>Not a result</h3></a>
+        </body></html>
+        """
+        results = google_extract(html)
+        assert len(results) == 1
+        assert results[0].url == (
+            "https://www.google.com/url?opi=89978449&q=CAESaQHrOzAVksU_7NBcPkha_kdOtf6&sa=U&uoh=3&usg=AOv"
+        )
+        assert results[0].title == "asyncio — Asynchronous I/O"
+        assert "concurrent code" in results[0].snippet
+        assert "Asynchronous I/O" not in results[0].snippet
+
+    def test_an_unparsed_page_is_described_by_its_link_shapes(self):
+        """The miss log names the link shapes, not just a length."""
+        from src.fetchaller.search.google import _shape_summary
+
+        html = (
+            "<html><head><title>q - Google Search</title></head><body><div id=\"main\">"
+            '<a href="/url?opi=1&amp;q=CAESxxxxxxxxxxxxxxxxxx"><h3>A</h3></a>'
+            '<a href="https://example.com/">B</a><a href="https://www.google.com/x">C</a>'
+            "</div></body></html>"
+        )
+        summary = _shape_summary(html)
+        assert "url_rel=1 url_abs=0 ext=1 h3=1 main=1 consent=0" in summary
+        assert "title='q - Google Search'" in summary
+        assert _shape_summary("").startswith("url_rel=0")
+
     def test_cite_removal_from_title(self):
         """<cite> elements inside links are stripped from title text."""
         html = """
@@ -583,6 +657,77 @@ class TestEngineErrorReturns:
         results, captcha, error = await google_search(session, "q", 1)
 
         assert (results, captcha, error) == ([], False, None)
+
+    _TOKENIZED_SERP = (
+        "<html><body><div>"
+        '<div><a href="/url?opi=1&amp;q=CAESaaaaaaaaaaaaaaaaaaaa&amp;uoh=3"><h3>Docs</h3></a></div>'
+        '<div><a href="/url?opi=1&amp;q=CAESbbbbbbbbbbbbbbbbbbbb&amp;uoh=3"><h3>Docs again</h3></a></div>'
+        '<div><a href="/url?opi=1&amp;q=CAEScccccccccccccccccccc&amp;uoh=3"><h3>Gone</h3></a></div>'
+        '<div><a href="/url?opi=1&amp;q=https://example.com/plain&amp;sa=U"><h3>Plain</h3></a></div>'
+        "</div></body></html>"
+    )
+
+    @staticmethod
+    def _redirector(locations):
+        """A follow_redirects=False session answering each token with a 302 (or a 200)."""
+
+        async def get(url, timeout=None):
+            resp = MagicMock()
+            target = next((v for k, v in locations.items() if k in url), None)
+            resp.status_code = 302 if target else 200
+            resp.headers = {"location": target} if target else {}
+            return resp
+
+        session = MagicMock()
+        session.get = get
+        return session
+
+    async def test_tokenized_links_resolve_through_googles_redirect(self, monkeypatch):
+        from src.fetchaller.search import google as google_mod
+
+        redirector = self._redirector(
+            {
+                "CAESaaaa": "https://docs.python.org/3/library/asyncio.html",
+                "CAESbbbb": "https://docs.python.org/3/library/asyncio.html#top",
+            }
+        )
+        monkeypatch.setattr(google_mod, "_get_redirect_session", AsyncMock(return_value=redirector))
+        resp = MagicMock()
+        resp.text = self._TOKENIZED_SERP
+        resp.url = "https://www.google.com/search?q=q"
+        resp.status_code = 200
+        session = MagicMock()
+        session.get = AsyncMock(return_value=resp)
+
+        results, captcha, error = await google_search(session, "q", 1)
+
+        # The duplicate destination collapses; the link that did not redirect
+        # is dropped rather than shown as a google.com URL.
+        assert [r.url for r in results] == [
+            "https://docs.python.org/3/library/asyncio.html",
+            "https://example.com/plain",
+        ]
+        assert results[0].title == "Docs"
+        assert (captcha, error) == (False, None)
+
+    async def test_tokenized_links_that_never_resolve_are_an_error(self, monkeypatch):
+        from src.fetchaller.search import google as google_mod
+
+        serp = self._TOKENIZED_SERP.replace(
+            '<div><a href="/url?opi=1&amp;q=https://example.com/plain&amp;sa=U"><h3>Plain</h3></a></div>', ""
+        )
+        monkeypatch.setattr(google_mod, "_get_redirect_session", AsyncMock(return_value=self._redirector({})))
+        resp = MagicMock()
+        resp.text = serp
+        resp.url = "https://www.google.com/search?q=q"
+        resp.status_code = 200
+        session = MagicMock()
+        session.get = AsyncMock(return_value=resp)
+
+        results, _captcha, error = await google_search(session, "q", 1)
+
+        assert results == []
+        assert "tokenized result links" in error
 
     async def test_results_in_unrecognized_markup_still_fail_loudly(self):
         """If Google moved its results into markup the extractor does not read,

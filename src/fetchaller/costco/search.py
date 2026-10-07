@@ -1,10 +1,12 @@
-"""Costco search via search API.
+"""Costco search and category pages.
 
 Flow:
 1. Detect Costco URL type (search, category, or product)
-2. Extract query/domain/pagination from URL
-3. Call Costco search API -> parse items -> format as numbered markdown
-4. Return content dict or error dict
+2. Extract the keyword or category slug, page, sort and refinements
+3. Ask Costco's catalogue search (``grs.py``) exactly as the site does,
+   following its own redirect when a keyword is sent to a category
+4. Fall back to the older Fusion service (``api.py``) only for a keyword
+   search the catalogue could not answer, and say so
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ import re
 import sys
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
+
+import wafer
 
 from ..security.xss import safe_log_text
 from . import api
@@ -241,45 +245,264 @@ def format_search_results(
 # ---------------------------------------------------------------------------
 
 
+def _money(value: object) -> str | None:
+    try:
+        amount = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f"${amount:,.2f}"
+
+
+def _price_range(price: dict) -> str | None:
+    low, high = _money(price.get("minPrice")), _money(price.get("maxPrice"))
+    if low and high and low != high:
+        return f"{low}–{high}"
+    return low or high
+
+
+_AVAILABILITY = {
+    "IN_STOCK": "in stock",
+    "LOW_STOCK": "low stock",
+    "OUT_OF_STOCK": "out of stock",
+    "NOT_AVAILABLE": "not available",
+}
+
+
+def _format_grs_item(n: int, item: dict) -> list[str]:
+    bits: list[str] = []
+    if item["price_in_cart"]:
+        bits.append("price shown in cart")
+    else:
+        delivery = _price_range(item["delivery_price"])
+        warehouse = _price_range(item["warehouse_price"])
+        original = _price_range(item["original_price"])
+        if delivery and warehouse and delivery != warehouse:
+            bits.append(f"{delivery} online, {warehouse} in warehouse")
+        elif delivery or warehouse:
+            bits.append(delivery or warehouse)
+        else:
+            bits.append("price not returned")
+        shown = delivery or warehouse
+        try:
+            if original and shown and float(item["original_price"].get("minPrice")) > float(
+                (item["delivery_price"] or item["warehouse_price"]).get("minPrice")
+            ):
+                bits[-1] += f" (was {original})"
+        except (TypeError, ValueError):
+            pass
+    if item["member_only"]:
+        bits.append("members only")
+    try:
+        if item["rating"] is not None and item["reviews"]:
+            bits.append(f"★{float(item['rating']):.1f} ({int(item['reviews']):,})")
+    except (TypeError, ValueError):
+        pass
+    if item["item_number"]:
+        bits.append(f"Item {item['item_number']}")
+    if item["model"]:
+        bits.append(f"Model {item['model']}")
+    bits.extend(item["promotions"])
+    bits.extend(s for s in item["statements"] if s not in item["promotions"])
+    lines = [f"{n}. **{item['title']}** — {' · '.join(b for b in bits if b)}"]
+
+    stock = []
+    if item["delivery_availability"]:
+        stock.append(f"delivery: {_AVAILABILITY.get(item['delivery_availability'], item['delivery_availability'].lower())}")
+    if item["warehouse_availability"]:
+        stock.append(f"warehouse: {_AVAILABILITY.get(item['warehouse_availability'], item['warehouse_availability'].lower())}")
+    lines.append(f"   {' · '.join(stock + [item['url']]) if stock else item['url']}")
+    return lines
+
+
+def _facet_lines(data: dict) -> list[str]:
+    """Text facets with their counts — the site's own filter sidebar."""
+    lines: list[str] = []
+    skip = {"attributes.category_uri", "attributes.category_info", "attributes.program_types", "categories"}
+    for facet in (data.get("searchResult") or {}).get("facets") or []:
+        if not isinstance(facet, dict) or facet.get("key") in skip:
+            continue
+        values = [
+            f"{v.get('value')} ({v.get('count')})"
+            for v in facet.get("values") or []
+            if isinstance(v, dict) and v.get("value") not in (None, "")
+        ]
+        if values:
+            more = f" … +{len(values) - 10} more" if len(values) > 10 else ""
+            lines.append(f"- **{facet.get('key')}:** {'; '.join(values[:10])}{more}")
+    return lines
+
+
+def format_grs_results(
+    data: dict,
+    *,
+    domain: str,
+    url: str,
+    query: str,
+    category: str | None,
+    page: int,
+    location,
+    sort_label: str,
+    redirected_to: str | None = None,
+    notes: list[str] | None = None,
+) -> str:
+    """Render a catalogue answer: header, location, rows, paging, facets."""
+    from . import grs
+
+    result = data.get("searchResult") or {}
+    items = grs.parse_items(data)
+    total = int(result.get("totalSize") or 0)
+    crumb = data.get("breadcrumb") if isinstance(data.get("breadcrumb"), dict) else {}
+    trail = " > ".join(p for p in str(crumb.get("name") or "").split("|") if p)
+
+    if category:
+        title = f"Costco.{domain}: {trail or category}"
+    else:
+        title = f'Costco.{domain} search: "{query}"'
+    out = [f"# {title}", ""]
+    if redirected_to:
+        out += [f'_Costco sends the search "{query}" to {redirected_to} — these are that page\'s results._', ""]
+    for note in notes or []:
+        out += [f"_{note}_", ""]
+    corrected = result.get("correctedQuery")
+    if corrected and corrected != query:
+        out += [f'_Results are for "{corrected}" (Costco corrected the query)._', ""]
+
+    first = _offset(page)
+    shown = f"showing {first + 1}–{first + len(items)}" if items else "none shown"
+    out.append(f"**{total:,} products** · {shown} · sorted by {sort_label} · out-of-stock items hidden, as on the site")
+    out.append(
+        f"Prices and stock for warehouse #{location.warehouse_id.split('-')[0]} {location.warehouse_name}"
+        f"{', ' + location.warehouse_city if location.warehouse_city and location.warehouse_city.lower() != location.warehouse_name.lower() else ''}"
+        f" and delivery to {location.postal} "
+        f"{location.state} — Costco's default when no location is set."
+    )
+    out.append("")
+    if not items:
+        if total == 0 and category and not trail:
+            out.append(f"Costco's catalogue returned no products for the category '{category}' — check the URL.")
+        else:
+            out.append("No products matched." if total == 0 else "No products on this page — it is past the last result.")
+    for index, item in enumerate(items, start=first + 1):
+        out.extend(_format_grs_item(index, item))
+    if items and first + len(items) < total:
+        from ..urlparams import with_param
+
+        out += ["", f"Next page: {with_param(url, 'currentPage', page + 1)}"]
+    facets = _facet_lines(data)
+    if facets:
+        out += ["", "## Filters (as the site offers them)", *facets]
+    return "\n".join(out).strip() + "\n"
+
+
+def _offset(page: int) -> int:
+    from .grs import PAGE_SIZE
+
+    return PAGE_SIZE * (max(1, page) - 1)
+
+
+def _page_params(url: str) -> tuple[int, str | None, str | None]:
+    from . import grs
+
+    qs = parse_qs(urlparse(url).query)
+    try:
+        if "currentPage" not in qs and "offset" in qs:
+            # The older offset= form still appears in links; it is a row index.
+            page = max(0, int(qs["offset"][0])) // grs.PAGE_SIZE + 1
+        else:
+            page = max(1, int(qs.get("currentPage", ["1"])[0]))
+    except ValueError:
+        page = 1
+    # The site writes ``sortBy=item_location_pricing_salePrice+asc``; query
+    # parsing decodes that ``+`` to a space, and the sort then matched nothing.
+    sort_by = (qs.get("sortBy") or [None])[0]
+    if sort_by:
+        sort_by = sort_by.replace(" ", "+")
+    return page, sort_by, (qs.get("refine") or [None])[0]
+
+
 async def search_costco(
     url: str,
     cache=None,
     config=None,
     browser_solver=None,
+    timeout: float = 30.0,
 ) -> dict:
-    """Search Costco via the search API.
+    """Read a Costco search or category page through Costco's catalogue search.
 
-    Args:
-        url: Costco search or category URL.
-        cache: ResponseCache instance (unused, reserved for interface compat).
-        config: Config instance.
-        browser_solver: BrowserSolver (unused, reserved for interface compat).
-
-    Returns:
-        Dict with ``content`` (formatted results) or ``error``.
+    A keyword the site redirects to a category is followed, with the caller's
+    page and sort, and the output says so. If the catalogue service does not
+    answer, a keyword search falls back to the older Fusion search service and
+    says that too; a category has no such fallback.
     """
-    # Try search URL first, then category URL
-    params = extract_search_params(url)
-    if not params:
-        params = extract_category_params(url)
-    if not params:
+    from . import grs
+
+    search_params = extract_search_params(url)
+    category_params = None if search_params else extract_category_params(url)
+    if not search_params and not category_params:
         return {"error": f"Could not extract search parameters from URL: {url}"}
 
-    query = params["query"]
-    domain = params["domain"]
-    start = params.get("start", 0)
+    domain = (search_params or category_params)["domain"]
+    page, sort_by, refine = _page_params(url)
+    order_by = grs.SORT_MAP.get(sort_by or "")
+    sort_label = grs.SORT_LABELS.get(order_by or "", "relevance")
+    filters, skipped = grs.refine_filters(refine)
+    notes = []
+    if sort_by and order_by is None and sort_by not in ("score+desc", "item_page_views+desc", "item_orders+desc"):
+        notes.append(f"sortBy={sort_by} is not a sort Costco's catalogue offers; this is its default order.")
+    if skipped:
+        notes.append(f"These URL refinements were not applied: {', '.join(skipped)}.")
 
-    _log(
-        f"Searching Costco.{domain} "
-        f"(query_chars={len(query)}, start={start})"
-    )
+    query = search_params["query"] if search_params else ""
+    category = None
+    if category_params:
+        category = urlparse(url).path.strip("/").removesuffix(".html").lower()
 
+    _log(f"Costco.{domain} catalogue read (query_chars={len(query)}, category={bool(category)}, page={page})")
+    try:
+        site = await grs.site_config(domain, url, timeout=timeout)
+        location = await grs.default_location(site, timeout=timeout)
+        data = await grs.search(
+            site, location, query=query, category=category, page=page,
+            order_by=order_by, filters=filters, timeout=timeout,
+        )
+        redirected_to = None
+        redirect = str((data.get("searchResult") or {}).get("redirectUri") or "")
+        if redirect and query:
+            target = f"https://www.costco.{domain}{redirect if redirect.startswith('/') else '/' + redirect}"
+            target_category = extract_category_params(target)
+            if target_category is None:
+                return {"content": (
+                    f'# Costco.{domain} search: "{query}"\n\n'
+                    f"Costco sends this search to {target}, which is not a product listing. "
+                    "Fetch that URL for its content.\n"
+                )}
+            category = urlparse(target).path.strip("/").removesuffix(".html").lower()
+            redirected_to = target
+            data = await grs.search(
+                site, location, query="", category=category, page=page,
+                order_by=order_by, filters=filters, timeout=timeout,
+            )
+        content = format_grs_results(
+            data, domain=domain, url=url, query=query, category=category, page=page,
+            location=location, sort_label=sort_label, redirected_to=redirected_to, notes=notes,
+        )
+        return {"content": content}
+    except (grs.GrsError, wafer.WaferError, OSError, TimeoutError) as exc:
+        _log(f"catalogue search failed: {type(exc).__name__}: {exc}")
+        if category_params:
+            return {"error": f"Costco's catalogue search did not answer for this category: {exc}"}
+
+    # Keyword search only: the older Fusion service still answers, but it is
+    # not what the site shows, and it cannot follow a redirect to a category.
+    start = search_params.get("start", 0)
     data = await api.search(query=query, domain=domain, start=start)
     if not data:
-        return {"error": "Costco search API request failed."}
-
+        return {"error": "Costco search failed: neither the catalogue search nor the older search service answered."}
     items = api.parse_search_items(data, domain=domain)
     total = api.get_total_count(data)
-
     content = format_search_results(items, query, total, domain)
-    return {"content": content}
+    note = (
+        "_Costco's catalogue search did not answer, so these results come from its older search "
+        "service, which the site no longer uses and which can differ from what it shows._\n\n"
+    )
+    return {"content": note + content}

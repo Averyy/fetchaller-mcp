@@ -11,7 +11,7 @@ from ..config import get_wafer_cache_dir
 from ..content.url import normalize_url
 from ..security.xss import redact_secrets_for_log, sanitize_for_log
 from .ddg import search_ddg
-from .google import search_google
+from .google import close_redirect_session, search_google
 from .models import SearchResult
 
 # Lazy sessions — created on first search, closed on shutdown.
@@ -157,6 +157,7 @@ async def close_session() -> None:
     global _session, _ddg_session
     _session = None
     _ddg_session = None
+    close_redirect_session()
 
 
 def _dedup_key(url: str) -> str:

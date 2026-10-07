@@ -338,6 +338,42 @@ def _sticky_json_redirect_target(
     return target._replace(query=urlencode(retained), fragment="").geturl()
 
 
+def _unfollowed_redirect_message(target_url: str) -> str:
+    """Say where Reddit sent a JSON read that is not followed.
+
+    A redirect to another Reddit page is Reddit's answer -- a retired gilded
+    listing goes to the user's profile, the retired gold directory to the
+    premium one -- so it is named, as the public page (www.reddit.com, no
+    ``.json``, no ``raw_json``) whichever Reddit host the read went to. Anything
+    leaving Reddit's own hosts is never echoed into output.
+    """
+    unsafe = "Reddit returned an unsafe JSON redirect."
+    try:
+        parsed = urlparse(target_url)
+        port = parsed.port
+    except ValueError:
+        return unsafe
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").casefold() not in {"www.reddit.com", "api.reddit.com"}
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or len(target_url) > 512
+        or not target_url.isascii()
+        or any(character.isspace() or character in "<>`[]()" for character in target_url)
+    ):
+        return unsafe
+    path = parsed.path
+    if path.endswith("/.json"):
+        path = path[: -len(".json")]
+    elif path.endswith(".json"):
+        path = path[: -len(".json")] + "/"
+    query = urlencode([(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != "raw_json"])
+    public = f"https://www.reddit.com{path}" + (f"?{query}" if query else "")
+    return f"Reddit redirects this request to {public} instead of answering it; not followed."
+
+
 async def fetch_reddit_json(
     url: str,
     session: wafer.AsyncSession,
@@ -346,6 +382,7 @@ async def fetch_reddit_json(
     *,
     auth_required_on_403: bool = False,
     account_private_on_403: bool = False,
+    forbidden_is_answer: bool = False,
 ) -> dict:
     """
     Fetch Reddit JSON API with rate limiting.
@@ -360,6 +397,10 @@ async def fetch_reddit_json(
         account_private_on_403: Treat an exact unstructured 403 from a known
             private account-activity route as a scoped access state rather
             than a transport-wide block.
+        forbidden_is_answer: Report Reddit's own structured 403
+            (``{"message": "Forbidden", "error": 403}``) as its answer about
+            this URL, without the transport backoff. For routes Reddit has
+            retired and answers itself; any other 403 is unchanged.
 
     Returns:
         Dict with either 'data' or 'error'
@@ -454,7 +495,7 @@ async def fetch_reddit_json(
             if sticky_target is not None:
                 target_url = sticky_target
             elif not _is_route_preserving_json_redirect(current_url, target_url):
-                return {"error": "Reddit returned an unsafe JSON redirect."}
+                return {"error": _unfollowed_redirect_message(target_url)}
             target_url = _reddit_json_transport_url(target_url)
             if target_url is None:
                 return {"error": "Reddit returned an unsafe JSON redirect."}
@@ -520,6 +561,13 @@ async def fetch_reddit_json(
                         "readable."
                     )
                 }
+            if (
+                resp.status_code == 403
+                and forbidden_is_answer
+                and payload == {"message": "Forbidden", "error": 403}
+                and getattr(resp, "challenge_type", None) != "reddit"
+            ):
+                return {"error": "Reddit returned HTTP 403."}
             if should_backoff:
                 # Reddit's anonymous-session gate ("You've been blocked by
                 # network security") is transient: wafer re-runs its

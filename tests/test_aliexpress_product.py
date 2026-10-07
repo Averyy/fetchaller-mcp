@@ -610,6 +610,26 @@ class TestFormatOutput:
         result = _format_output("123456789", None, reviews_data)
         assert "★4.5" in result
 
+    def test_unreviewed_item_is_not_a_zero_star_rating(self):
+        # 4000085910726 on 2026-10-05: the review service and MTop's own
+        # PC_RATING both report zero reviews, with averageStar 0.0.
+        reviews_data = {
+            "productEvaluationStatistic": {
+                "evarageStar": 0.0,
+                "totalNum": 0,
+                "fiveStarRate": 0.0,
+                "fourStarRate": 0.0,
+                "threeStarRate": 0.0,
+                "twoStarRate": 0.0,
+                "oneStarRate": 0.0,
+            },
+            "evaViewList": [],
+        }
+        result = _format_output("4000085910726", {"title": "Antenna mast"}, reviews_data)
+        assert "Rating: no reviews yet" in result
+        assert "★0.0" not in result
+        assert "Rating breakdown" not in result
+
     def test_both_none_returns_empty(self):
         result = _format_output("123456789", None, None)
         assert result == ""

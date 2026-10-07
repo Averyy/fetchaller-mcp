@@ -342,14 +342,16 @@ Docker receives only `--env NAME` forwarding (never credential values in the
 command or report); anonymous SSR output never counts as OAuth evidence.
 Default runs require stable anonymous targets in `--strict` mode. The complete
 release gate adds `--include-unstable`: the runner discovers current real
-post/comment, wiki-revision, public-multireddit, live-update, and official
-archived-collection IDs through separately recorded MCP calls, then requires
+post/comment, wiki-revision, public-multireddit, and live-update IDs through
+separately recorded MCP calls, then requires
 every public route
 cold, warm, and recreated. It never substitutes a fake opaque ID.
 Fixture-only targets always remain offline and can never become live evidence;
 they are limited to inherently non-public access states such as private,
-quarantined, banned, gated, forbidden, and not-found. A removed feature is not
-a fixture-only waiver: its real public-read capability must still pass live.
+quarantined, banned, gated, forbidden, and not-found, and to surfaces Reddit
+itself retired (gilded listings, post collections, the gold-only directory),
+which are reported exactly as Reddit answers them and never rebuilt from an
+archive.
 Every route in the corpus is an anonymous public read and needs no
 configuration. The live Reddit gates are currently **waived on GitHub's hosted
 runners only**: Reddit answers the anonymous solve origin with 403 there, to a
@@ -456,7 +458,7 @@ Call `fetch(url)` on any listing URL for the full description, every property de
 3. Fetches with browser-like TLS fingerprints via wafer (Rust/BoringSSL) — rotates Chrome versions automatically
 4. If bot challenge detected: solves automatically (see Bot Challenge Bypass below)
 5. Detects content type
-6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, realtor.ca, wellfound.com, vacuumwars.com, plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Workday/BambooHR/JazzHR/Work-at-a-Startup job boards with embed + white-label detection, and more), converts to markdown
+6. For HTML: removes junk elements (nav, footer, ads, cookie banners), applies site-specific cleanup (25+ sites including GitHub, Reddit, HN, Wikipedia, Medium, Stack Overflow, Amazon, eBay, AliExpress, Alibaba, DigiKey, Mouser, realtor.ca, wellfound.com, vacuumwars.com, The Home Depot (homedepot.com + homedepot.ca), plus Ashby/Greenhouse/Lever/Gem/Dayforce/Cornerstone/Workday/BambooHR/JazzHR/Work-at-a-Startup job boards with embed + white-label detection, and more), converts to markdown
 7. For JSON/XML/CSV/text: returns raw
 8. For PDF: extracts text
 9. Truncates to token limit
@@ -562,6 +564,8 @@ CSR sites where HTML scraping produces garbage are intercepted in `fetch_url()` 
 - **Mouser** (`src/fetchaller/mouser/`) — Search API client. Requires `MOUSER_API_KEY`.
 - **DigiKey** (`src/fetchaller/digikey/`) — OAuth2 client_credentials API. Requires `DIGIKEY_CLIENT_ID` + `DIGIKEY_CLIENT_SECRET`.
 - **Ubiquiti / UniFi** (`src/fetchaller/ubiquiti/`) — `*.store.ui.com`, `techspecs.ui.com`, and `ui.com/qig/<slug>` installation guides. Store pages carry the price in their HTML but none of the technical specifications, which render client-side from `__NEXT_DATA__`; dispatch is by Next.js route, not URL shape. Guides are JS page assets of outlined vector art with no readable text, rebuilt into a PDF/PNG by `get_unifi_manual`.
+- **Costco** (`src/fetchaller/costco/`) — costco.com and costco.ca search and category pages from the catalogue search the sites themselves use (Google Retail Search behind `gdx-api.costco.com`), configured from each page's own published service config: prices, sale prices, promotions, delivery and warehouse stock for the site's default warehouse (named), ratings, item numbers, paging, sort, brand refinement, and the site's own keyword redirects ("tv" → TVs) followed and disclosed.
+- **The Home Depot** (`src/fetchaller/homedepot/`) — homedepot.com and homedepot.ca, neither needing a browser. homedepot.com's pages sit behind Akamai's sensor challenge, but their data comes from the site's own federation-gateway GraphQL, which answers plainly: products (specs, per-store price and pickup stock, shipping), search and category listings (paging, sort, price range, refinements, keyword redirects followed and disclosed), reviews (pooled across variants, each sibling's review marked) and store pages. homedepot.ca is read from its Angular page state, its search API and its price service (sale was-prices live only there), in English and French.
 - **Marketplace Search** (`src/fetchaller/marketplace/`) — Unified orchestrator searching Kijiji, Craigslist, and Facebook Marketplace concurrently. Human-readable params mapped to platform-specific values. Auto-skips Kijiji for non-Canadian locations.
 - **Dayforce HCM** (`src/fetchaller/content/dayforce.py`) — Posting detail from SSR'd `__NEXT_DATA__`. Board listing via CSRF-protected POST to `/api/geo/{namespace}/jobposting/search` (NextAuth `/api/auth/csrf` round-trip required). White-label deployments on company domains are detected via `__NEXT_DATA__.runtimeConfig.BASE_URL` and rewritten to the canonical `jobs.dayforcehcm.com` board URL.
 - **Cornerstone OnDemand** (`src/fetchaller/content/cornerstone.py`) — SPA shell carries a JWT in `csod.context`. Posting from `services/x/job-requisition/v2/requisitions/{reqid}/jobDetails`; board listing POSTed to `rec-job-search/external/jobs` on the regional cloud host (`us|eu|uk|au.api.csod.com`).
@@ -716,6 +720,7 @@ fetchaller-mcp/
 │   ├── facebook_marketplace/# Facebook Marketplace GraphQL client
 │   ├── marketplace/         # Unified marketplace search orchestrator
 │   ├── ubiquiti/            # UniFi store/techspecs specs + installation guides
+│   ├── homedepot/           # homedepot.com gateway GraphQL + homedepot.ca page state
 │   ├── digikey/             # DigiKey API client (OAuth2 + product/search)
 │   ├── cache/               # Response caching
 │   ├── queue/               # Reddit rate limiting

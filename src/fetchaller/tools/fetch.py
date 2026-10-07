@@ -171,6 +171,8 @@ from ..content.workday import (
     render_workday_board,
     render_workday_job,
 )
+from ..homedepot.urls import CA_HOSTS as _HOMEDEPOT_CA_HOSTS
+from ..homedepot.urls import is_homedepot as _is_homedepot
 from ..kijiji.api import is_kijiji as _is_kijiji
 from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..realtor.api import is_realtor as _is_realtor
@@ -1661,48 +1663,52 @@ async def _fetch_url_impl(
                 return {"content": content, "content_type": "markdown", "url": url}
             return result
 
-    # Costco search/category pages — CSR, use search API when available
-    _costco_redirect_fallback = False
-    _costco_fallback_url: str | None = None
-    if structured and (_is_costco_search(url) or _is_costco_category(url)):
-        try:
-            _hit = _intercept_cache_get(url)
-            if _hit:
-                return _hit
-            from ..costco.search import search_costco
+    # The Home Depot. homedepot.com answers every page but its home page with an
+    # Akamai behavioural challenge unless a browser has run the sensor script,
+    # yet the data those pages draw comes from the site's own federation
+    # gateway, which answers plainly — so products, listings, reviews and
+    # stores are read there. homedepot.ca is not blocked, but it draws products
+    # and listings client-side from transfer state, so its markup renders as a
+    # product with no specifications and a category with no products. Returns
+    # None for pages neither read covers, which take the HTML path.
+    if structured and _is_homedepot(url):
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
+        from ..homedepot.page import get_homedepot
 
-            result = await search_costco(url, cache=cache, config=config, browser_solver=browser_solver)
+        result = await get_homedepot(url, timeout=float(timeout))
+        if result is not None:
             if "content" in result:
-                content = result["content"]
-                # If returned 0 results, try category page fallback.
-                # Costco's JS frontend redirects some searches (e.g. "macbook",
-                # "samsung") to brand/category pages. We can't follow JS redirects
-                # so we construct the likely category URL: /{query}.html
-                if "No products found" in content:
-                    from ..costco.search import extract_search_params
+                _intercept_cache_set(url, result["content"], "markdown")
+                content = truncate(result["content"], max_tokens)
+                _log(f"FETCH {url} -> Home Depot ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+                return {"content": content, "content_type": "markdown", "url": url}
+            return result
 
-                    sp = extract_search_params(url)
-                    if sp:
-                        q = sp["query"].strip().lower().replace(" ", "-")
-                        d = sp["domain"]
-                        _costco_fallback_url = f"https://www.costco.{d}/{q}.html"
-                        _costco_redirect_fallback = True
-                        _log(
-                            f"FETCH {url} -> Costco search returned 0 results, trying category fallback: {_costco_fallback_url}"
-                        )
-                    else:
-                        _log(f"FETCH {url} -> Costco search returned 0 results, no fallback available")
-                else:
-                    _intercept_cache_set(url, content)
-                    content = truncate(content, max_tokens)
-                    _log(f"FETCH {url} -> Costco search ({len(content)} chars, {time.monotonic() - start:.1f}s)")
-                    return {"content": content, "content_type": "text", "url": url}
-            if not _costco_redirect_fallback:
-                if "Could not extract" not in result.get("error", ""):
-                    return result
-                _log(f"FETCH {url} -> Costco search failed, falling through to HTML")
-        except ImportError:
-            _log(f"FETCH {url} -> Costco search module not yet implemented, falling through to HTML")
+    # Costco search/category pages — client-rendered from Costco's catalogue
+    # search, which is read directly. A keyword the site redirects to a
+    # category ("tv" → /televisions.html) is followed inside search_costco
+    # from the redirect the catalogue itself reports; it used to be guessed
+    # here as /{query}.html, which 404s for most categories.
+    if structured and (_is_costco_search(url) or _is_costco_category(url)):
+        _hit = _intercept_cache_get(url)
+        if _hit:
+            return _hit
+        from ..costco.search import search_costco
+
+        result = await search_costco(
+            url, cache=cache, config=config, browser_solver=browser_solver, timeout=float(timeout)
+        )
+        if "content" in result:
+            content = result["content"]
+            _intercept_cache_set(url, content, "markdown")
+            content = truncate(content, max_tokens)
+            _log(f"FETCH {url} -> Costco catalogue ({len(content)} chars, {time.monotonic() - start:.1f}s)")
+            return {"content": content, "content_type": "markdown", "url": url}
+        if "Could not extract" not in result.get("error", ""):
+            return result
+        _log(f"FETCH {url} -> not a Costco listing URL, falling through to HTML")
 
     # Craigslist search pages — CSR, use SAPI
     if structured and not _skip_craigslist_intercept and _is_craigslist_search(url):
@@ -2330,10 +2336,6 @@ async def _fetch_url_impl(
         if vacuumwars_routed:
             fetch_url_str = vacuumwars_routed
 
-    # Costco fallback: when search API returns 0 results, fetch the category page
-    if _costco_redirect_fallback and _costco_fallback_url:
-        fetch_url_str = _costco_fallback_url
-
     # Compute normalized URL once for cache operations
     # Gated on `structured`: the write path below keys off cache_key alone,
     # so a non-structured request must not have one to write under.
@@ -2415,6 +2417,16 @@ async def _fetch_url_impl(
         from ..ratelimit import vacuumwars_limiter
 
         await vacuumwars_limiter.wait()
+    elif _is_homedepot(fetch_url_str):
+        from ..ratelimit import homedepot_ca_limiter, homedepot_com_limiter
+
+        host = (urlparse(fetch_url_str).hostname or "").lower()
+        if host not in _HOMEDEPOT_CA_HOSTS:
+            from ..homedepot import com as _homedepot_com
+
+            if (held := _homedepot_com.page_hold_remaining()) > 0:
+                return {"error": _homedepot_com.page_hold_message(held)}
+        await (homedepot_ca_limiter if host in _HOMEDEPOT_CA_HOSTS else homedepot_com_limiter).wait()
 
     # SSRF-safe fetch. Resolve + validate the fetch host, then pin the wafer
     # session to those exact IPs so wafer cannot re-resolve to an internal
@@ -2762,6 +2774,18 @@ async def _fetch_url_impl(
             deadline=fetch_deadline,
         )
         if rendered is None:
+            challenged_host = (urlparse(current_url).hostname or "").lower()
+            if (
+                browser_solver is not None
+                and _is_homedepot(current_url)
+                and challenged_host not in _HOMEDEPOT_CA_HOSTS
+            ):
+                # A failed solve on homedepot.com: hold its pages (see
+                # homedepot/com.py) rather than send Akamai another one.
+                from ..homedepot import com as _homedepot_com
+
+                note = _homedepot_com.page_hold_message(_homedepot_com.hold_pages())
+                return {"error": f"{describe_challenge(e.challenge_type)} {note[0].upper()}{note[1:]}."}
             return {"error": describe_challenge(e.challenge_type)}
         result = rendered
     except wafer.RateLimited as e:
@@ -2884,15 +2908,6 @@ async def _fetch_url_impl(
 
     # Handle errors
     if result.status_code >= 400:
-        # Costco fallback 404: the category page doesn't exist, return 0-results message
-        if _costco_redirect_fallback and result.status_code == 404:
-            _log(f"FETCH {url} -> Costco category fallback 404, returning no-results")
-            return {
-                "content": f"Costco search returned no results for this query. "
-                f"The category page ({_costco_fallback_url}) also does not exist.",
-                "content_type": "text",
-                "url": url,
-            }
         # Named apart from the request `body` parameter, which is still live in
         # this scope.
         error_body = result.text[:1000]
@@ -3420,12 +3435,7 @@ async def _fetch_url_impl(
         }
 
         # Note if we transformed the URL
-        if _costco_redirect_fallback:
-            note = "[Costco search returned no direct results and redirected to a category page]"
-            if result.final_url and result.final_url != fetch_url_str:
-                note += f"\n[Redirected to: {result.final_url}]"
-            response["content"] = f"{note}\n\n{content}"
-        elif vacuumwars_routed:
+        if vacuumwars_routed:
             response["content"] = truncate(
                 f"[Fetched via: {vacuumwars_routed} — the comparison tool's own "
                 f"uncached host; the vacuumwars.com page serves a cached copy of "

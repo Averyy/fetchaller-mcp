@@ -77,12 +77,12 @@ SMOKE_STDIO_COMMAND='["docker","run","--rm","-i","fetchaller-mcp:candidate","pyt
 ```
 
 Fixture-only routes never run live, including with `--include-unstable`; they
-are restricted to inherently non-public access states. Removed public features
-receive no waiver: the collection gate discovers Reddit's official archived
-collection URL, validates its genuine archived Redux metadata, hydrates its
-post IDs against current Reddit `/api/info`, and rejects shells, empty data, or
-missing posts. `--include-unstable` dynamically discovers current real
-post/comment, revision, multireddit, live, and collection IDs, records the
+are restricted to inherently non-public access states and to surfaces Reddit
+itself retired (the sitewide comment stream, gilded listings, post collections,
+the gold-only directory), whose offline reason records Reddit's actual answer.
+A retired surface is never rebuilt from an archive to pass live.
+`--include-unstable` dynamically discovers current real
+post/comment, revision, multireddit and live IDs, records the
 discovery bodies, and requires every such entry. A live thread is found through
 Reddit's own search for posts linking one (`url:reddit.com/live`, newest first;
 r/worldnews opens one a day) and an update ID is read off that thread; the web
@@ -147,11 +147,11 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 ## Test Organization
 
 - `test_site_detection.py` — Tests `_detect_site()` directly (URL-based, HTML-based, priority rules)
-- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors; an unvalidated final host is refused and named; fccid.io's Continue cookie gate is an error, not a page; Reddit's 2xx "Server error" page is an error, a page that merely mentions one is content)
+- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors; an unvalidated final host is refused and named; fccid.io's Continue cookie gate is an error, not a page; Reddit's 2xx "Server error" page is an error, a page that merely mentions one is content); a failed homedepot.com browser solve holds homedepot.com pages (the next read sends nothing) while a challenge with no browser attached holds nothing
 - `test_timeouts.py` — A single request exceeding its wafer session limit (`WaferTimeout`, a `TimeoutError` subclass) is reported as that request, not as the tool's whole budget running out; the budget itself still says so (end to end through `search_oracle_jobs`)
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
-- `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP; Google's silent empty results page is an honest zero while results in unrecognized markup still fail loudly
+- `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP; Google's silent empty results page is an honest zero while results in unrecognized markup still fail loudly; result links read the `q` parameter wherever it sits (`/url?opi=..&q=..`, Google's 2026-10-05 shape) and stacked links in that shape stay out of snippets; tokenized links (`q=CAES..`, `uoh=3`) resolve through Google's redirect, a duplicate destination collapses, an unresolved link is dropped and a page where none resolve is an error
 - `test_reddit.py` — Strict Reddit host recognition; normal URL→structured routing;
   thread/listing/profile/rules/wiki renderers; score/upvote-ratio semantics;
   nested/deleted/rich-media comments; gallery/video/crosspost/poll/status
@@ -160,11 +160,15 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
   strict same-origin JSON redirects and nonexistent-community
   state; canonical New Reddit wiki-tree SSR parsing plus the anonymous
   `WikiPageRevisionsV2` page tree (CSRF, fixed route, identity, node/path
-  agreement, uniqueness); strict
-  archived-collection identity/Redux parsing plus current-post
-  hydration; failure truth, queue, deadline, and backoff behavior; an empty
+  agreement, uniqueness); a collection's own failure (HTTP 500 and the
+  like) reported with one read and no archive lookup, and the gold-only
+  directory's redirect named as the premium page; failure truth, queue, deadline, and backoff behavior; an empty
   sitewide comment stream (`/comments/`, `r/all`, `r/popular`) says Reddit
-  withdrew it rather than rendering a bare "0 items returned"
+  withdrew it rather than rendering a bare "0 items returned"; retired gilded
+  listings answer exactly what Reddit answers (400, a structured 403, 404, or
+  a redirect to the profile) with one read and no archive lookup, Reddit's
+  structured 403 there holds no other read while an opaque one still does, and
+  a same-origin redirect is named while a cross-origin one never is
 - `test_reddit_parity_corpus.py` — Checked-in zero-gap corpus coverage for every
   routed representation, access-state contract, and fixture gating; the Reddit
   session audit is parsed from the line the server's own
@@ -211,6 +215,11 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_ashby_embed_script.py` — Ashby script-tag embed detection (`<script src="https://jobs.ashbyhq.com/{org}/embed">`): basic match, embed-with-query, no-match cases, and the `/api`/`/embed`/`/_next` slug blocklist
 - `test_realtor.py` — realtor.ca: URL detection (listing/SEO/map, EN `/real-estate/` + FR `/immobilier/`), filter encodings (range, sort/property/building/ownership inversion, place-from-slug), `/map` kwarg parsing (bbox + hash, rent params), agent/brokerage extraction (EN "Brokerage" / FR "Bureau de courtage" / no-keyword fallback), listing-HTML parsing (price/address/beds/rooms/agent/MLS/coords), search + listing-detail rendering
 - `test_ubiquiti.py` — ui.com: URL detection (locale store subdomains, techspecs, guides, lookalike-domain rejection), Next.js route dispatch incl. the collection product routes and the unknown-category soft 404 (the store answers 200 with its home page), spec-tree rendering (group nesting via `parentId`, absent flags as `—`, multi-line values, compare-grid skipped on products / used as badges on categories), price (currency exponent — JPY is not /100 — surcharge naming, `from` for multi-variant), availability with sold-out/restock dates, guide discovery for both runtime generations, the JS-literal asset parser (bare identifier keys, `\xNN`/surrogate escapes), SVG reconstruction (CSS class inlining, gradient flattening, dangling paint refs → `none` per SVG 1.1, structural `clip-path` left alone), per-page failure isolation, and slug path-traversal safety
+- `test_workatastartup_postprocessor.py` — Work at a Startup: any on-site URL is handled and the Inertia component decides; postings keep every raw field and section; the job list (total, rows, links, role links, no logo/sign-up noise), company page (record, founders, jobs, other companies) and home page (jobs and hiring companies, no marketing modules) are rendered; an unknown component falls through to HTML
+- `test_costco_grs.py` — Costco catalogue search: page-config parsing from escaped RSC text (endpoint, per-site `client_id`/locale, request template, locator credentials, default location; a page without the service is no config), nearest warehouse skipping business centres, `refine` mapping with unapplied segments reported, `sortBy` `+` surviving query parsing, results joined to inventory rows, rendering (location line, sale was-price, cart-only prices not invented, next page, facets without `category_uri`, redirect disclosure, unknown category), the redirect flow keeping the caller's page, the disclosed Fusion fallback for keywords, and no silent fallback for a category
+- `test_costco_search.py` / `test_costco_api.py` — Costco URL detection and parameter extraction, the Fusion fallback client (API-key refresh, item parsing) and its formatter
+- `test_homedepot_content.py` — homedepot.com HTML-path pages: header/footer apps and the SEO block removed; one-line breadcrumb without the repeated current page; deduplicated tags; table-of-contents step numbers, slideshow counters and See/Show More gone while slides and a content-labelled button stay; landing pages rendered from `__APOLLO_STATE__` in slot order (navigation, rich-text accordions and cards, spotlights), paid placements and unsafe links kept out, no repeated section heading, and the HTML path still running with no layout data; Contentful rich text (lists, headings, marks)
+- `test_homedepot.py` — The Home Depot: URL classification for both storefronts (US product/reviews/store/search/browse incl. `Nao`, `sortby`, `lowerbound`/`upperBound`, unknown sorts, pages left to the HTML path; Canadian product/search/category in English and French), `with_param` paging links, US price lines (`original == value` is not a sale, hidden price, "Starting at" prefix, unit price), fulfilment lines, product render (store named, link bullets kept as links), listing render (sponsored label, category-only breadcrumb, next page, unknown sort, redirect disclosure), pooled variant reviews (statistics from the URL's own `Id`, sibling reviews marked), store services, gateway error paths (an Akamai edge refusal named as one, the refusal hold that fails reads at once and doubles or releases on its probe, an in-flight burst joining one hold, a gateway error that is not a refusal, unknown item, zero-padded store ids, relocated store via the site's "Relo" label, keyword redirect followed with the caller's paging, unknown category), Canadian not-found skeleton, price lines (sale, French `chaque`, real units, "no online price"), status-OU and unanswered-price-service products, SEO review title vs author, listing pages from the report, on-site redirect targets, and the page-before-service request sequence (Referer, challenge → reload → retry once, unanswered service is None not empty, off-site redirect refused, search redirect read with the caller's page)
 - `test_wellfound.py` — wellfound.com: URL detection (job/company/search, jobs-feed-vs-job), Apollo helpers (deref/entities/connection with arg-qualified keys), format helpers (money/size/date/url-clean, salary with decimal-string bounds), search title, job/company/search rendering (Open Jobs total from resolved connection), JobPosting JSON-LD extraction + soft-404 "Page not found" detection
 - `test_jobfilter.py` — Shared job matching (`src/fetchaller/jobfilter.py`): tokenisation, title matching (prefix forms so "designer" matches "Design", exact match required below 4 chars so "ux" cannot match loosely), location matching across board-specific formats (`Canada, Toronto` / `Canada - Toronto` / `Toronto, Ontario, CAN`), query broadening (the "product designer" → "product design" case that recovers postings a literal match drops), country alpha-3 resolution, country-token stripping
 - `test_eightfold.py` — Eightfold: URL detection (`*.eightfold.ai` + vanity hosts, `/careers/job/{id}` and `?pid=`, lookalike-host and non-HTTP rejection), employer alias resolution, classic→PCS-X field normalisation (incl. `Vancouver,Canada` spacing repair), render (links, reported title-filter drop counts, tenant `efcustomText*` fields, markdown escaping)
@@ -226,7 +235,7 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_discovery_minimize.py` — ddmin: single and multiple required fields, minimizing to nothing (Workday's empty body), returning a failing full set whole rather than shipping a shrunken broken request, probe budget, memoized hits not charged
 - `test_discovery_plan.py` — Replay traps: transport-owned headers stripped so HTTP/2 sees no duplicate, repeated `facets[]` surviving both directions, percent-encoded `{{mint:}}` markers decoded before substitution *and* before the unresolved check, JSON bodies not carrying a captured content-type, positional array bodies treated as raw, exact JSON round-trip
 - `test_discovery_provenance.py` — Anchored mint patterns: refusing under 8 characters of context, refusing a pattern that cannot recover its own value, header sources preferred over body, later exchanges never a source, one step shared by every use of a value
-- `test_discovery_observe.py` — Launch hardening (the capture browser must never report `Headless`; gated live canary via `FETCHALLER_RUN_BROWSER_CANARY=1`); challenge detection per *exchange* rather than per page; the nudge gate's three conditions, each forced by a real board: exact host (Apple's `www.apple.com` payload), 2xx with a body (Google's `204` beacons), load phase only; resource-type filtering; `page_status` so a throttled page reads as throttled rather than as an API-less board
+- `test_discovery_observe.py` — Launch hardening (the capture browser must never report `Headless` in its UA, its `userAgentData` brands or a worker's UA; gated live canary via `FETCHALLER_RUN_BROWSER_CANARY=1`); challenge detection per *exchange* rather than per page; the nudge gate's three conditions, each forced by a real board: exact host (Apple's `www.apple.com` payload), 2xx with a body (Google's `204` beacons), load phase only; resource-type filtering; `page_status` so a throttled page reads as throttled rather than as an API-less board
 - `test_discovery_store.py` — Plan cache: slug/hash paths that cannot collide, atomic writes, corrupt plans discarded not raised, decay detection (Meta's healthy 588 records vs 1 from a rotated `doc_id`), cached-plan reuse without re-running discovery
 - `test_ratelimit.py` — Per-domain rate limiter (DomainRateLimiter) unit tests
 - Other `test_*.py` — Unit tests for specific modules (cache, config, oauth, etc.)
@@ -295,6 +304,27 @@ copied into the docs as a constant, only as a dated measurement.
     `https://ui.com/qig/u6-pro` (legacy multi-page, heavy gradients),
     `https://ui.com/qig/udm-pro` (legacy single-page), and
     `https://dl.ui.com/qig/definitely-not-real/` (must report "no guide", not an empty one)
+- Costco — each must list priced products and name the default warehouse:
+  - a keyword the site redirects (must follow and say so): `https://www.costco.ca/s?keyword=tv`
+  - category, sorted and paged: `https://www.costco.ca/televisions.html?currentPage=2&sortBy=item_location_pricing_salePrice+asc`
+  - brand refinement: `https://www.costco.ca/televisions.html?refine=||Brand_attr-Samsung`
+  - plain keyword on both sites: `https://www.costco.ca/s?keyword=laptop`, `https://www.costco.com/s?keyword=laptop`
+  - unknown category (must say so, not render an empty shelf): `https://www.costco.ca/definitely-not-a-category.html`
+- The Home Depot — no browser should be involved in any of these:
+  - US product (specs, pickup at #121, ship-to-home dates): `https://www.homedepot.com/p/DEWALT-20V-MAX-Cordless-1-2-in-Drill-Driver-2-20V-1-3Ah-Batteries-Charger-and-Bag-DCD771C2/204279858`
+  - US search with sale rows: `https://www.homedepot.com/s/drill`
+  - US keyword the site redirects (must follow and say so): `https://www.homedepot.com/s/dewalt`
+  - US category, paged and sorted: `https://www.homedepot.com/b/Tools-Power-Tools-Drills-Hammer-Drills/N-5yc1vZc8wt?Nao=24&sortby=price&sortorder=asc`
+  - US price range (must not appear in the category trail): `https://www.homedepot.com/b/Tools-Power-Tools-Drills/N-5yc1vZc27f?lowerbound=50&upperbound=150`
+  - US reviews page 2 (statistics must stay 4.6 from 11,399; sibling reviews marked): `https://www.homedepot.com/p/reviews/DEWALT-20V-MAX-Cordless-1-2-in-Drill-Driver-2-20V-1-3Ah-Batteries-Charger-and-Bag-DCD771C2/204279858/2`
+  - US store, and a relocated one: `https://www.homedepot.com/l/Cumberland/GA/Atlanta/30339/121`, `https://www.homedepot.com/l/Manhattan-59th-Street/NY/New-York/10022/6177`
+  - US unknown item / category must be errors: `https://www.homedepot.com/p/999999999`, `https://www.homedepot.com/b/Nope/N-5yc1vZzzzzzz`
+  - CA product with specs, options and reviews: `https://www.homedepot.ca/product/milwaukee-tool-m12-12v-lithium-ion-brushless-cordless-3-8-in-drill-driver-w-2-2-0-ah-batteries/1001918582`
+  - CA sale (must show the was-price): `https://www.homedepot.ca/product/frigidaire-32-inch-w-17-6-cu-ft-counter-depth-french-door-refrigerator-in-brushed-steel-energy-star/1001645211`
+  - CA status-OU item (must say "no online price"): `https://www.homedepot.ca/product/milwaukee-tool-1-2-inch-d-handle-drill/1000730797`
+  - CA category with refinement, page and sort: `https://www.homedepot.ca/en/home/categories/tools/power-tools/drills/drill-drivers.html/f/milwaukee-tool/boj-9wh?page=2&sort=price-asc`
+  - CA search redirected to a category, plain search, French search: `https://www.homedepot.ca/search?q=drill`, `https://www.homedepot.ca/search?q=hammer%20drill%20bit&page=2`, `https://www.homedepot.ca/rechercher?q=perceuse`
+  - CA unknown product must be an error: `https://www.homedepot.ca/product/nope/1001398390`
 - FCC — fcc.report now 301s to fccid.io behind a Cloudflare challenge and a "Continue" cookie gate (wafer >= 0.6.2 solves both); must render the filing's device details, frequencies and exhibits, never the "Security check" page: `https://fcc.report/FCC-ID/2AC7Z-ESPWROOM32`
 - Facebook Marketplace — each has already hidden a bug:
   - search (must list real listings; an empty result with a cursor counting matches is the degraded answer): `https://www.facebook.com/marketplace/toronto/search?query=desk`

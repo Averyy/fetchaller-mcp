@@ -91,6 +91,18 @@ def test_reddit_parity_corpus_covers_every_declared_route_representation():
         # rosters 403 or redirect to login.
         "comments_global",
         "moderators",
+        # Reddit retired gilded listings and answers them with 400, 403, 404
+        # or a redirect to the profile; fetchaller reports that answer as is.
+        "gilded_comments_global",
+        "gilded_comments_subreddit",
+        "gilded_global",
+        "gilded_subreddit",
+        "user_gilded",
+        "user_gilded_given_private",
+        # Retired the same way: collections answer HTTP 500, and the gold-only
+        # directory redirects to the premium one.
+        "collection",
+        "subreddit_directory_gold",
     }
     assert all(
         entry.offline_reason
@@ -100,7 +112,6 @@ def test_reddit_parity_corpus_covers_every_declared_route_representation():
     assert {
         entry.discovery for entry in entries if entry.discovery
     } == {
-        "collection",
         "duplicates",
         "duplicates_subreddit",
         "live",
@@ -347,41 +358,9 @@ def test_result_starved_routes_do_not_claim_pagination():
         assert not by_id[entry_id].pagination_round_trip, entry_id
     # The assertion must stay broadly enforced everywhere else.
     asserting = [e.id for e in by_id.values() if e.pagination]
-    assert len(asserting) >= 40, f"pagination coverage collapsed to {len(asserting)}"
-
-
-def test_gilded_identity_check_survives_the_non_user_scoped_feeds():
-    """The gilded routes must reach their identity check without crashing.
-
-    ``test_every_live_corpus_entry_rejects_its_heading_or_marker_alone`` feeds a
-    thin shell, so these routes fail the populated-count gate and return long
-    before the identity check runs. That hid a checker crash: the expected
-    heading was built as a mapping literal, so the user-scoped value called
-    ``_entry_username()`` for the global and subreddit feeds too and raised
-    ``ValueError`` on their non-user paths. A live run only reached it once a
-    feed rendered real cards, and it aborted the whole gate mid-run rather than
-    failing one route.
-
-    So drive each gilded route past the count gate with one complete card.
-    """
-
-    card = (
-        "1. **A gilded comment**\n"
-        "   r/Python · u/someone · 123 score · 2026-01-01 12:00 UTC\n"
-        "   body text here\n"
-        "Permalink: https://www.reddit.com/r/Python/comments/abc123/some_slug/def456/\n"
-    )
-    gilded = [
-        entry
-        for entry in load_corpus(DEFAULT_CORPUS)
-        if entry.id.startswith("gilded_") or entry.id == "user_gilded"
-    ]
-    assert gilded, "corpus lost its gilded routes"
-    for entry in gilded:
-        text = f"{entry.required_any[0]}\n\n1 items returned\n\n{card}"
-        assert _counted_output_error(entry, text) is None, entry.id
-        # A contract error (or None) is fine; an exception is not.
-        _semantic_contract_error(entry, text)
+    # 37 since the five gilded listings left (Reddit retired them; their
+    # pagination was through an archive reconstruction, not Reddit).
+    assert len(asserting) >= 37, f"pagination coverage collapsed to {len(asserting)}"
 
 
 def test_activity_gate_requires_every_comment_body_and_exact_navigation():
@@ -1336,17 +1315,11 @@ async def test_dynamic_discovery_materializes_every_opaque_public_route(tmp_path
             "## Updates\n\n1. **u/reporter · 2026-09-27 12:00 UTC**\n\n"
             "Something happened.\n\nUpdate ID: ecf7aa3e-5567-11f1-87f8-660b88d038df\n"
         ),
-        (
-            "# Deprecating Post Collections, Mark as OC, and Community "
-            "Content Tags\n\nseveral mod-oriented features will be removed "
-            "next month\n\nhttps://www.reddit.com/r/YUROP/collection/"
-            "36910c41-231f-45ea-8057-a4e061048541"
-        ),
     )
 
     targets, records = await _discover_live_targets(session, tmp_path)
 
-    assert len(targets) == 18
+    assert len(targets) == 17
     assert all(record.status == "passed" for record in records)
     assert {
         record.id: record.stage for record in records
@@ -1383,7 +1356,6 @@ async def test_dynamic_discovery_materializes_every_opaque_public_route(tmp_path
     assert targets["live_update"].endswith(
         "/updates/ecf7aa3e-5567-11f1-87f8-660b88d038df/"
     )
-    assert targets["collection"].startswith("https://www.reddit.com/")
     entries = {
         entry.id: entry for entry in load_corpus(DEFAULT_CORPUS)
     }
@@ -1405,7 +1377,6 @@ async def test_dynamic_discovery_materializes_every_opaque_public_route(tmp_path
         "live_about",
         "live_contributors",
         "live_update",
-        "collection",
     ):
         assert _materialize_entry(entries[entry_id], targets) is not None
 
@@ -1748,13 +1719,6 @@ def test_every_counted_output_family_rejects_inflated_counts_and_missing_cards()
             "post01",
         ),
         (
-            "gilded_global",
-            activity_comment,
-            "1 items returned",
-            "2 items returned",
-            "comment01",
-        ),
-        (
             "user_overview",
             activity_comment,
             "1 items returned",
@@ -1859,95 +1823,6 @@ async def test_public_html_fallback_requires_multiple_substantive_markers(
     )
     assert evidence.status == "failed"
     assert "substantive public Reddit Premium" in evidence.detail
-
-
-async def test_collection_gate_requires_archive_provenance_and_current_posts(
-    tmp_path,
-):
-    entry = CorpusEntry(
-        id="collection",
-        live="unstable",
-        kind="collection",
-        url=(
-            "https://www.reddit.com/r/YUROP/collection/"
-            "36910c41-231f-45ea-8057-a4e061048541/"
-        ),
-        required_any=(
-            "Metadata source: archived New Reddit snapshot",
-            "Post details: current Reddit API.",
-            "## Posts",
-        ),
-    )
-    posts = "\n\n".join(
-        (
-            f"{index}. Current post {index}\n"
-            f"   score {index} · 90% upvoted · {index} comments · "
-            "u/alice · 1y\n"
-            f"   https://www.reddit.com/r/YUROP/comments/post{index}/"
-        )
-        for index in range(1, 29)
-    )
-    valid = (
-        "# Preserved collection\n\n"
-        "Metadata source: archived New Reddit snapshot "
-        "(Wayback, 2023-02-06). Post details: current Reddit API.\n\n"
-        "## Posts\n\n28 items returned\n\n"
-        f"{posts}\n"
-    )
-    assert (
-        await _call(_Session(valid), entry, tmp_path, "cold")
-    ).status == "passed"
-
-    url_only_shells = "\n".join(
-        (
-            f"https://www.reddit.com/r/YUROP/comments/post{index}/"
-            if index > 1
-            else (
-                "1. Only substantive post\n"
-                "   score 1 · 90% upvoted · 1 comments · u/alice · 1y\n"
-                "   https://www.reddit.com/r/YUROP/comments/post1/"
-            )
-        )
-        for index in range(1, 29)
-    )
-    shallow_hydration = (
-        "# Preserved collection\n\n"
-        "Metadata source: archived New Reddit snapshot "
-        "(Wayback, 2023-02-06). Post details: current Reddit API.\n\n"
-        "## Posts\n\n28 items returned\n\n"
-        f"{url_only_shells}\n"
-    )
-    evidence = await _call(
-        _Session(shallow_hydration),
-        entry,
-        tmp_path,
-        "shallow",
-    )
-    assert evidence.status == "failed"
-    assert "28 substantive current post cards" in evidence.detail
-
-    for stage, invalid in (
-        (
-            "warm",
-            "# Preserved collection\n\n## Posts\n\n"
-            "1 items returned\n\n"
-            "1. [Post](https://www.reddit.com/r/YUROP/comments/post1/)\n",
-        ),
-        (
-            "recreated",
-            "# Preserved collection\n\n"
-            "Metadata source: archived New Reddit snapshot "
-            "(Wayback, 2023-02-06). Post details: current Reddit API.\n\n"
-            "## Posts\n\n0 items returned\n",
-        ),
-    ):
-        evidence = await _call(
-            _Session(invalid),
-            entry,
-            tmp_path,
-            stage,
-        )
-        assert evidence.status == "failed"
 
 
 async def test_parity_runner_uses_large_bounded_raw_budget_and_rejects_truncation(

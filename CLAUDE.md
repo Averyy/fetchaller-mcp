@@ -45,7 +45,16 @@ return an explicit account-gated error and are covered offline as
 `fixture_only`. The sitewide comment stream (`/comments/`, `r/all`, `r/popular`
 comments) now answers anonymous reads with no children and reddit.com's own
 `/comments/` page is "Page not found"; it renders with a statement that Reddit
-withdrew it, never as a bare "0 items returned". Wafer owns verification, the app token and their persistence;
+withdrew it, never as a bare "0 items returned". **Gilded listings** (`/gilded/`,
+`/comments/gilded/`, `/r/<sub>[/comments]/gilded/`, `/user/<name>/gilded/`)
+were retired by Reddit, which answers them with 400, a structured 403, 404, or
+a 301 to the profile; fetchaller reports exactly that answer. **Post
+collections** answer HTTP 500 and the **gold-only communities directory**
+redirects to the premium one; both are reported as they are. All three were
+once reconstructed from Wayback captures to satisfy the parity gate -- slow (an
+index lookup alone took up to 54 s), years stale, and the cause of gate
+timeouts -- and that was removed on 2026-10-07. Never rebuild a retired Reddit
+surface from an archive: if Reddit answers 400/404, so does fetchaller. Wafer owns verification, the app token and their persistence;
 fetchaller owns strict URL mapping, SSR/API schema validation, and compact
 rendering. Never add an Old Reddit fallback or copy wafer's
 verification parser into this repo. Explicit `.json` stays raw JSON and
@@ -84,6 +93,78 @@ dependency; add none). `dl.ui.com` returns **200 with an app shell** for a slug
 that has no guide, so a status code proves nothing — detect the bootstrap
 markers, and report a missing guide against the URL the caller asked for, not
 the redirect target. fetchaller has NO credentialed path to any ui.com property.
+
+### The Home Depot (homedepot.com, homedepot.ca)
+
+**homedepot.com is read through its own federation gateway, never its HTML.**
+Every www.homedepot.com page but the home page answers a session that has not
+run Akamai's sensor script with a 2.5 KB behavioural-challenge interstitial
+(`sec-if-cpt-container`) — 403 cold, 200 warm — so without a browser the HTML
+path reads nothing. That block is wafer's and stays wafer's. But the data those
+pages draw comes from `POST /federation-gateway/graphql?opname=...`, which
+answers a plain cold request with no challenge; reading *that* is finding the
+request, so it is built here (`src/fetchaller/homedepot/`). Products, search
+(`/s/`), category/brand listings (`/b/.../N-...`, with `Nao`, `sortby`,
+`lowerbound`/`upperbound`), review pages and store pages are all gateway reads.
+`/c/` content pages, collections and the like still take the HTML path, cleaned by
+`content/homedepot.py`; a landing page (`#root.landing-page`) is rendered from
+its `__APOLLO_STATE__` `UniversalLayout`, because its HTML draws only some of its
+sections (customer service drew none). With
+wafer >= 0.7.3 the browser solver clears that challenge on macOS (~6 s cold,
+plain reads after) and returns the server's own document. In the **Linux image**
+Akamai never passes the browser: the solve times out after ~112 s and reports
+an Akamai failure (0.7.2 wrongly logged it solved). That refusal is wafer's
+(`~/code/wafer/todo-akamai-solve-fails-in-linux-image.md`, unconfirmed on
+native amd64); do not work around it here. Where the solve fails these pages
+fail — say so, do not fake them. The queries are
+assembled from the site's component data models (its bundles carry no query
+strings; introspection is 401) and validated against the gateway, which names
+every unknown field. An unknown item, an unknown `N-` value and a redirected
+keyword all answer 200 — `product: null`, a null `searchReport`, and a
+`metadata.searchRedirect` with no products respectively — so each is checked
+and either reported or (the redirect) followed and disclosed, never rendered as
+an empty page.
+
+Akamai's edge can stop passing the gateway for a while (206 "Generic errors"
+from `AkamaiGHost`, seen after a burst of testing on 2026-10-07, lifted within
+~20 minutes); `com.py` then holds the gateway, failing reads at once and saying
+when it will try again, instead of sending more requests into the refusal. Both
+refusals that day followed a run of *failed browser solves* of homedepot.com
+pages in the Linux image, so one failed solve also holds homedepot.com pages
+(the HTML path) for 10 minutes rather than sending Akamai another.
+
+Prices, pickup stock and badges are **per store**: quote store #121
+(Cumberland, GA), the one the site assigns with none selected, and name it
+beside every price. `original == value` is the normal case, not a sale. Rows
+the gateway marks `isSponsored` say "Sponsored". **Reviews are pooled across a
+product's variant family**: a page returns reviews written about sibling
+Internet #s, and `Includes.Products.store` holds whichever sibling leads *that
+page* — take the statistics from the entry whose `Id` is the URL's, and mark
+every review of another variant. Store IDs come back zero-padded (`0121`);
+compare numerically. A relocated store is listed only as its replacement,
+named "<name> (Relo <old id>)" by the site — follow that label and say so.
+
+**homedepot.ca is not blocked; it loses data to client-side rendering.** Its
+pages carry Angular transfer state in `<script id="hdca-state">`
+(`product-<code>`, `aemContent-<slug>.plpData`) and the markup alone renders a
+product with an empty Specifications heading and a category with no products.
+Keyword search pages carry no results at all; the browser calls
+`/api/search/v1/search`, whose `keywordRedirectUrl` is followed as the site
+follows it ("drill" → the Drills category). Its JSON services answer **only
+after a page**: called cold, the same request that succeeds after its product
+page meets an Akamai challenge. That is our request sequence, so every service
+call follows a page in the same session with that page as Referer, and a
+challenge reloads the page and retries once. Prices are the "Online" store's
+(7274, "CANADA ECOMMERCE"); its `storeStock` is always out of stock and means
+nothing, so only online `stock` is reported. The product state's `price` has
+no sale in it — was-price and savings come from `products-localized-basic`,
+and when that service does not answer the output says the sale is unknown
+rather than implying there is none. Items with `productStatus` "OU" get no
+online price from anywhere the page draws one; the catalogue price in the page
+data is named as such, never quoted as the price. The not-found product page
+answers 200 with an all-null `product-<code>` skeleton — require a `code`.
+The shared session turns off wafer's redirect following and follows homedepot.ca hops
+by hand, on-site only. fetchaller has NO credentialed path to either site.
 
 ### Vacuum Wars (vacuumwars.com)
 
@@ -222,6 +303,27 @@ times. Drop the collapsed `.vwx-row`; it carries nothing the panel lacks. Drop
 `.vwx-chip-more` ("+2 more") **only** because the chips it reveals are already
 in the DOM behind `nth-of-type` CSS — verify that before treating any other
 "more" affordance as noise. fetchaller has NO credentialed path to vacuumwars.com.
+
+### Costco (costco.com, costco.ca)
+
+**Read the service from the page, never from a constant.** Both sites now serve
+every keyword search and category page from Google Retail Search behind
+`POST gdx-api.costco.com/catalog/search/api/v1/search`; the `search.costco.*`
+Fusion endpoint this client was first built on is no longer called by the site.
+It still answers keywords, so nothing failed loudly: it answers a keyword the
+site redirects ("tv") with zero documents plus `fusion.redirect`, and category
+pages had been sent to it as keywords. Both rendered "No products found", an
+empty shelf that read as an answer. `costco/grs.py` takes the endpoint, its
+required headers, the request template, the warehouse locator and the default
+location from the page config every Costco page ships, and falls back to the
+2026-10-05 values only when that config is unreadable (logged). Prices and
+stock are per location: with none set the site uses `M4V 2H7`/ON (`98101`/WA
+on .com) and default coordinates, resolved to the nearest **Warehouse** (not a
+Business Center) and its delivery centres; the output names the warehouse. A
+redirected keyword is followed from the catalogue's own `redirectUri`, with the
+caller's page and sort, and disclosed. `HIDE_OUT_OF_STOCK` is sent because the
+site sends it. Fusion survives only as a disclosed fallback for keyword
+searches; a category has no fallback and errors instead.
 
 ### Facebook Marketplace
 
@@ -427,6 +529,6 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR, Teamtailor (JSON Feed + RSS joined on the posting UUID; filtered vs unfiltered paging). Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). emploisfp-psjobs.cfp-psc.gc.ca (GC Jobs: two-flag second-part listing, session-stored search and paging, criteria echo, external/legacy posting shapes). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), The Home Depot (homedepot.com via its federation-gateway GraphQL: products, search/category listings, pooled variant reviews, stores; homedepot.ca via `hdca-state` page data, the search API with its keyword redirects, and the localized price service that must follow a page), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR, Teamtailor (JSON Feed + RSS joined on the posting UUID; filtered vs unfiltered paging). Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). emploisfp-psjobs.cfp-psc.gc.ca (GC Jobs: two-flag second-part listing, session-stored search and paging, criteria echo, external/legacy posting shapes). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
 - `docs/spa-discovery.md` — SPA API discovery (`src/fetchaller/discovery/`): observing a page in a browser and replaying what it made, so an endpoint's shape never needs bundle archaeology again. Ranking (why coverage and record count are directly opposed), the oracle (why a 200 that means "malformed" is the core problem), minimization, mint steps, and the measured per-board results
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

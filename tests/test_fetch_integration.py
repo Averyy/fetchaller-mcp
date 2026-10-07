@@ -1857,6 +1857,67 @@ class TestErrorHandling:
         assert "cloudflare" in result["error"].lower()
 
     @_PATCH_SSRF
+    async def test_a_failed_homedepot_solve_holds_its_pages(self, _mock_ssrf):
+        """One failed homedepot.com solve; the next page read sends nothing.
+
+        Twice on 2026-10-07 a run of failed solves was followed by Akamai
+        refusing the gateway for ~20 minutes, so a failed solve holds pages
+        instead of letting the next request try again.
+        """
+        import wafer
+
+        from fetchaller import ratelimit
+        from fetchaller.homedepot import com
+        from fetchaller.tools.fetch import fetch_url
+
+        class _NoWait:
+            async def wait(self, extra_delay: float = 0.0) -> None:
+                return None
+
+        url = "https://www.homedepot.com/c/ab/how-to-use-a-drill/9ba683603be9fa5395fab9022a5fa8b"
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.ChallengeDetected("akamai", url, 403))
+        with (
+            _patch_wafer(session),
+            patch.object(ratelimit, "homedepot_com_limiter", _NoWait()),
+            patch("fetchaller.tools.fetch._render_after_challenge", AsyncMock(return_value=None)),
+            patch.object(com, "_page_hold_until", 0.0),
+        ):
+            first = await fetch_url(url, browser_solver=object())
+            calls = session.get.await_count
+            second = await fetch_url(url, browser_solver=object())
+
+        assert "akamai bot detection" in first["error"]
+        assert "Akamai refuse the site's data gateway" in first["error"]
+        assert "not trying homedepot.com pages again for 10 minutes" in second["error"]
+        assert session.get.await_count == calls  # the held read never reached the site
+
+    @_PATCH_SSRF
+    async def test_a_homedepot_challenge_without_a_browser_holds_nothing(self, _mock_ssrf):
+        import wafer
+
+        from fetchaller import ratelimit
+        from fetchaller.homedepot import com
+        from fetchaller.tools.fetch import fetch_url
+
+        class _NoWait:
+            async def wait(self, extra_delay: float = 0.0) -> None:
+                return None
+
+        url = "https://www.homedepot.com/c/customer_service"
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.ChallengeDetected("akamai", url, 403))
+        with (
+            _patch_wafer(session),
+            patch.object(ratelimit, "homedepot_com_limiter", _NoWait()),
+            patch.object(com, "_page_hold_until", 0.0),
+        ):
+            result = await fetch_url(url)
+            assert com.page_hold_remaining() == 0.0
+
+        assert "data gateway" not in result["error"]
+
+    @_PATCH_SSRF
     async def test_rate_limited_exception(self, _mock_ssrf):
         import wafer
 

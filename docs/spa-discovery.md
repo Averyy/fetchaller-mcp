@@ -76,27 +76,39 @@ then written down as board behaviour:
 | "Meta issues no search query" | It does, with the right `doc_id` and byte-identical variables. The reply was `HTTP 200` + `{"errors":[{"message":"Rate limit exceeded"}]}` in 114 bytes. |
 | "Uber is challenge-protected" | Plain wafer: `200`, 383,021 bytes, 66 Flight rows, zero rotations. |
 
-The fix **consumes wafer's configuration** rather than copying a flag list, so a
-Chrome bump on wafer's side reaches discovery:
+The fix **consumes wafer's hardening** rather than copying a flag list, so a
+Chrome bump on wafer's side reaches discovery. `_open()` follows wafer's
+published recipe for driving your own Playwright (wafer >= 0.7.2):
 
 ```python
-config = hardened_launch_config(headless=headless)
-launch = {"headless": headless, "args": list(config.args),
-          "ignore_default_args": list(config.ignore_default_args)}
-context = await browser.new_context(user_agent=scrub_headless_ua(raw_ua))
+with hardened_driver_env():                      # shared workers/popups wait for harden_page
+    pw = await async_playwright().start()
+ua = scrub_headless_ua(<navigator.userAgent of an offline first launch>)
+config = hardened_launch_config(headless=True, user_agent=ua)   # UA on the command line
+browser = await pw.chromium.launch(channel="chrome", headless=True,
+                                   args=list(config.args),
+                                   ignore_default_args=list(config.ignore_default_args))
+context = await browser.new_context(no_viewport=True)          # macOS; never user_agent=
+await harden_page_async(page, headless=True)                    # before the first navigation
 ```
 
 `--headless=new` does **not** strip the `HeadlessChrome` token, so the UA is
 read from the launched browser and scrubbed — never composed, so the version
-stays truthful. `config.init_scripts` is registered via CDP
-`Page.addScriptToEvaluateOnNewDocument` after `Page.enable`, and the session is
-deliberately not detached (detaching unregisters them).
+stays truthful. Until wafer 0.7.2 that scrubbed UA went in as a context-level
+`user_agent=`, which fixed `navigator.userAgent` and nothing else: every
+request still sent `sec-ch-ua: "HeadlessChrome"`, and workers read Chrome's
+built-in default. On the command line plus `harden_page_async`, the page, its
+iframes and its workers agree. Two things silently undo it: a context-level
+`user_agent=` (Playwright attaches its own client hints, and cross-site iframes
+report `architecture: x86`), and launching without `channel="chrome"` —
+Playwright's default headless binary is chrome-headless-shell, which brands its
+workers `HeadlessChrome` whatever the page is told.
 
 After the fix every Uber RSC prefetch returns `200`.
 `tests/test_discovery_observe.py` fails if the capture browser's
-`navigator.userAgent` contains `Headless` — run it with
-`FETCHALLER_RUN_BROWSER_CANARY=1`. That canary would have caught all of the
-above before any board was blamed.
+`navigator.userAgent`, `navigator.userAgentData.brands` or a worker's user
+agent says `Headless` — run it with `FETCHALLER_RUN_BROWSER_CANARY=1`. That
+canary would have caught all of the above before any board was blamed.
 
 ## Not getting blocked
 

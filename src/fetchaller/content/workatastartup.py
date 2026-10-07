@@ -3,11 +3,18 @@
 Exports the standard site interface (SELECTORS_LIST, is_workatastartup,
 extract_workatastartup_data, postprocess_workatastartup).
 
-workatastartup.com job pages are Inertia.js-style React SPAs — the rendered
-body is just a spinner. All posting data lives inline on the page as
+workatastartup.com pages are Inertia.js-style React SPAs — the rendered
+body is just a spinner. All page data lives inline as
 ``<div data-page="<json>">`` with HTML-entity-encoded JSON. This module
 dumps that data as-is (raw field names, raw values) so the LLM sees every
 field the platform exposes without translation or reordering.
+
+Dispatch is on the Inertia ``component``, never the URL: a job posting
+(``props.job``), the public job list (``JobsV2Page``), a company page
+(``CompanyV2Page``) and the home page (``HomeV2Page``). Only postings were
+handled at first, so the other three rendered their ``<title>`` and nothing
+else (measured 2026-10-05: ``/jobs`` 86 chars for a page carrying 30 of 2,893
+jobs; a company page 62 chars) — an empty board that read as a real one.
 """
 
 import json
@@ -23,19 +30,21 @@ from markdownify import markdownify
 # ---------------------------------------------------------------------------
 
 _WAAS_HOST_RE = re.compile(r"^(?:www\.)?workatastartup\.com$")
-_JOB_PATH_RE = re.compile(r"^/jobs/(\d+)/?$")
+_ORIGIN = "https://www.workatastartup.com"
 
 
 def is_workatastartup(url: str) -> bool:
-    """Check if URL is a Work at a Startup job posting."""
+    """Check if URL is on Work at a Startup.
+
+    Any path qualifies; what the page is gets decided by its Inertia
+    component, and a page this module does not render is left untouched.
+    """
     try:
         parsed = urlparse(url)
     except Exception:
         return False
     hostname = (parsed.hostname or "").lower()
-    if not _WAAS_HOST_RE.match(hostname):
-        return False
-    return bool(_JOB_PATH_RE.match(parsed.path))
+    return bool(_WAAS_HOST_RE.match(hostname))
 
 
 SELECTORS_LIST: list[str] = []
@@ -161,12 +170,180 @@ def _render_job_stub(job: dict) -> str | None:
     return line
 
 
+# Page chrome and marketing modules on the listing pages. Everything else a
+# listing page carries is rendered or dumped.
+_LISTING_CHROME = frozenset({
+    "nav", "flash", "flashAlertsHtml", "footerLogoPath", "variantChrome",
+    "icons", "heroVideo", "slideshow", "people", "news", "founderHighlights",
+    "founderPlaceholders", "learnEvents", "signupUrl", "loginUrl",
+    "metaDescription", "jobsPath",
+})
+
+# The row fields of a public job-list entry, in the order they are printed.
+# companyLogoUrl and applyUrl (a sign-up redirect) are noise per row.
+_LISTING_ROW_SKIP = frozenset({"id", "title", "companyLogoUrl", "applyUrl", "companySlug"})
+
+
+def _render_listing_job(job: dict) -> list[str]:
+    """One public job-list entry: title, then its raw fields, then links."""
+    if not isinstance(job, dict) or not (job.get("title") or "").strip():
+        return []
+    values = [
+        _stringify(v)
+        for k, v in job.items()
+        if k not in _LISTING_ROW_SKIP and _stringify(v)
+    ]
+    lines = [f"- **{job['title'].strip()}**" + (f" — {' — '.join(values)}" if values else "")]
+    links = []
+    if job.get("id"):
+        links.append(f"{_ORIGIN}/jobs/{job['id']}")
+    if job.get("companySlug"):
+        links.append(f"{_ORIGIN}/companies/{job['companySlug']}")
+    if links:
+        lines.append(f"  {' · '.join(links)}")
+    return lines
+
+
+def _dump_other_props(props: dict, rendered: set[str]) -> list[str]:
+    lines = []
+    for key, value in props.items():
+        if key in rendered or key in _LISTING_CHROME:
+            continue
+        s = _stringify(value)
+        if s:
+            lines.append(f"- **{key}**: {s}")
+    return lines
+
+
+def _build_job_list_markdown(props: dict, url: str | None) -> str:
+    """``JobsV2Page`` and ``HomeV2Page``: the jobs the page carries."""
+    jobs = [j for j in props.get("jobs") or [] if isinstance(j, dict)]
+    title = (props.get("title") or "").strip() or "Work at a Startup jobs"
+    parts = [f"# {title}", ""]
+    total = props.get("totalJobsCount")
+    summary = []
+    if isinstance(total, int):
+        summary.append(f"**totalJobsCount**: {total:,}")
+    summary.append(f"**shown**: {len(jobs)} (the jobs this page carries)")
+    for key in ("currentRole", "initialQuery"):
+        s = _stringify(props.get(key))
+        if s:
+            summary.append(f"**{key}**: {s}")
+    parts.append(" · ".join(summary))
+    parts.append("")
+
+    if jobs:
+        parts.append("## jobs")
+        parts.append("")
+        for job in jobs:
+            parts.extend(_render_listing_job(job))
+        parts.append("")
+    else:
+        parts.append("No jobs on this page.")
+        parts.append("")
+
+    role_links = [r for r in props.get("roleLinks") or [] if isinstance(r, dict) and r.get("path")]
+    if role_links:
+        parts.append("## roleLinks")
+        parts.append("")
+        parts.extend(f"- {r.get('label')}: {_ORIGIN}{r['path']}" for r in role_links)
+        parts.append("")
+
+    companies = [c for c in props.get("hiringCompanies") or [] if isinstance(c, dict) and c.get("name")]
+    if companies:
+        parts.append("## hiringCompanies")
+        parts.append("")
+        parts.extend(
+            f"- {c['name']}" + (f" — {_ORIGIN}{c['path']}" if c.get("path") else "") for c in companies
+        )
+        parts.append("")
+
+    other = _dump_other_props(
+        props,
+        {"title", "jobs", "totalJobsCount", "currentRole", "initialQuery", "roleLinks", "roles", "hiringCompanies"},
+    )
+    if other:
+        parts.append("## props (other)")
+        parts.append("")
+        parts.extend(other)
+        parts.append("")
+    if url:
+        parts.append(f"**sourceUrl**: {url}")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _build_company_markdown(props: dict, url: str | None) -> str:
+    """``CompanyV2Page``: the company record, its founders and its open jobs."""
+    company = props.get("company") if isinstance(props.get("company"), dict) else {}
+    name = (company.get("name") or "").strip() or "Company"
+    batch = (company.get("batch") or "").strip()
+    parts = [f"# {name}" + (f" ({batch})" if batch else ""), ""]
+
+    meta = [
+        f"- **{k}**: {_stringify(v)}"
+        for k, v in company.items()
+        if k not in _COMPANY_METADATA_SKIP and k not in ("name", "batch") and _stringify(v)
+    ]
+    if meta:
+        parts.append("## company")
+        parts.append("")
+        parts.extend(meta)
+        parts.append("")
+
+    for key in ("hiringDescriptionHtml", "techDescriptionHtml"):
+        md = _html_to_markdown(company.get(key) or "")
+        if md:
+            parts.append(f"## company.{key}")
+            parts.append("")
+            parts.append(md)
+            parts.append("")
+
+    founders = [line for f in company.get("founders") or [] for line in _render_founder(f)]
+    if founders:
+        parts.append("## company.founders")
+        parts.append("")
+        parts.extend(founders)
+        parts.append("")
+
+    jobs = [line for j in company.get("jobs") or [] if (line := _render_job_stub(j))]
+    parts.append("## company.jobs")
+    parts.append("")
+    parts.extend(jobs or ["No open jobs listed."])
+    parts.append("")
+
+    others = [c for c in props.get("otherCompanies") or [] if isinstance(c, dict)]
+    if others:
+        parts.append("## otherCompanies")
+        parts.append("")
+        for other in others:
+            label = other.get("name") or other.get("slug") or ""
+            path = other.get("path") or (f"/companies/{other['slug']}" if other.get("slug") else "")
+            if label:
+                parts.append(f"- {label}" + (f" — {_ORIGIN}{path}" if path else ""))
+        parts.append("")
+
+    other = _dump_other_props(props, {"company", "otherCompanies"})
+    if other:
+        parts.append("## props (other)")
+        parts.append("")
+        parts.extend(other)
+        parts.append("")
+    if url:
+        parts.append(f"**sourceUrl**: {url}")
+    return "\n".join(parts).rstrip() + "\n"
+
+
 def _build_markdown(inertia: dict, url: str | None) -> str | None:
     props = inertia.get("props")
     if not isinstance(props, dict):
         return None
     job = props.get("job")
     if not isinstance(job, dict):
+        component = str(inertia.get("component") or "")
+        if component.endswith("CompanyV2Page") and isinstance(props.get("company"), dict):
+            return _build_company_markdown(props, url)
+        if component.endswith(("JobsV2Page", "HomeV2Page")) and isinstance(props.get("jobs"), list):
+            return _build_job_list_markdown(props, url)
         return None
     company = props.get("company") or {}
     if not isinstance(company, dict):

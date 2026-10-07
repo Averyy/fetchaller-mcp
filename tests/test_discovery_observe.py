@@ -358,17 +358,44 @@ class TestLaunchHardening:
     reason="set FETCHALLER_RUN_BROWSER_CANARY=1 to launch a real browser",
 )
 async def test_capture_browser_does_not_report_headless():
-    """The canary that would have caught the entire misdiagnosis."""
+    """The canary that would have caught the entire misdiagnosis.
+
+    It checks the client hints and a worker as well as the page's UA string:
+    until wafer 0.7.2 the scrubbed UA was a context override, and ``sec-ch-ua``
+    and every worker still announced ``HeadlessChrome``.
+    """
     from patchright.async_api import async_playwright
+    from wafer.browser import harden_page_async, hardened_driver_env
 
     from fetchaller.discovery.observe import _open
 
-    async with async_playwright() as pw:
+    with hardened_driver_env():
+        pw = await async_playwright().start()
+    try:
         browser, context, _config = await _open(pw, headless=True, profile_dir=None)
         try:
             page = await context.new_page()
+            await harden_page_async(page, headless=True)
+            # userAgentData exists only in a secure context; about:blank is not one.
+            await page.route(
+                "https://canary.example/",
+                lambda route: route.fulfill(body="<html></html>", content_type="text/html"),
+            )
+            await page.goto("https://canary.example/")
             agent = await page.evaluate("navigator.userAgent")
             assert "Headless" not in agent, agent
             assert await page.evaluate("navigator.webdriver") is not True
+            brands = await page.evaluate("navigator.userAgentData.brands.map(b => b.brand)")
+            assert brands and not any("Headless" in b for b in brands), brands
+            worker_agent = await page.evaluate(
+                """() => new Promise(resolve => {
+                    const src = 'postMessage(navigator.userAgent)';
+                    const w = new Worker(URL.createObjectURL(new Blob([src])));
+                    w.onmessage = e => resolve(e.data);
+                })"""
+            )
+            assert worker_agent == agent, worker_agent
         finally:
             await (browser.close() if browser is not None else context.close())
+    finally:
+        await pw.stop()

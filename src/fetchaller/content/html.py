@@ -34,6 +34,7 @@ from . import fcc as _fcc
 from . import forums as _forums
 from . import github as _github
 from . import hackernews as _hackernews
+from . import homedepot as _homedepot
 from . import huggingface as _huggingface
 from . import medium as _medium
 from . import molex as _molex
@@ -306,6 +307,7 @@ _JUNK_AND_REDFLAGDEALS_SELECTOR = ", ".join(
 _JUNK_AND_STACKOVERFLOW_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _stackoverflow.SELECTORS_LIST)
 _JUNK_AND_FORUM_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _forums.SELECTORS_LIST)
 _JUNK_AND_COSTCO_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _costco.SELECTORS_LIST)
+_JUNK_AND_HOMEDEPOT_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _homedepot.SELECTORS_LIST)
 _JUNK_AND_PETSMART_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _petsmart.SELECTORS_LIST)
 _JUNK_AND_CRAIGSLIST_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _craigslist.SELECTORS_LIST)
 _JUNK_AND_DIGIKEY_SELECTOR = ", ".join(_JUNK_SELECTORS_LIST + _digikey.SELECTORS_LIST)
@@ -787,6 +789,8 @@ def _detect_site(url: str | None, is_reddit: bool, soup: BeautifulSoup | None = 
         return "ashby"
     if url and _costco.is_costco(url):
         return "costco"
+    if url and _homedepot.is_homedepot_com(url):
+        return "homedepot"
     if url and _petsmart.is_petsmart(url):
         return "petsmart"
     if url and _craigslist.is_craigslist(url):
@@ -841,6 +845,7 @@ _SITE_SELECTORS = {
     "aliexpress": _JUNK_AND_ALIEXPRESS_SELECTOR,
     "amazon": _JUNK_AND_AMAZON_SELECTOR,
     "costco": _JUNK_AND_COSTCO_SELECTOR,
+    "homedepot": _JUNK_AND_HOMEDEPOT_SELECTOR,
     "petsmart": _JUNK_AND_PETSMART_SELECTOR,
     "craigslist": _JUNK_AND_CRAIGSLIST_SELECTOR,
     "digikey": _JUNK_AND_DIGIKEY_SELECTOR,
@@ -927,6 +932,11 @@ def clean_html(html: str, is_reddit: bool = False, url: str | None = None) -> tu
     if site == "vacuumwars":
         _vacuumwars.extract_compare_products(soup, url)
 
+    # Home Depot: a landing page's sections live in __APOLLO_STATE__; its HTML
+    # draws only some of them. Read them before scripts are removed.
+    if site == "homedepot":
+        _homedepot.extract_landing_layout(soup)
+
     # PetSmart: extract rating from JSON-LD before scripts are removed
     if site == "petsmart":
         _petsmart.pre_clean_petsmart(soup)
@@ -988,6 +998,8 @@ def clean_html(html: str, is_reddit: bool = False, url: str | None = None) -> tu
         _soylent.strip_soylent_junk(soup)
     elif site == "vacuumwars":
         _vacuumwars.strip_vacuumwars_junk(soup)
+    elif site == "homedepot":
+        _homedepot.strip_homedepot_junk(soup)
     elif site == "redflagdeals":
         _redflagdeals.strip_rfd_junk(soup)
     elif site == "forum":
@@ -1057,6 +1069,8 @@ def _html_to_markdown_sync(
         markdown = _ashby.postprocess_ashby(markdown)
     elif site == "costco":
         markdown = _costco.postprocess_costco(markdown)
+    elif site == "homedepot":
+        markdown = _homedepot.postprocess_homedepot(markdown)
     elif site == "petsmart":
         markdown = _petsmart.postprocess_petsmart(markdown)
     elif site == "craigslist":

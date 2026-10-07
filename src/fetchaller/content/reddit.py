@@ -1479,22 +1479,6 @@ def _award_summary(data: dict) -> str:
     return f"{int(count):,} awards" + (f" ({', '.join(names)})" if names else "")
 
 
-def _archived_gilding_evidence(data: dict) -> str:
-    if data.get("_fetchaller_reddit_archived_gilded") is not True:
-        return ""
-    count = data.get("_fetchaller_reddit_archived_gilding_count")
-    if (
-        isinstance(count, bool)
-        or not isinstance(count, (int, float))
-        or count <= 0
-    ):
-        return "Gilded in the exact archived Reddit snapshot"
-    noun = "gilding" if int(count) == 1 else "gildings"
-    return (
-        f"{int(count):,} {noun} in the exact archived Reddit snapshot"
-    )
-
-
 def _flair(data: dict, prefix: str) -> tuple[str, list[str]]:
     text = str(data.get(f"{prefix}_flair_text") or "").strip()
     urls: list[str] = []
@@ -1564,9 +1548,6 @@ def format_reddit_post(
     visible_author_flair = f" · author flair: {author_flair}" if author_flair else ""
     award_text = _award_summary(post_data)
     visible_awards = f" · {award_text}" if award_text else ""
-    archived_gilding = _archived_gilding_evidence(post_data)
-    if archived_gilding:
-        urls.append(f"   Archived gilding evidence: {archived_gilding}")
     urls.extend(
         f"   Flair emoji: {flair_url}"
         for flair_url in _unique_urls([*flair_urls, *author_flair_urls])
@@ -1703,11 +1684,6 @@ def _render_post(data: dict, *, _crosspost_depth: int = 0) -> str:
     awards = _award_summary(data)
     if awards:
         lines.extend(["", f"**Awards:** {awards}"])
-    archived_gilding = _archived_gilding_evidence(data)
-    if archived_gilding:
-        lines.extend(
-            ["", f"**Archived gilding evidence:** {archived_gilding}"]
-        )
     event = _event_summary(data)
     if event:
         lines.extend(["", f"**Event:** {event}"])
@@ -1949,9 +1925,6 @@ def _render_comment(
     awards = _award_summary(data)
     if awards:
         lines.extend(["", f"Awards: {awards}"])
-    archived_gilding = _archived_gilding_evidence(data)
-    if archived_gilding:
-        lines.extend(["", f"Archived gilding evidence: {archived_gilding}"])
     rich_urls = _rich_comment_urls(data, body)
     rich_urls.extend(author_flair_urls)
     if rich_urls:
@@ -2735,40 +2708,6 @@ def _render_listing(payload: object, route: RedditRoute, max_chars: int) -> str:
         and (route.subreddit or "").lower() in _SITEWIDE_COMMENT_STREAMS
     ):
         prefix += "\n\n" + _SITEWIDE_COMMENTS_WITHDRAWN
-    if (
-        isinstance(payload, dict)
-        and payload.get("_fetchaller_reddit_provenance")
-        == "wayback_gold_directory"
-    ):
-        timestamp = str(
-            payload.get("_fetchaller_reddit_archive_timestamp") or ""
-        )
-        archived_date = (
-            f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
-            if re.fullmatch(r"\d{14}", timestamp)
-            else "unknown date"
-        )
-        prefix += (
-            "\n\nDirectory state source: exact archived Reddit snapshot "
-            f"(Wayback, {archived_date}). No gold-only communities were "
-            "listed."
-        )
-    if (
-        isinstance(payload, dict)
-        and payload.get("_fetchaller_reddit_provenance") == "wayback"
-    ):
-        timestamp = str(
-            payload.get("_fetchaller_reddit_archive_timestamp") or ""
-        )
-        archived_date = (
-            f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
-            if re.fullmatch(r"\d{14}", timestamp)
-            else "unknown date"
-        )
-        prefix += (
-            "\n\nGilded ordering source: archived Reddit snapshot "
-            f"(Wayback, {archived_date}). Item details: current Reddit API."
-        )
     sections = []
     include_subreddit = (
         route.subreddit is None
@@ -2957,9 +2896,6 @@ def _render_activity_comment(data: dict, index: int) -> str:
     awards = _award_summary(data)
     if awards:
         lines.extend(["", f"Awards: {awards}"])
-    archived_gilding = _archived_gilding_evidence(data)
-    if archived_gilding:
-        lines.extend(["", f"Archived gilding evidence: {archived_gilding}"])
     comment_permalink, parent_context = _comment_navigation(data)
     if comment_permalink or permalink:
         lines.extend(["", f"Permalink: {comment_permalink or permalink}"])
@@ -3264,24 +3200,6 @@ def _render_subreddit_directory(payload: object, route: RedditRoute, max_chars: 
             )
     pagination = _pagination_sections(payload, route.canonical_url)
     prefix = f"# Reddit communities · {route.label or 'directory'}\n\n{len(children)} items returned"
-    if (
-        isinstance(payload, dict)
-        and payload.get("_fetchaller_reddit_provenance")
-        == "wayback_gold_directory"
-    ):
-        timestamp = str(
-            payload.get("_fetchaller_reddit_archive_timestamp") or ""
-        )
-        archived_date = (
-            f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
-            if re.fullmatch(r"\d{14}", timestamp)
-            else "unknown date"
-        )
-        prefix += (
-            "\n\nDirectory state source: exact archived Reddit snapshot "
-            f"(Wayback, {archived_date}). No gold-only communities were "
-            "listed."
-        )
     return _fit_sections(
         prefix,
         sections,
@@ -3463,22 +3381,6 @@ def _render_multi_profile(
     if isinstance(metadata, dict) and metadata.get("_fetch_error"):
         prefix += f"\n\n[Multireddit details unavailable: {metadata['_fetch_error']}]"
     listing = payloads[1] if len(payloads) > 1 else {}
-    if (
-        isinstance(listing, dict)
-        and listing.get("_fetchaller_reddit_provenance") == "wayback"
-    ):
-        timestamp = str(
-            listing.get("_fetchaller_reddit_archive_timestamp") or ""
-        )
-        archived_date = (
-            f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
-            if re.fullmatch(r"\d{14}", timestamp)
-            else "unknown date"
-        )
-        prefix += (
-            "\n\nGilded ordering source: archived Reddit snapshot "
-            f"(Wayback, {archived_date}). Item details: current Reddit API."
-        )
     # Only ``t3``/``t1`` children are rendered below, so restrict the list
     # before counting and numbering: any other kind was silently dropped from
     # the output while still inflating the count.
@@ -4045,20 +3947,6 @@ def _render_collection(payloads: list[object], route: RedditRoute, max_chars: in
     prefix = f"# {title}"
     if route.subreddit:
         prefix += f"\n\nr/{route.subreddit}"
-    if collection.get("_fetchaller_reddit_provenance") == "wayback":
-        timestamp = str(
-            collection.get("_fetchaller_reddit_archive_timestamp") or ""
-        )
-        archived_date = (
-            f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
-            if re.fullmatch(r"\d{14}", timestamp)
-            else "unknown date"
-        )
-        prefix += (
-            "\n\nMetadata source: archived New Reddit snapshot "
-            f"(Wayback, {archived_date}). "
-            "Post details: current Reddit API."
-        )
     if description:
         prefix += f"\n\n{description}"
     requested_ids = collection.get("link_ids") or []

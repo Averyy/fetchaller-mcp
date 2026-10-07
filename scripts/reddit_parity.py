@@ -110,10 +110,6 @@ _EXPECTED_LIVE_ACCESS_ERRORS = {
     "user_downvoted_private": (
         "Error: Reddit account-private activity is not publicly readable."
     ),
-    "user_gilded_given_private": (
-        "Error: Reddit account-private gildings given are not publicly "
-        "readable."
-    ),
 }
 _LOGIN_PAGE = re.compile(
     r"(?im)^\s*(?:#\s*)?(?:log in|sign in)\s*$|"
@@ -250,13 +246,6 @@ _DYNAMIC_LIVE_THREAD_URL = re.compile(
     re.IGNORECASE,
 )
 _LIVE_UPDATE_ID = re.compile(r"(?m)^Update ID: (?P<update>[A-Za-z0-9-]{2,128})$")
-_DYNAMIC_COLLECTION_URL = re.compile(
-    r"https://www\.reddit\.com/r/(?P<subreddit>[A-Za-z0-9_]{1,21})/"
-    r"collection/(?P<collection>[0-9a-f]{8}-[0-9a-f]{4}-"
-    r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/?",
-    re.IGNORECASE,
-)
-_COLLECTION_ITEMS = re.compile(r"(?m)^(\d[\d,]*) items returned$")
 _REVISION_ID = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}\b",
@@ -1506,16 +1495,6 @@ def _counted_output_error(entry: CorpusEntry, text: str) -> str | None:
 
     entry_id = entry.id
     if entry_id in {
-        "collection",
-    }:
-        # This fixed-count branch performs a stricter specialized check.
-        return None
-    if entry_id in {
-        "gilded_global",
-        "gilded_comments_global",
-        "gilded_subreddit",
-        "gilded_comments_subreddit",
-        "user_gilded",
         "user_overview",
     }:
         claimed, error = _count_claim(text, "items")
@@ -1581,7 +1560,6 @@ def _counted_output_error(entry: CorpusEntry, text: str) -> str | None:
         "subreddit_directory_new",
         "subreddit_directory_default",
         "subreddit_directory_search",
-        "subreddit_directory_gold",
     }:
         return _directory_result_cardinality(
             text,
@@ -2015,28 +1993,6 @@ def _semantic_contract_error(entry: CorpusEntry, text: str) -> str | None:
             )
         )
 
-    if entry.id == "subreddit_directory_gold":
-        if not re.search(r"(?m)^0 items returned$", text):
-            return "retired gold-only directory was not exact empty"
-        if _NEXT_PAGE_URL.search(text):
-            return "retired gold-only directory fabricated pagination"
-        return require_all(
-            (
-                (
-                    "exact gold-directory scope",
-                    re.compile(r"(?m)^# Reddit communities · gold$"),
-                ),
-                (
-                    "archived exact-empty provenance",
-                    re.compile(
-                        r"Directory state source: exact archived Reddit "
-                        r"snapshot \(Wayback, 2018-08-23\)\. "
-                        r"No gold-only communities were listed\."
-                    ),
-                ),
-            )
-        )
-
     if entry.id.startswith("listing_"):
         heading = entry.required_any[0]
         if entry.allow_empty and re.search(r"(?m)^0 items returned$", text):
@@ -2105,75 +2061,6 @@ def _semantic_contract_error(entry: CorpusEntry, text: str) -> str | None:
         ):
             return error
         return _comment_semantic_error(text, activity=True)
-
-    if entry.id in {
-        "gilded_global",
-        "gilded_comments_global",
-        "gilded_subreddit",
-        "gilded_comments_subreddit",
-        "user_gilded",
-    }:
-        if not _has_positive_count(text, "items"):
-            return "archived gilded surface returned no current items"
-        if entry.id == "user_gilded":
-            # Only this gilded route is user-scoped. Deriving it inside the
-            # mapping literal would call _entry_username() for the global and
-            # subreddit feeds too, and it rejects their non-user paths.
-            expected_heading = f"# u/{_entry_username(entry)} · gilded"
-        else:
-            expected_heading = {
-                "gilded_global": "# Reddit · gilded",
-                "gilded_comments_global": "# Reddit · comments gilded",
-                "gilded_subreddit": "# r/Python · gilded",
-                "gilded_comments_subreddit": "# r/Python · comments gilded",
-            }[entry.id]
-        if error := require_all(
-            (
-                (
-                    "exact gilded route identity",
-                    re.compile(rf"(?m)^{re.escape(expected_heading)}$"),
-                ),
-                (
-                    "archived ordering/current hydration provenance",
-                    re.compile(
-                        r"Gilded ordering source: archived Reddit snapshot "
-                        r"\(Wayback, \d{4}-\d{2}-\d{2}\)\. "
-                        r"Item details: current Reddit API\."
-                    ),
-                ),
-                ("pagination continuation", _NEXT_PAGE_URL),
-            )
-        ):
-            return error
-        returned = next(
-            (
-                int(match.group("count").replace(",", ""))
-                for match in _POSITIVE_RETURN_COUNT.finditer(text)
-                if match.group("label") == "items"
-            ),
-            0,
-        )
-        comment_cards = len(_ACTIVITY_COMMENT_HEADING.findall(text))
-        post_cards = len(_POST_CARD.findall(text))
-        if comment_cards + post_cards != returned:
-            return "one or more gilded items lacked substantive current fields"
-        archived_evidence = len(
-            re.findall(
-                r"Archived gilding evidence: (?:Gilded|[1-9][\d,]* "
-                r"gildings?) in the exact archived Reddit snapshot",
-                text,
-            )
-        )
-        if archived_evidence != returned:
-            return "one or more gilded items lacked exact archived award evidence"
-        if entry.id in {
-            "gilded_comments_global",
-            "gilded_comments_subreddit",
-        } and comment_cards != returned:
-            return "comments-only gilded surface contained a non-comment item"
-        if comment_cards:
-            return _comment_semantic_error(text, activity=True)
-        return None
 
     if entry.id == "user_overview":
         if not _has_positive_count(text, "items"):
@@ -2812,29 +2699,6 @@ def _semantic_contract_error(entry: CorpusEntry, text: str) -> str | None:
             )
         )
 
-    if entry.id == "collection":
-        count_match = _COLLECTION_ITEMS.search(text)
-        post_urls = _REDDIT_POST_URL.findall(text)
-        if count_match is None or int(count_match.group(1).replace(",", "")) != 28:
-            return "official archived collection did not return all 28 posts"
-        if len(post_urls) != 28 or len(set(post_urls)) != 28:
-            return "collection did not render 28 unique current post URLs"
-        if len(_POST_CARD.findall(text)) != 28:
-            return "collection did not render 28 substantive current post cards"
-        return require_all(
-            (
-                (
-                    "archived metadata provenance/date",
-                    re.compile(
-                        r"Metadata source: archived New Reddit snapshot "
-                        r"\(Wayback, \d{4}-\d{2}-\d{2}\)\."
-                    ),
-                ),
-                ("current post provenance", "Post details: current Reddit API."),
-                ("ordered posts section", re.compile(r"(?m)^## Posts$")),
-                ("post metadata", _POST_CARD),
-            )
-        )
 
     if entry.id in {"browse_page_1", "search_page_1"}:
         expected_heading = (
@@ -3057,28 +2921,6 @@ async def _call(session: ClientSession, entry: CorpusEntry, directory: Path, sta
             "HTML fallback lacked substantive public Reddit Premium content"
         )
         return evidence
-    if entry.kind == "collection":
-        required = (
-            "Metadata source: archived New Reddit snapshot",
-            "Post details: current Reddit API.",
-            "## Posts",
-        )
-        if not all(marker in text for marker in required):
-            evidence.detail = (
-                "collection lacked explicit archived-metadata/current-post "
-                "provenance"
-            )
-            return evidence
-        count_match = _COLLECTION_ITEMS.search(text)
-        if (
-            count_match is None
-            or int(count_match.group(1).replace(",", "")) <= 0
-            or _REDDIT_POST_URL.search(text) is None
-        ):
-            evidence.detail = (
-                "collection lacked non-empty current Reddit post hydration"
-            )
-            return evidence
     if entry.raw and not _valid_raw_new_reddit_html(text):
         evidence.detail = "raw HTML was not a semantic New Reddit app/content tree"
         return evidence
@@ -3770,38 +3612,7 @@ async def _discover_live_targets(
             }
         )
 
-    collection_source, evidence = await _discovery_call(
-        session,
-        directory,
-        "official_deprecated_collection",
-        "fetch",
-        {
-            "url": (
-                "https://www.reddit.com/r/modnews/comments/1am4b0e/"
-                "deprecating_post_collections_mark_as_oc_and/"
-            ),
-            "maxTokens": 100_000,
-            "timeout": 90,
-        },
-    )
-    records.append(evidence)
-    collection_match = _DYNAMIC_COLLECTION_URL.search(collection_source or "")
-    if not (
-        collection_source
-        and "# Deprecating Post Collections" in collection_source
-        and "several mod-oriented features will be removed" in collection_source
-        and collection_match is not None
-    ):
-        evidence.status = "failed"
-        evidence.detail = (
-            "official Reddit deprecation evidence lacked an exact archived "
-            "collection URL"
-        )
-    else:
-        targets["collection"] = collection_match.group(0).rstrip("/") + "/"
-
     required = {
-        "collection",
         "thread",
         "thread_global_permalink",
         "thread_gallery",
@@ -3926,7 +3737,6 @@ _REQUIRED_DISCOVERY_STAGES = {
     "discovery_current_public_multireddit": frozenset({"discovery"}),
     "discovery_current_live_thread": frozenset({"discovery"}),
     "discovery_current_live_update": frozenset({"discovery"}),
-    "discovery_official_deprecated_collection": frozenset({"discovery"}),
     "dynamic_target_inventory": frozenset({"discovery"}),
 }
 

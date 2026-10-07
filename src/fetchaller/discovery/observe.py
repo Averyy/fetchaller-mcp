@@ -20,13 +20,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from wafer.browser import hardened_launch_config, scrub_headless_ua
+from wafer.browser import (
+    harden_page_async,
+    hardened_driver_env,
+    hardened_launch_config,
+    scrub_headless_ua,
+)
 
 from ..config import get_wafer_cache_dir
 from ..ratelimit import discovery_limiter
@@ -456,25 +462,34 @@ def default_profile_dir() -> str:
     return str(root / "discovery" / "browser-profile")
 
 
+# Cut off the network for the launch that only reads the UA: its background
+# traffic (Chrome's time sync) would carry the ``HeadlessChrome`` UA it started
+# with. wafer's documented recipe.
+_OFFLINE_ARGS = ("--proxy-server=http://127.0.0.1:9", "--disable-background-networking")
+
 _scrubbed_ua: str | None = None
+_probe_error: str | None = None
 
 
 async def _probe_user_agent(pw, launch: dict) -> str | None:
-    """Read the launched browser's own UA and strip the ``HeadlessChrome`` token.
+    """Read the browser's own UA from an offline launch and strip ``HeadlessChrome``.
 
-    ``--headless=new`` does not remove it, and that token alone earns degraded
-    service from sites that challenge nothing otherwise. Read and scrub rather
-    than compose one, so the Chrome version stays truthful.
+    It has to go on the command line (``hardened_launch_config(user_agent=…)``):
+    service and shared workers read Chrome's built-in default before any page
+    override can reach them, and that default says ``HeadlessChrome``. Read and
+    scrub rather than compose one, so the Chrome version stays truthful.
 
-    Cached per process: the persistent-profile path needs the value *before* its
-    context exists, so it cannot probe its own.
+    Cached per process: every launch after the first reuses it.
     """
-    global _scrubbed_ua
+    global _scrubbed_ua, _probe_error
     if _scrubbed_ua is not None:
         return _scrubbed_ua
+    offline = dict(launch, args=list(launch["args"]) + list(_OFFLINE_ARGS))
     try:
-        browser = await pw.chromium.launch(**launch)
-    except Exception:  # noqa: BLE001
+        browser = await pw.chromium.launch(**offline)
+    except Exception as exc:  # noqa: BLE001 - reported by the caller
+        # Most often branded Chrome is not installed (channel="chrome").
+        _probe_error = f"could not launch Chrome: {str(exc).splitlines()[0][:200]}"
         return None
     try:
         page = await browser.new_page()
@@ -489,22 +504,19 @@ async def _probe_user_agent(pw, launch: dict) -> str | None:
     return _scrubbed_ua
 
 
-async def _register_init_scripts(page, scripts) -> None:
-    """Install wafer's headless corrections via CDP.
+def _context_options(headless: bool) -> dict:
+    """Page geometry, as wafer's own solver sets it.
 
-    Registered through ``Page.addScriptToEvaluateOnNewDocument`` after
-    ``Page.enable``. The CDP session is deliberately **not** detached
-    afterwards — detaching unregisters them.
+    Headless on macOS and headed, the launch already sized a real window, so
+    no viewport is emulated: emulating one replaces the screen with it and
+    leaves the top document disagreeing with its iframes. Headless elsewhere
+    has no window to size. Never a context-level ``user_agent=``: Playwright
+    attaches its own client-hint metadata to it, and cross-site iframes then
+    report ``architecture: x86`` whatever the host.
     """
-    if not scripts:
-        return
-    try:
-        cdp = await page.context.new_cdp_session(page)
-        await cdp.send("Page.enable")
-        for script in scripts:
-            await cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": script})
-    except Exception as exc:  # noqa: BLE001 - corrections are best-effort
-        logger.info("discovery: could not register init scripts (%s)", exc)
+    if not headless or sys.platform == "darwin":
+        return {"no_viewport": True}
+    return {"viewport": {"width": 1440, "height": 900}, "device_scale_factor": 1}
 
 
 async def _open(pw, *, headless: bool, profile_dir: str | None):
@@ -513,35 +525,57 @@ async def _open(pw, *, headless: bool, profile_dir: str | None):
     **The launch configuration comes from wafer, not from a flag list copied
     here**, so a Chrome bump on wafer's side reaches discovery. It strips
     ``--enable-automation`` — the strongest single automation signal — and
-    Playwright's ``--force-color-profile=srgb``, and switches to
-    ``--headless=new``.
+    Playwright's ``--force-color-profile=srgb``, switches to
+    ``--headless=new``, and in headless mode puts the scrubbed UA on the
+    command line. Every page then needs :func:`harden_page_async` before its
+    first navigation; :func:`capture` does that.
+
+    It launches branded Chrome (``channel="chrome"``). Playwright's default
+    headless binary is chrome-headless-shell, which ignores ``--headless=new``
+    and brands its workers ``HeadlessChrome`` whatever the page is told.
 
     This is not defensive tuning. A bare ``headless=True`` launch announces
     ``HeadlessChrome/…`` in its user agent, and that alone earned Meta's rate
     limiter and Cloudflare's challenge on Uber's prefetches. Both produced
     *degraded answers that were then recorded as facts about those boards* —
     three wrong verdicts between them. A flagged browser does not fail loudly;
-    it quietly measures something else.
+    it quietly measures something else. Until wafer 0.7.2 the scrubbed UA was
+    only a context override, so ``sec-ch-ua`` and every worker still said
+    ``HeadlessChrome``.
 
     A persistent profile is preferred because a blank one every pass makes the
     origin see a brand-new anonymous visitor each time. It falls back to an
     ephemeral browser when the directory is locked by a concurrent pass.
     """
-    config = hardened_launch_config(headless=headless)
+    user_agent = None
+    if headless:
+        base = hardened_launch_config(headless=True)
+        user_agent = await _probe_user_agent(
+            pw,
+            {
+                "channel": "chrome",
+                "headless": True,
+                "args": list(base.args),
+                "ignore_default_args": list(base.ignore_default_args),
+            },
+        )
+        if user_agent is None:
+            raise DiscoveryUnavailableError(
+                f"could not read the browser's user agent ({_probe_error or 'the probe page did not answer'})"
+            )
+    config = hardened_launch_config(headless=headless, user_agent=user_agent)
     launch = {
+        "channel": "chrome",
         "headless": headless,
         "args": list(config.args),
         "ignore_default_args": list(config.ignore_default_args),
     }
-    viewport = {"width": 1440, "height": 900}
-    user_agent = await _probe_user_agent(pw, launch)
+    options = _context_options(headless)
 
     if profile_dir:
         try:
             Path(profile_dir).mkdir(parents=True, exist_ok=True)
-            context = await pw.chromium.launch_persistent_context(
-                profile_dir, viewport=viewport, user_agent=user_agent, **launch
-            )
+            context = await pw.chromium.launch_persistent_context(profile_dir, **options, **launch)
             return None, context, config
         except Exception as exc:  # noqa: BLE001 - locked or unwritable
             logger.info("discovery: persistent profile unavailable (%s); using a fresh one", exc)
@@ -550,7 +584,7 @@ async def _open(pw, *, headless: bool, profile_dir: str | None):
         browser = await pw.chromium.launch(**launch)
     except Exception as exc:  # noqa: BLE001
         raise DiscoveryUnavailableError(f"could not start a browser: {exc}") from exc
-    context = await browser.new_context(viewport=viewport, user_agent=user_agent)
+    context = await browser.new_context(**options)
     return browser, context, config
 
 
@@ -705,11 +739,18 @@ async def capture(
     # "this board has no API" rather than "you were throttled".
     await discovery_limiter.wait()
 
-    async with async_playwright() as pw:
-        browser, context, config = await _open(pw, headless=headless, profile_dir=profile_dir)
+    # Started under wafer's driver environment so a shared worker or popup
+    # waits for harden_page_async instead of reading empty client hints first.
+    with hardened_driver_env():
+        playwright = async_playwright()
+        pw = await playwright.start()
+    try:
+        browser, context, _config = await _open(pw, headless=headless, profile_dir=profile_dir)
         try:
             page = context.pages[0] if context.pages else await context.new_page()
-            await _register_init_scripts(page, config.init_scripts)
+            # Before the first navigation: the page, its iframes and workers
+            # all get the scrubbed UA with full client-hint metadata.
+            await harden_page_async(page, headless=headless)
 
             # Arrive at the site root before the deep link, unless this profile
             # already holds cookies for the origin. Landing straight on a deep
@@ -776,6 +817,9 @@ async def capture(
                 # A persistent context owns its own lifetime; there is no
                 # separate browser object to close.
                 await (browser.close() if browser is not None else context.close())
+    finally:
+        with contextlib.suppress(Exception):
+            await pw.stop()
 
     return Capture(
         url=final_url,

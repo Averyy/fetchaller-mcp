@@ -1,5 +1,6 @@
 """Google search via Opera Mini SSR endpoint."""
 
+import asyncio
 import re
 import sys
 from datetime import UTC, datetime
@@ -7,6 +8,7 @@ from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 
+from ..config import get_wafer_cache_dir
 from ..content._isolated import IsolatedProcessingError, run_isolated
 from ..security.xss import redact_secrets_for_log, sanitize_for_log
 from .models import SearchResult
@@ -17,6 +19,15 @@ _MAX_TITLE_CHARS = 500
 _MAX_URL_CHARS = 8_192
 _MAX_SNIPPET_CHARS = 1_000
 _PARSER_TIMEOUT = 10.0
+
+# Tokenized result links (see _result_target) are resolved through Google's
+# own redirect, a few at a time, each bounded well inside the engine timeout.
+_GOOGLE_REDIRECT = "https://www.google.com/url?"
+_REDIRECT_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,}")
+_REDIRECT_TIMEOUT = 3.0
+_REDIRECT_CONCURRENCY = 5
+_redirect_session = None
+_redirect_session_lock = asyncio.Lock()
 
 # Google internal URLs to filter out
 _GOOGLE_INTERNAL_PREFIXES = (
@@ -55,6 +66,30 @@ def _error_detail(error: Exception) -> str:
     )
     detail = sanitize_for_log(redact_secrets_for_log(bounded), max_length=200)
     return f"{type(error).__name__}: {detail}"
+
+
+_TITLE_RE = re.compile(r"<title[^>]*>([^<]{0,80})", re.IGNORECASE)
+
+
+def _shape_summary(html: str) -> str:
+    """Counts that say which way an unparsed Google page differs.
+
+    A results page whose link format changes still answers 200 at the same
+    size, so the length alone (all this used to log) cannot tell a new link
+    shape from a consent page or an empty layout. These are plain substring
+    counts on markup already bounded by ``_MAX_SEARCH_HTML_CHARS``.
+    """
+    title = _TITLE_RE.search(html)
+    counts = {
+        "url_rel": html.count('href="/url?'),
+        "url_abs": html.count('href="https://www.google.com/url?'),
+        "ext": len(re.findall(r'href="https?://(?![^"/]*google\.)', html)),
+        "h3": html.count("<h3"),
+        "main": int('id="main"' in html),
+        "consent": int("consent.google" in html),
+    }
+    parts = " ".join(f"{k}={v}" for k, v in counts.items())
+    return f"{parts} title={title.group(1).strip()!r}" if title else parts
 
 
 def is_captcha(response) -> bool:
@@ -113,6 +148,40 @@ def is_empty_results_page(html: str) -> bool:
     return True
 
 
+def _result_target(href: object) -> str | None:
+    """The destination a Google ``/url?`` result link redirects to.
+
+    The destination is the ``q`` parameter, wherever it sits: Google used to
+    write it first (``/url?q=<dest>&sa=U``) and on 2026-10-05 began
+    prefixing it (``/url?opi=89978449&q=<dest>&sa=U&ved=...``). Matching the
+    literal ``/url?q=`` prefix then dropped every organic result and the
+    engine reported "Unexpected Google response shape" on a full page.
+    The value is percent-decoded only (``unquote``, not ``unquote_plus``), as
+    Google percent-encodes the destination itself.
+
+    Some responses (about one in thirty on 2026-10-07, at random across
+    otherwise identical cold sessions) carry no destination at all:
+    ``/url?opi=..&q=CAESaQHr..&sa=U&uoh=3&ved=..&usg=..``, where ``q`` is an
+    opaque token and the page shows only a breadcrumb. Only Google's redirect
+    knows where those go, so the absolute redirect URL is returned for
+    :func:`_resolve_redirects` to follow one hop.
+    """
+    if not isinstance(href, str) or not href.startswith("/url?"):
+        return None
+    query = href[len("/url?") :]
+    for part in query.split("&"):
+        if part.startswith("q="):
+            target = unquote(part[2:])
+            if _REDIRECT_TOKEN_RE.fullmatch(target):
+                return _GOOGLE_REDIRECT + query
+            return target
+    return None
+
+
+def _is_google_redirect(url: str) -> bool:
+    return url.startswith(_GOOGLE_REDIRECT)
+
+
 def extract_results(html: str) -> list[SearchResult]:
     """Extract search results from Google SSR HTML."""
     soup = BeautifulSoup(html, "html.parser")
@@ -120,19 +189,16 @@ def extract_results(html: str) -> list[SearchResult]:
     seen_urls = set()
 
     for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not href.startswith("/url?q="):
+        url = _result_target(a["href"])
+        if url is None:
             continue
-
-        # Extract actual URL
-        url = unquote(href.split("/url?q=")[1].split("&")[0])
 
         # Skip non-HTTP URLs (e.g., "#", "javascript:", relative paths)
         if not url.startswith(("http://", "https://")) or len(url) > _MAX_URL_CHARS:
             continue
 
-        # Filter Google internal URLs
-        if any(url.startswith(prefix) for prefix in _GOOGLE_INTERNAL_PREFIXES):
+        # Filter Google internal URLs (a tokenized result is resolved later)
+        if not _is_google_redirect(url) and any(url.startswith(prefix) for prefix in _GOOGLE_INTERNAL_PREFIXES):
             continue
 
         # Skip news carousel items — walk up 3 levels looking for carousel markers
@@ -207,7 +273,7 @@ def extract_results(html: str) -> list[SearchResult]:
                 from copy import copy
 
                 sib_copy = copy(sibling)
-                for stacked_link in sib_copy.find_all("a", href=lambda h: h and h.startswith("/url?q=")):
+                for stacked_link in sib_copy.find_all("a", href=lambda h: _result_target(h) is not None):
                     stacked_link.decompose()
                 text = sib_copy.get_text(separator=" ", strip=True)
                 if text and len(text) > 20:
@@ -253,6 +319,80 @@ def extract_results(html: str) -> list[SearchResult]:
 def _parse_response(html: str) -> tuple[list[SearchResult], bool]:
     results = extract_results(html)
     return results, not results and (is_explicit_no_results(html) or is_empty_results_page(html))
+
+
+async def _get_redirect_session():
+    """A session that stops at the first redirect, for tokenized result links.
+
+    The same Opera Mini identity as the search that produced the links, with
+    ``follow_redirects=False`` so the ``Location`` is read and the result page
+    is never fetched. (Before wafer 0.7.3 Opera Mini followed redirects
+    whatever the session said, so this used the default profile.)
+    """
+    global _redirect_session
+    if _redirect_session is None:
+        async with _redirect_session_lock:
+            if _redirect_session is None:
+                from wafer import AsyncSession, Profile
+
+                _redirect_session = AsyncSession(
+                    profile=Profile.OPERA_MINI,
+                    follow_redirects=False,
+                    max_rotations=0,
+                    rate_limit=0.0,
+                    cache_dir=get_wafer_cache_dir(),
+                )
+    return _redirect_session
+
+
+def close_redirect_session() -> None:
+    global _redirect_session
+    _redirect_session = None
+
+
+async def _redirect_target(session, url: str, semaphore: asyncio.Semaphore) -> str | None:
+    """Where one Google redirect points, read from its ``Location``; never followed."""
+    async with semaphore:
+        try:
+            response = await session.get(url, timeout=_REDIRECT_TIMEOUT)
+        except Exception as e:  # noqa: BLE001 - one unresolved link is dropped, not fatal
+            _log(f"google redirect error: {type(e).__name__}")
+            return None
+    if not 300 <= response.status_code < 400:
+        return None
+    location = response.headers.get("location") or ""
+    if not location.startswith(("http://", "https://")) or len(location) > _MAX_URL_CHARS:
+        return None
+    if any(location.startswith(prefix) for prefix in _GOOGLE_INTERNAL_PREFIXES):
+        return None
+    return location
+
+
+async def _resolve_redirects(results: list[SearchResult]) -> list[SearchResult]:
+    """Replace tokenized result links with their destinations.
+
+    A link that does not resolve is dropped and counted in the log, and the
+    merged list is de-duplicated again now that destinations are known.
+    """
+    session = await _get_redirect_session()
+    semaphore = asyncio.Semaphore(_REDIRECT_CONCURRENCY)
+    pending = [r for r in results if _is_google_redirect(r.url)]
+    targets = await asyncio.gather(*(_redirect_target(session, r.url, semaphore) for r in pending))
+    resolved = dict(zip((id(r) for r in pending), targets, strict=True))
+    _log(f"google tokenized result links: resolved {sum(t is not None for t in targets)} of {len(pending)}")
+
+    out: list[SearchResult] = []
+    seen: set[str] = set()
+    for result in results:
+        url = resolved.get(id(result), result.url) if _is_google_redirect(result.url) else result.url
+        if url is None:
+            continue
+        key = url.split("#")[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(result if url == result.url else SearchResult(title=result.title, url=url, snippet=result.snippet))
+    return out
 
 
 async def search_google(session, query: str, page: int = 1) -> tuple[list[SearchResult], bool, str | None]:
@@ -312,7 +452,12 @@ async def search_google(session, query: str, page: int = 1) -> tuple[list[Search
         if explicit_no_results:
             _log("google explicit zero-results response")
             return [], False, None
-        _log(f"google unexpected 200 response shape (response_chars={len(response.text)})")
+        _log(f"google unexpected 200 response shape (response_chars={len(html)} {_shape_summary(html)})")
         return [], False, "Unexpected Google response shape (HTTP 200)"
+
+    if any(_is_google_redirect(r.url) for r in results):
+        results = await _resolve_redirects(results)
+        if not results:
+            return [], False, "Google returned only tokenized result links and none resolved"
 
     return results, False, None

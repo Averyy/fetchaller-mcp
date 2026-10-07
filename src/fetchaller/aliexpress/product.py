@@ -893,7 +893,12 @@ def _format_output(
     # Reviews section (appended to product data, or standalone if we only have reviews)
     if isinstance(reviews_data, dict) and "error" not in reviews_data:
         stats = _as_dict(reviews_data.get("productEvaluationStatistic"))
-        if stats:
+        if stats and stats.get("totalNum") in (0, "0"):
+            # An unreviewed item reports averageStar 0.0; printed as a rating
+            # that reads as "rated zero stars", which is a different claim.
+            lines.append("Rating: no reviews yet")
+            lines.append("")
+        elif stats:
             avg = bounded_number_text(
                 stats.get("evarageStar"),
                 minimum=0,
