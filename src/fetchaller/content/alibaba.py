@@ -111,6 +111,28 @@ def extract_search_data(html: str) -> dict | None:
     return None
 
 
+def is_zero_result_page(html: str) -> bool:
+    """Whether Alibaba answered the search with its "did not match any products" page.
+
+    That page carries its data under ``_zero`` instead of ``_offer_list``, or
+    sends an ``_offer_list`` whose ``offerResultData`` has no offers and a
+    ``totalCount`` of 0. Either way it is Alibaba's answer, not a page the
+    extractor failed to read.
+    """
+    for var_name in (
+        "window.__page__data_sse10._zero",
+        "window.__page__data_sse10._offer_list",
+    ):
+        data = _extract_json_var(html, var_name)
+        result = data.get("offerResultData") if isinstance(data, dict) else None
+        if not isinstance(result, dict):
+            continue
+        total = result.get("totalCount")
+        if result.get("offers") == [] and type(total) is int and total == 0:
+            return True
+    return False
+
+
 def extract_product_data(html: str) -> dict | None:
     """Extract product data from Alibaba.com product page HTML.
 

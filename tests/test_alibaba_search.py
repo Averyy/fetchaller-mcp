@@ -18,7 +18,7 @@ from fetchaller.alibaba.search import (
     _parse_search_html,
     search_alibaba,
 )
-from fetchaller.content.alibaba import extract_search_data
+from fetchaller.content.alibaba import extract_search_data, is_zero_result_page
 
 # ---------------------------------------------------------------------------
 # JSON extraction from SSR HTML
@@ -456,6 +456,45 @@ class TestParseSearchHtml:
         assert _parse_search_html(html, "test", 1) is None
 
 
+def _sse10_page(**sections: object) -> str:
+    """A search page as Alibaba ships it: one assignment per section."""
+    scripts = "".join(
+        f"<script>window.__page__data_sse10.{name} = {json.dumps(data)};</script>"
+        for name, data in sections.items()
+    )
+    return f"<html><script>window.__page__data_sse10={{}};</script>{scripts}</html>"
+
+
+_ZERO_RESULT = {"offerResultData": {"firstScreen": True, "offers": [], "totalCount": 0}}
+
+
+class TestZeroResultPage:
+    """Alibaba's own "did not match any products" answer."""
+
+    def test_zero_section(self):
+        assert is_zero_result_page(_sse10_page(_header={}, _zero=_ZERO_RESULT))
+
+    def test_empty_offer_list_with_zero_total(self):
+        assert is_zero_result_page(_sse10_page(_offer_list=_ZERO_RESULT))
+
+    @pytest.mark.parametrize(
+        "offer_result",
+        [
+            {"offers": [{"title": "LED strip"}], "totalCount": 120000},
+            {"offers": [], "totalCount": 48},
+            {"offers": [], "totalCount": False},
+            {"offers": []},
+            {"totalCount": 0},
+        ],
+    )
+    def test_anything_else_is_not_a_zero_result(self, offer_result):
+        html = _sse10_page(_offer_list={"offerResultData": offer_result})
+        assert not is_zero_result_page(html)
+
+    def test_page_without_search_data(self):
+        assert not is_zero_result_page("<html><body>Captcha Interception</body></html>")
+
+
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
@@ -684,3 +723,17 @@ class TestSearchIntegration:
 
         result = await search_alibaba("widget")
         assert "error" in result
+        assert "Could not extract product data" in result["error"]
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_zero_result_page_reports_alibabas_answer(self, mock_fetch):
+        """Alibaba's "did not match" page is its answer, not an extraction failure."""
+        mock_fetch.return_value = {"content": _sse10_page(_header={}, _zero=_ZERO_RESULT)}
+
+        result = await search_alibaba("led strip")
+
+        assert "content" not in result
+        assert 'no products match "led strip"' in result["error"]
+        assert "retrying may return them" in result["error"]
+        assert "Could not extract" not in result["error"]

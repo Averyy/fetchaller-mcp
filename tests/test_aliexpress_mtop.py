@@ -338,6 +338,7 @@ class TestMTopClient:
             None,
             "0123456789abcdef0123456789abcdef_1700000000",
             "0123456789abcdef0123456789abcdef_1700000000",
+            "0123456789abcdef0123456789abcdef_1700000000",
         ]
         mock_session.get = AsyncMock(
             side_effect=[
@@ -371,7 +372,7 @@ class TestMTopClient:
         mock_session = MagicMock()
         mock_session.browser_solve_challenge = AsyncMock(return_value=True)
         browser_token = "0123456789abcdef0123456789abcdef_1700000000"
-        mock_session.get_cookie.side_effect = [None, browser_token, browser_token]
+        mock_session.get_cookie.side_effect = [None, browser_token, browser_token, browser_token]
         mock_session.get = AsyncMock(
             side_effect=[
                 _mock_resp(
@@ -435,6 +436,43 @@ class TestMTopClient:
         assert result["ret"] == ["SUCCESS"]
         assert bootstrap_calls == 2
         assert client._do_request.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_tmd_solve_that_drops_the_jar_token_bootstraps_before_retry(self):
+        """wafer 0.7.6: a primed session's _m_h5_tk was gone from the jar after the solve."""
+        client = MTopClient(browser_solver=object())
+        client._set_token_cookie("primedtoken_1700000000000")
+        challenge_url = (
+            "https://acs.aliexpress.com/_____tmd_____/punish?"
+            "x5secdata=issued-token"
+        )
+        mock_session = MagicMock()
+        mock_session.browser_solve_challenge = AsyncMock(return_value=True)
+        mock_session.get_cookie.return_value = None  # the jar after the solve
+        client._session = mock_session
+        bootstrap_calls = 0
+
+        async def bootstrap(_deadline=None):
+            nonlocal bootstrap_calls
+            bootstrap_calls += 1
+            client._set_token_cookie("postsolve_1700000000001")
+
+        client._bootstrap_token = bootstrap
+        signed_with = []
+
+        async def do_request(_api, _version, _data):
+            signed_with.append(client._token)
+            if len(signed_with) == 1:
+                return {"ret": ["FAIL_SYS_USER_VALIDATE::blocked"], "data": {"url": challenge_url}}
+            return {"ret": ["SUCCESS"], "data": {"result": {}}}
+
+        client._do_request = AsyncMock(side_effect=do_request)
+
+        result = await client.request("mtop.test.api", "1.0", {})
+
+        assert result["ret"] == ["SUCCESS"]
+        assert bootstrap_calls == 1
+        assert signed_with == ["primedtoken", "postsolve"]
 
     @pytest.mark.asyncio
     async def test_tmd_post_clearance_bootstrap_failure_does_not_retry_unsigned(self):
@@ -522,7 +560,7 @@ class TestMTopClient:
     async def test_concurrent_issued_tmd_recovery_shares_one_browser_solve(self):
         """A shared clearance must unblock every waiting MTop retry."""
         client = MTopClient(browser_solver=object())
-        client._token = "old_token"
+        client._token = "oldtoken"
         client._token_time = 9999999999.0
         first_url = (
             "https://acs.aliexpress.com/_____tmd_____/punish?x5secdata=first"
@@ -558,6 +596,7 @@ class TestMTopClient:
 
         mock_session = MagicMock()
         mock_session.browser_solve_challenge = AsyncMock(side_effect=solve)
+        mock_session.get_cookie.return_value = "oldtoken_1700000000"
         client._session = mock_session
         client._do_request = AsyncMock(side_effect=do_request)
 

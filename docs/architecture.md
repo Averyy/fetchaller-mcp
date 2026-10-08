@@ -19,7 +19,7 @@ sensor script, and passing that is wafer's. But the page's data comes from the
 site's own federation-gateway GraphQL, which answers plainly, so
 `src/fetchaller/homedepot/` reads that instead — finding a request is content
 work. Pages with no such source (`/c/` articles) still go through the HTML path
-and wafer's browser solver, which clears the challenge on macOS (wafer >= 0.7.3 returns the server's own document) but not yet in the Linux image, where the solve times out (`~/code/wafer/todo-akamai-solve-fails-in-linux-image.md`).
+and wafer's browser solver, which clears the challenge on macOS (wafer >= 0.7.3) and in the Linux image (wafer >= 0.7.6, which renders WebGL on SwiftShader where there is no GPU; Akamai refused Mesa's llvmpipe), returning the server's own document. The gateway session has no `cache_dir`: wafer's cookie cache holds solver cookies, and a failed solve's flagged Akamai cookies, carried into gateway POSTs, got the gateway refused (HTTP 206) for ~20 minutes at a time.
 
 fetchaller injects wafer's shared `BrowserSolver` into sessions and, when
 configured, launches it once during startup readiness preflight. All challenge

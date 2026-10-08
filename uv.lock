@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "fetchaller-mcp"
-version = "3.8.3"
+version = "3.8.4"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -428,7 +428,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.3" },
+    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.6" },
 ]
 provides-extras = ["dev"]
 
@@ -1629,15 +1629,15 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.7.3"
+version = "0.7.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cf/75/b3c4fe388a693ac7689ff725f6b6a76a94d2cbde0873ef4fa44819598885/wafer_py-0.7.3.tar.gz", hash = "sha256:f488e60567bb3202b49246abb36703dc60c78fa1aabcedffd55be875c7cab088", size = 1636635, upload-time = "2026-10-07T19:39:38.704Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/63/740422a45c40a1e760c1a06a5f1787fd3a6978c2a3fd9a3eaa11b32c3097/wafer_py-0.7.6.tar.gz", hash = "sha256:5a734001b54fbe01927bdec6aa8a685358bfd72cb129e389c4dab846650b65ec", size = 1661440, upload-time = "2026-10-08T18:08:23.329Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e4/fa/05fea6b227482f3defbb1bde6c7653d5fabe8acd7e3b09c31b9014654eaa/wafer_py-0.7.3-py3-none-any.whl", hash = "sha256:de91b7fa33c528c46f4666d2067c60bd5a3902e2cb23dc6d9f8fc190e2410903", size = 606922, upload-time = "2026-10-07T19:39:36.65Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/b9/9bed18c87c81fe4d7cd6cda77ce4b5e38b02841bd6eb177a4d8887d2099e/wafer_py-0.7.6-py3-none-any.whl", hash = "sha256:d326ba068b116326ff1dc2bc656079c8ad2f8411f37f23932874e92474322d33", size = 616871, upload-time = "2026-10-08T18:08:21.3Z" },
 ]
 
 [package.optional-dependencies]

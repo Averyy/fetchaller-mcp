@@ -1018,7 +1018,11 @@ async def _fetch_mtop(
                 _log(f"MTop blocked ({api_name})")
                 return None
 
-            _log(f"MTop {api_name} failed")
+            # Name MTop's own code (``FAIL_SYS_TOKEN_EXOIRED``, ...), not just
+            # "failed": after a solved captcha the retry was failing with no
+            # way to tell why from the log.
+            codes = [part.split("::", 1)[0] for part in ret_str.split() if "::" in part]
+            _log(f"MTop {api_name} failed ({', '.join(codes[:3])[:120] or 'no ret code'})")
         except TimeoutError:
             raise
         except Exception as e:

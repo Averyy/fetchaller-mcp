@@ -13,6 +13,7 @@ import json
 import pytest
 import wafer
 
+from fetchaller.config import get_wafer_cache_dir, set_wafer_cache_dir
 from fetchaller.homedepot import ca, com, page
 from fetchaller.homedepot.render import (
     ca_price_line,
@@ -395,6 +396,20 @@ async def _resolve(value):
 
 
 class TestGateway:
+    async def test_session_does_not_share_the_solver_cookie_cache(self, monkeypatch, tmp_path):
+        """A failed page solve's flagged Akamai cookies must never reach the gateway."""
+        made = []
+        monkeypatch.setattr(com.wafer, "AsyncSession", lambda **kwargs: made.append(kwargs) or object())
+        monkeypatch.setattr(com, "_session", None)
+        previous = get_wafer_cache_dir()
+        set_wafer_cache_dir(str(tmp_path))
+        try:
+            await com.get_session()
+        finally:
+            set_wafer_cache_dir(previous)
+        assert len(made) == 1
+        assert made[0].get("cache_dir") is None
+
     async def test_unknown_item_is_an_error(self, monkeypatch):
         session = _gateway({"errors": [{"message": "ItemId: 999 not found"}], "data": {"product": None}})
         monkeypatch.setattr(com, "get_session", lambda: _resolve(session))

@@ -210,6 +210,16 @@ class MTopClient:
         self._token_generation += 1
         return True
 
+    async def _jar_carries_token(self) -> bool:
+        """Whether the session still sends the ``_m_h5_tk`` this client signs with."""
+
+        try:
+            session = await self._get_session()
+            cookie = session.get_cookie("_m_h5_tk", "https://acs.aliexpress.com/")
+        except Exception:
+            return False
+        return _parse_token_cookie(cookie) == self._token
+
     def _clear_token_if_current(self, expected_generation: int) -> bool:
         """Invalidate only the token that was used by a failed request."""
 
@@ -440,6 +450,15 @@ class MTopClient:
                 # a browser-minted _m_h5_tk first; if TMD minted only x5sec,
                 # bootstrap once under that newly earned clearance.  Do not
                 # replay an unsigned request when bootstrap still fails.
+                #
+                # The solve can also take the signing cookie with it. On wafer
+                # 0.7.6 a session holding _m_h5_tk before a TMD solve had none
+                # after it (x5sec present, same session), and the retry, signed
+                # with the remembered token, answered FAIL_SYS_TOKEN_EMPTY. So
+                # sign only with a token the jar still carries.
+                if not self._token_expired() and not await self._jar_carries_token():
+                    _log("TMD solve left no matching _m_h5_tk in the session; re-bootstrapping")
+                    self._clear_token_if_current(self._token_generation)
                 if self._token_expired():
                     await self._bootstrap_token(deadline)
                 if self._token_expired():

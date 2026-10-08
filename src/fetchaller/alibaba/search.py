@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 
 from ..content._numeric import bounded_number_text
 from ..content._price import has_positive_price
-from ..content.alibaba import extract_search_data
+from ..content.alibaba import extract_search_data, is_zero_result_page
 from ..ratelimit import alibaba_limiter
 from ..security.xss import safe_log_text
 from ..tools.fetch import fetch_url
@@ -383,6 +383,10 @@ async def search_alibaba(
                 query,
                 page,
             )
+            zero_result = parsed is None and await asyncio.to_thread(
+                is_zero_result_page,
+                html,
+            )
     except TimeoutError:
         return {
             "error": (
@@ -393,6 +397,21 @@ async def search_alibaba(
 
     if parsed:
         return parsed
+
+    if zero_result:
+        # Alibaba's own answer, so report it as that rather than as a page we
+        # failed to read. It is not rendered as an empty result: on 2026-10-08
+        # the same "led strip" URL drew this page on some requests and 100,000+
+        # results on others, a minute apart, on one session.
+        _log("zero-result page in response")
+        return {
+            "error": (
+                f'Alibaba.com answered that no products match "{query}" '
+                '(its "did not match any products" page). Alibaba also serves '
+                "that page intermittently for searches that do have results, "
+                "so retrying may return them."
+            )
+        }
 
     _log("no search data in response")
     return {"error": "Alibaba.com search failed. Could not extract product data from response."}

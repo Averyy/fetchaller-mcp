@@ -31,7 +31,6 @@ from datetime import UTC, datetime
 
 import wafer
 
-from ..config import get_wafer_cache_dir
 from ..security.xss import safe_log_text
 from .urls import COM_ORIGIN, COM_PAGE_SIZE, ComTarget
 
@@ -50,16 +49,17 @@ class GatewayError(LookupError):
     """The gateway answered, but not with the data asked for."""
 
 
-# The gateway is cookieless, but it is behind Akamai's edge, and the edge can
-# stop passing it. On 2026-10-07, after a burst of testing (about forty gateway
-# reads and eight cold browser solves of homedepot.com pages in half an hour),
-# every gateway read was answered 206 ``{"error":[{"message":"Generic
-# errors"}]}`` by ``AkamaiGHost`` -- on macOS and Linux alike, warm or cold --
-# while the home page still loaded. It lifted on its own within ~20 minutes.
-# Sending more reads into that refusal earns nothing, so a refusal stops the
-# gateway for a while and every read in that window fails at once, saying when
-# it will be tried again. The first read after the window is the probe: refused
-# again, the hold doubles (to a cap); answered, it resets.
+# The gateway is cookieless, but it is behind Akamai's edge, which answers a
+# request it will not pass with 206 ``{"error":[{"message":"Generic errors"}]}``
+# from ``AkamaiGHost``. Seen on 2026-10-07 and 2026-10-08, each time after a
+# failed browser solve of a homedepot.com page, and lifting after ~20 minutes.
+# The cause was ours: this session read wafer's shared cookie cache, so it sent
+# the failed solve's flagged Akamai cookies with every POST (see get_session).
+# The hold stays as the guard for a refusal of any other cause: sending more
+# reads into one earns nothing, so a refusal stops the gateway for a while and
+# every read in that window fails at once, saying when it will be tried again.
+# The first read after the window is the probe: refused again, the hold doubles
+# (to a cap); answered, it resets.
 _REFUSAL_HOLD = 600.0
 _REFUSAL_HOLD_MAX = 1800.0
 _hold_until = 0.0
@@ -72,10 +72,8 @@ def _clock() -> float:
 
 
 # Pages (the HTML path, which needs a browser solve) get a hold of their own.
-# A failed solve is a bot signal Akamai acts on: twice on 2026-10-07 a run of
-# failed solves in the Linux image (2, then 8) was followed within minutes by
-# the edge refusing the gateway as well, for ~20 minutes, while a successful
-# macOS solve followed by gateway reads was not. After one failed solve,
+# Where the solve fails (the Linux image) it fails every time, after ~60 s, and
+# each failure is a bot signal sent to Akamai. After one failed solve,
 # homedepot.com pages are not tried again for a while; nothing else is held.
 _PAGE_HOLD = 600.0
 _page_hold_until = 0.0
@@ -149,8 +147,16 @@ async def get_session() -> wafer.AsyncSession:
                 # Redirects are followed by hand (homedepot.ca page loads) so
                 # that a hop can never leave Home Depot's own hosts; the fetch
                 # tool's SSRF pinning does not cover this session.
+                #
+                # No cache_dir. wafer's cookie cache holds only solver cookies
+                # and this session never solves, so all a shared cache did was
+                # import the fetch tool's browser solves of homedepot.com pages.
+                # A failed solve leaves flagged Akamai cookies there, and every
+                # gateway POST then carried them and was refused (206 "Generic
+                # errors") until they expired. In one container on 2026-10-08,
+                # right after a failed solve, a read on the shared cache was
+                # refused while reads on an empty one before and after passed.
                 _session = wafer.AsyncSession(
-                    cache_dir=get_wafer_cache_dir(),
                     max_response_size=10 * 1024 * 1024,
                     follow_redirects=False,
                 )

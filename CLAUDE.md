@@ -110,12 +110,15 @@ request, so it is built here (`src/fetchaller/homedepot/`). Products, search
 `content/homedepot.py`; a landing page (`#root.landing-page`) is rendered from
 its `__APOLLO_STATE__` `UniversalLayout`, because its HTML draws only some of its
 sections (customer service drew none). With
-wafer >= 0.7.3 the browser solver clears that challenge on macOS (~6 s cold,
-plain reads after) and returns the server's own document. In the **Linux image**
-Akamai never passes the browser: the solve times out after ~112 s and reports
-an Akamai failure (0.7.2 wrongly logged it solved). That refusal is wafer's
-(`~/code/wafer/todo-akamai-solve-fails-in-linux-image.md`, unconfirmed on
-native amd64); do not work around it here. Where the solve fails these pages
+wafer >= 0.7.6 the browser solver clears that challenge on macOS (~6 s cold)
+and in the **Linux image** (~11 s cold), with plain reads after, and returns
+the server's own document. Up to 0.7.5 Akamai refused every solve in the image:
+with no GPU, Chrome drew WebGL on Mesa's llvmpipe, which Akamai rejects; 0.7.6
+renders on SwiftShader there. That was wafer's to fix and was fixed there. The
+solved document can carry one inline `<script>` the plain one lacks
+(`Object.defineProperty(document, "referrer", ...)`); wafer reports it as
+`source=network`, so it is the server's, and extraction drops it with every
+other script. Where a solve still fails, these pages
 fail — say so, do not fake them. The queries are
 assembled from the site's component data models (its bundles carry no query
 strings; introspection is 401) and validated against the gateway, which names
@@ -125,13 +128,20 @@ keyword all answer 200 — `product: null`, a null `searchReport`, and a
 and either reported or (the redirect) followed and disclosed, never rendered as
 an empty page.
 
-Akamai's edge can stop passing the gateway for a while (206 "Generic errors"
-from `AkamaiGHost`, seen after a burst of testing on 2026-10-07, lifted within
-~20 minutes); `com.py` then holds the gateway, failing reads at once and saying
-when it will try again, instead of sending more requests into the refusal. Both
-refusals that day followed a run of *failed browser solves* of homedepot.com
-pages in the Linux image, so one failed solve also holds homedepot.com pages
-(the HTML path) for 10 minutes rather than sending Akamai another.
+**The gateway session must never share wafer's cookie cache.** It once did
+(`cache_dir=get_wafer_cache_dir()`), and a failed browser solve of a
+homedepot.com page leaves Akamai's flagged cookies in that cache: every gateway
+POST then carried them and Akamai's edge answered 206 "Generic errors" from
+`AkamaiGHost` until they expired (~20 minutes). That read as an edge-wide
+refusal "after a burst of testing" on 2026-10-07; on 2026-10-08 one container
+settled it, with gateway reads before the failed solve, and on an empty cache
+after it, passing while the read on the shared cache was refused. The cache
+holds only solver cookies and this session never solves, so it gains nothing
+from one. (wafer 0.7.6 also stopped keeping a rejected solve's cookies.)
+`com.py` still holds the gateway after any 206, failing reads at once and saying
+when it will try again, and one failed solve still holds homedepot.com pages
+(the HTML path) for 10 minutes, since a solve that fails tends to fail every
+time it is retried.
 
 Prices, pickup stock and badges are **per store**: quote store #121
 (Cumberland, GA), the one the site assigns with none selected, and name it
