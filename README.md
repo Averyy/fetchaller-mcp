@@ -659,6 +659,7 @@ For Claude.ai web/mobile with cross-platform sync:
 | `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
 | `DNS_DOH_FALLBACK` | `0` | Set to `1` to re-resolve against public DoH resolvers (1.1.1.1, 8.8.8.8) when the system resolver answers `0.0.0.0`/`::`. **Off by default:** that answer is usually a blocklist doing its job, and resolving past it overrides local DNS policy and discloses the hostname to a third party. Either way such hosts are reported as a DNS failure, not as a private-host block, so the resolver can be fixed instead. Fallback addresses still face the same private-range checks. |
 | `TRUSTED_PROXY_IPS` | — | Comma-separated addresses/CIDRs of reverse proxies whose rightmost `X-Forwarded-For` value is trusted |
+| `TZ` | `UTC` (container default) | Timezone of the challenge-solving browser. Set it to your server's public IP's zone (e.g. `America/Toronto`): some sites compare the browser's clock with the IP's location, and wafer logs a warning when the browser runs on UTC. |
 | `MOUSER_API_KEY` | — | Mouser Search API key ([free registration](https://www.mouser.com/MyMouser/MouserSearchApplication.aspx)) |
 | `DIGIKEY_CLIENT_ID` | — | DigiKey API client ID ([free registration](https://developer.digikey.com)) |
 | `DIGIKEY_CLIENT_SECRET` | — | DigiKey API client secret |

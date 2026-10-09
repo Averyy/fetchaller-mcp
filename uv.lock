@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "fetchaller-mcp"
-version = "3.8.4"
+version = "3.8.5"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -428,7 +428,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.6" },
+    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.7" },
 ]
 provides-extras = ["dev"]
 
@@ -1629,15 +1629,15 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.7.6"
+version = "0.7.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/63/740422a45c40a1e760c1a06a5f1787fd3a6978c2a3fd9a3eaa11b32c3097/wafer_py-0.7.6.tar.gz", hash = "sha256:5a734001b54fbe01927bdec6aa8a685358bfd72cb129e389c4dab846650b65ec", size = 1661440, upload-time = "2026-10-08T18:08:23.329Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/d0/e37a9bc4d015927f7a52965c0690c060900a1c8c1eae7c81645090a2ef8c/wafer_py-0.7.7.tar.gz", hash = "sha256:4e25680bc0d694c5b57b5fa7961426a682ec6ed9be8951cd1acb5f97b2e6a53b", size = 1671279, upload-time = "2026-10-08T22:32:19.64Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/b9/9bed18c87c81fe4d7cd6cda77ce4b5e38b02841bd6eb177a4d8887d2099e/wafer_py-0.7.6-py3-none-any.whl", hash = "sha256:d326ba068b116326ff1dc2bc656079c8ad2f8411f37f23932874e92474322d33", size = 616871, upload-time = "2026-10-08T18:08:21.3Z" },
+    { url = "https://files.pythonhosted.org/packages/09/d9/3ba17d39ac390414385e0c6c3f215ea1b65d8b50232dae43a745224d0681/wafer_py-0.7.7-py3-none-any.whl", hash = "sha256:e3269c7552c3aeced59bf55ab043210adeeb7be649e22ff17cbc408b58795bea", size = 620808, upload-time = "2026-10-08T22:32:17.606Z" },
 ]
 
 [package.optional-dependencies]
