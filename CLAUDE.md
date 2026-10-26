@@ -18,6 +18,38 @@ empirically: the discovery capability was built inside wafer, validated against
 seven boards, and discarded because none of them needed a challenge solved
 (`wafer-feedback.md` is the record).
 
+### Web search
+
+Expose only `search(query, provider, page=1)` for web search. `provider` is required
+in MCP calls: prefer `google`, or choose `ddg`, `brave`, or `all`. Google failures
+fall back to DDG then Brave and must disclose the failure and actual result source.
+Google uses the Google Docs research-search JSON endpoint with the verified pool
+in `src/fetchaller/search/google_documents.json`, randomized healthy IDs, shared
+six-second pacing and document cooldowns. No Opera Mini, ordinary Google SERP,
+account cookies or browser. Do not rotate IDs after HTTP 429; honor Google-wide
+backoff and Retry-After. Search engines match Reddit's default ten-request-per-minute
+budget per provider with at least six-second spacing. DDG/Brave add jitter,
+serialize the full HTTP exchange, disable hidden wafer retries, and enable
+wafer's own six-second limiter. A 429 holds that provider for 60 seconds; a 403
+(or DDG's blocking 202) holds it for 300 seconds, extended by longer Retry-After.
+Do not bypass the provider gate for `all` or Google fallback. Brave receives the
+server's existing guarded, audited BrowserSolver (default solve budget 120s);
+its wafer request is bounded to 150s including solving, with a 180s provider
+budget for queueing, pacing and parsing. Google and DDG remain browser-free.
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.6 requires published
+wafer 0.7.9 or later, with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
+and start a provider cooldown. Never create an unrestricted search browser.
+Wafer 0.7.9 includes `d01c811`, fixing the accepted-reload deadlock and preserving gate
+evidence during fast spare-token recovery. Native headed/headless checks passed
+on macOS, and guarded MCP checks passed on macOS and Linux. Token cookies are
+consumed by HTTP reads; spare tokens stay session-local.
+`challenge_absent=False` can mean new work or spare
+reuse, so do not infer fresh PoW or restart persistence from that flag alone.
+The independent release approval and evidence are in
+`docs/brave-search-investigation.md` and `../wafer/todo-brave-search.md`.
+See `docs/google-search-fetchaller-handoff.md` and the
+Search Architecture section in `docs/architecture.md`.
+
 ### Reddit
 
 Normal Reddit URLs map to New Reddit's logged-out JSON URLs, except the

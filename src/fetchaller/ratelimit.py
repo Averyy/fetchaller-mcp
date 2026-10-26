@@ -218,3 +218,9 @@ linkedin_limiter = DomainRateLimiter(min_interval=3.2, jitter=(0.1, 0.4))
 # per user action, this makes fifty per invocation, and discovery is a rare
 # failure-path operation where latency costs nothing.
 discovery_limiter = DomainRateLimiter(min_interval=1.5, jitter=(0.3, 0.9))
+
+# Web search: match Reddit's default 10 requests/minute budget with smooth
+# six-second spacing plus jitter. Each provider client also holds its HTTP
+# exchange lock, so delayed requests cannot bunch up on the wire.
+ddg_search_limiter = DomainRateLimiter(min_interval=6.0, jitter=(0.3, 1.0))
+brave_search_limiter = DomainRateLimiter(min_interval=6.0, jitter=(0.3, 1.0))

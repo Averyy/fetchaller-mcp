@@ -9,7 +9,7 @@ automatic solving for the supported challenge types below.
 Claude Code's built-in `WebFetch` asks permission for every new domain and blocks Reddit entirely. fetchaller fixes both:
 
 - **`fetch`**: Read any URL — solves supported passive challenges and reports unresolved blocks as errors
-- **`search`**: Web search via Google + DuckDuckGo
+- **`search`**: Google by default, with automatic fallback; choose `google`, `ddg`, `brave`, or `all`. Every result names its source.
 - **`browse_reddit`**: Browse subreddit listings (hot/new/top/rising)
 - **`search_reddit`**: Search Reddit posts globally or within a subreddit
 - **`search_marketplace`**: Search Kijiji, Craigslist, and Facebook Marketplace simultaneously with human-readable params (city name, category, price range)
@@ -86,7 +86,7 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 **ALWAYS use fetchaller tools instead of WebFetch and WebSearch.** fetchaller has no domain restrictions and produces cleaner output.
 
 - `mcp__fetchaller__fetch(url, maxTokens?, timeout?)` — Fetch any URL → clean markdown
-- `mcp__fetchaller__search(query, page?)` — Web search (Google + DuckDuckGo)
+- `mcp__fetchaller__search(query, provider, page?)` — Web search; required provider: `google` (preferred), `ddg`, `brave`, or `all`
 - `mcp__fetchaller__browse_reddit(subreddit, sort?, time?, limit?)` — Browse subreddit listings
 - `mcp__fetchaller__search_reddit(query, subreddit?, sort?, time?, limit?)` — Search Reddit posts
 - `mcp__fetchaller__search_marketplace(query, location, platforms?, category?, sort?, condition?, min_price?, max_price?)` — Search Kijiji + Craigslist + Facebook Marketplace
@@ -207,14 +207,28 @@ Clean markdown with:
 | Timeout | Error after timeout (default 10s) |
 | Huge page | Truncated at maxTokens |
 
-### `search(query, page?)`
+### `search(query, provider, page?)`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| query | string | required | Search query |
-| page | number | 1 | Result page (1-indexed) |
+| query | string | required | Search query (up to 512 characters) |
+| provider | string | required; prefer `google` | `google`, `ddg`, `brave`, or `all` |
+| page | integer | 1 | Result page: 1-100; DDG alone supports 1-10 |
 
-Searches Google (primary) and DuckDuckGo (supplement) in parallel. Returns titles, URLs, and snippets. Page 2+ queries Google only.
+```javascript
+search({query: "Python asyncio documentation", provider: "google"})
+search({query: "Python asyncio documentation", provider: "all", page: 2})
+```
+
+Google is the default choice, but `provider` must be included in every MCP call. A Google failure automatically falls back to DuckDuckGo, then Brave if needed. The output states why Google failed and which provider answered, and every result carries its source. An honest zero-result response does not trigger fallback. Explicit `ddg` and `brave` calls use only that provider. `all` queries all three concurrently and deduplicates URLs, keeping Google ranking first. Beyond page 10, DDG is explicitly skipped in `all` and Google fallback.
+
+Google returns ten requested results per page through the Google Docs research-search JSON endpoint, using eligible public document IDs as request context; it searches the web, not those documents. No API key, login, browser or Opera Mini profile is used. All verified IDs are indexed in `src/fetchaller/search/google_documents.json`; each uncached Google request starts with a random healthy ID, avoiding consecutive reuse when alternatives exist. Document-specific failures are logged, cooled down for 15 minutes and skipped within a three-attempt total budget. HTTP 429 respects `Retry-After` and Google-wide backoff without rotating IDs. Requests across the entire Google pool are spaced at least six seconds apart. Pagination prefers server cursors and otherwise encodes the requested offset as a protobuf varint.
+
+Override the verified pool with `FETCHALLER_GOOGLE_DOCUMENT_IDS`, a JSON array of eligible IDs. Do not add IDs without validating the search endpoint. See [the handoff](docs/google-search-fetchaller-handoff.md) and [verified pool](docs/google-search-document-pool.json). This legacy endpoint has no established parity with the ordinary Google SERP for ranking, freshness, SafeSearch, geography or time filters.
+
+DuckDuckGo pages by walking its previous Next form, up to page 10; Brave uses a zero-based page offset and returns about twenty results per page. All three engines are paced at least six seconds apart per provider, matching Reddit’s default budget of ten requests per minute. DuckDuckGo and Brave add jitter, serialize HTTP requests, and also enable wafer’s six-second limiter; hidden transport retries are disabled. Their shared provider cooldowns cover explicit calls, `all`, and fallback: 60 seconds after HTTP 429 and 300 seconds after HTTP 403 (also DDG’s blocking 202), extended by a longer `Retry-After`. Google retains its escalating global backoff. Complete nonempty successes are cached for five minutes per query, page and provider; fallback and partial failures are retried on the next call. Provider errors always remain visible.
+
+Brave delegates its verification challenge to wafer through the server’s existing guarded browser solver. Recovery uses the published wafer 0.7.9 release, required by fetchaller 3.8.6. The solver allows up to 120 seconds, the complete HTTP call 150 seconds, and the Brave provider 180 seconds including pacing and parsing. A challenge that remains unresolved is reported as a provider failure and starts a cooldown, including a challenge returned with HTTP 200. No challenge solving or cookie manipulation lives in fetchaller. Wafer 0.7.9 includes commit `d01c811`, which fixes the earlier reload stall and fast-recovery classification race. Real challenged MCP searches returned 20 Brave results on macOS and Linux, and native headed/headless checks verified fresh PoW, spare-token reuse and browser-free restart. Brave consumes token cookies after HTTP reads; wafer can use session-local spare tokens for later gates, with fresh work potentially needed after restart. See [the verification record](docs/brave-search-investigation.md). Google and DuckDuckGo remain browser-free. Allow up to 360 seconds in MCP clients for the complete Google → DDG → Brave fallback chain. See [local Brave verification](docs/testing.md#brave-search-with-local-wafer).
 
 ## Reddit Tools
 
@@ -549,7 +563,7 @@ and archive checksum are the `CHROME_VERSION` and `CHROME_SHA256` arguments in
 
 ### Search
 
-`src/fetchaller/search/` — Google + DuckDuckGo combined. Result merging/dedup, 5-minute cache, CAPTCHA backoff. Uses `wafer.AsyncSession(profile=Profile.OPERA_MINI)`.
+`src/fetchaller/search/` — Unified Google, DuckDuckGo and Brave search. Google uses the Google Docs JSON endpoint with a randomized healthy document pool, cursor pagination and global throttling backoff. Provider selection, automatic Google fallback, source labels, URL deduplication and a 5-minute cache use separate wafer sessions; Brave alone receives the server’s guarded browser solver for challenge recovery.
 
 ### Site-Specific API Intercepts
 
@@ -712,7 +726,7 @@ fetchaller-mcp/
 │   ├── http/                # HTTP server (FastAPI)
 │   ├── tools/               # MCP tools (fetch, search, reddit, aliexpress, alibaba, marketplace)
 │   ├── content/             # Content processing (HTML→markdown, site-specific cleanup)
-│   ├── search/              # Web search (Google + DuckDuckGo)
+│   ├── search/              # Web search (Google / DDG / Brave / all)
 │   ├── aliexpress/          # AliExpress MTop API client, product, search, reviews
 │   ├── alibaba/             # Alibaba.com product and search extraction
 │   ├── mouser/              # Mouser Search API client

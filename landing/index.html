@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>fetchaller — MCP server for Claude Code</title>
-    <meta name="description" content="Search the web with Google & DuckDuckGo, browse Reddit, search tech-careers job boards (Microsoft, Apple, Meta, Amazon, Workday, Eightfold), fetch any URL with site-specific cleanup for 15+ sites. No permission prompts. WebFetch alternative for Claude Code.">
+    <meta name="description" content="Search the web with Google, DuckDuckGo or Brave, browse Reddit, search tech-careers job boards (Microsoft, Apple, Meta, Amazon, Workday, Eightfold), fetch any URL with site-specific cleanup for 15+ sites. No permission prompts. WebFetch alternative for Claude Code.">
     <meta name="keywords" content="Claude Code fetch websites, Claude Code MCP server, WebFetch alternative, Claude Code Reddit, web search Claude Code, Google search Claude Code, DuckDuckGo Claude Code, browse reddit Claude Code, search reddit Claude Code, fetch Reddit posts, Claude AI fetch URL, Claude Code PDF, site-specific cleanup, no permission prompts, no domain restrictions">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://www.fetchaller.com/">
@@ -47,7 +47,7 @@
         },
         "featureList": [
             "Fetch any URL as clean markdown",
-            "Web search via Google and DuckDuckGo",
+            "Web search via Google, DuckDuckGo and Brave",
             "Reddit browsing and search",
             "AliExpress and Alibaba product search",
             "Compact New Reddit rendering with whole-section output and explicit omissions",
@@ -1716,7 +1716,7 @@
                             <h1>fetchaller</h1>
                             <div class="hero-help">
                                 <div class="cmd"><span class="cmd-name">fetch &lt;url&gt;</span><span class="cmd-desc">any URL → clean markdown</span></div>
-                                <div class="cmd"><span class="cmd-name">search &lt;query&gt;</span><span class="cmd-desc">Google + DuckDuckGo combined</span></div>
+                                <div class="cmd"><span class="cmd-name">search &lt;query&gt; &lt;provider&gt;</span><span class="cmd-desc">Google / DDG / Brave / all</span></div>
                                 <div class="cmd"><span class="cmd-name">browse_reddit</span><span class="cmd-desc">subreddit listings</span></div>
                                 <div class="cmd"><span class="cmd-name">search_reddit</span><span class="cmd-desc">search posts across Reddit</span></div>
                                 <div class="cmd"><span class="cmd-name">search_marketplace</span><span class="cmd-desc">Kijiji + Craigslist + FB Marketplace</span></div>
@@ -1830,7 +1830,7 @@ claude mcp add fetchaller -- uv --directory "$(pwd)" run fetchaller-mcp</pre>
 <span class="k">**ALWAYS use fetchaller MCP tools instead of WebFetch and WebSearch.**</span> fetchaller has no domain restrictions, bypasses bot protection (Cloudflare, Akamai, etc.), and produces much cleaner markdown with site-specific content cleanup.
 
 - <span class="s">**fetch**</span> — Fetch any URL as clean markdown
-- <span class="s">**search**</span> — Web search (Google + DuckDuckGo combined)
+- <span class="s">**search**</span> — Web search (provider: google, ddg, brave, all)
 - <span class="s">**browse_reddit**</span> / <span class="s">**search_reddit**</span> — Reddit listings and search
 - <span class="s">**search_marketplace**</span> — Search Kijiji + Craigslist + Facebook Marketplace
 - <span class="s">**search_realtor**</span> — Search realtor.ca real-estate listings
@@ -2071,9 +2071,10 @@ Exception: If a dedicated MCP tool exists for a service (e.g., GitHub via <span 
                             </div>
                             <div class="winhelp-page" data-topic="1">
                                 <h3>Can it search the web?</h3>
-                                <p>Yes. The <code>search</code> tool queries both Google and DuckDuckGo in parallel and merges the results. Duplicate URLs are deduplicated and results are cached for 5 minutes so repeated queries are instant.</p>
+                                <p>Yes. Include <code>provider</code> in each <code>search</code> call: <code>google</code> is the default choice, or select <code>ddg</code>, <code>brave</code> or <code>all</code>. Google failures automatically fall back to DuckDuckGo, then Brave. Every result names its source. Choosing <code>all</code> queries all three and deduplicates URLs. Complete results are cached for 5 minutes.</p>
                                 <p>The typical workflow is: use <code>search</code> to find relevant URLs, then use <code>fetch</code> to read the pages you need. Claude does this naturally when you ask it to research something.</p>
-                                <p>Rate limiting is built in &mdash; Google gets a 2-second cooldown between requests, DuckDuckGo gets 1 second. If a search engine returns a CAPTCHA, fetchaller backs off automatically (2 min &rarr; 5 min &rarr; 15 min) and relies on the other engine in the meantime.</p>
+                                <p>Google uses a JSON search endpoint without login or a browser, with six-second pacing and a rotating pool of verified public document IDs. Failed IDs are skipped with a cooldown; rate limits trigger global backoff. All three engines use at least six-second spacing per provider, matching Reddit&rsquo;s default budget of ten requests per minute. DuckDuckGo and Brave add jitter and shared cooldowns after rate limits or blocks; the cooldown applies to direct searches, merged searches and fallback. Google and Brave support pages 1&ndash;100; DuckDuckGo supports 1&ndash;10.</p>
+                                <p>Brave delegates verification challenges to its browser runtime. Verification may take up to three minutes. If verification does not produce search results, the provider error remains visible and searches pause for a cooldown. Google and DuckDuckGo searches do not launch a browser.</p>
                                 <div class="see-also">See Also: <a class="winhelp-link" data-topic="2">What do I need?</a></div>
                             </div>
                             <div class="winhelp-page" data-topic="2">

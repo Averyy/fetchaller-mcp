@@ -1,20 +1,8 @@
-"""Search tool — web search via Google + DuckDuckGo."""
+"""Unified web search tool."""
 
 from ..search import search
 
 
-async def search_web(
-    query: str,
-    page: int = 1,
-) -> dict:
-    """
-    Search the web and return results with titles, URLs, and snippets.
-
-    Args:
-        query: Search query
-        page: Result page (1-indexed, default 1)
-
-    Returns:
-        Dict with "content" (formatted text) or "error" (error message).
-    """
-    return await search(query=query, page=page)
+async def search_web(query: str, provider: str, page: int = 1, *, browser_solver=None) -> dict:
+    """Search via the selected provider, with Google failure fallback and source labels."""
+    return await search(query=query, page=page, provider=provider, browser_solver=browser_solver)

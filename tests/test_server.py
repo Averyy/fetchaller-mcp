@@ -146,7 +146,7 @@ async def test_exact_tool_surface_has_strict_schemas(server):
         ("fetch", "fetch_url", {"url": "https://example.com"}),
         ("browse_reddit", "browse_reddit", {"subreddit": "Python"}),
         ("search_reddit", "search_reddit", {"query": "asyncio"}),
-        ("search", "search_web", {"query": "asyncio"}),
+        ("search", "search_web", {"query": "asyncio", "provider": "google"}),
         (
             "get_aliexpress_product",
             "get_aliexpress_product",
@@ -287,7 +287,7 @@ async def test_other_protected_commerce_timeout_dispatch_and_range(
     ("tool_name", "arguments", "error_fragment"),
     [
         ("fetch", {"url": "https://example.com", "unknown": True}, "not allowed"),
-        ("search", {"query": ""}, "non-empty"),
+        ("search", {"query": "", "provider": "google"}, "non-empty"),
         ("browse_reddit", {"subreddit": "python/evil"}, "match"),
         (
             "search_reddit",
@@ -664,9 +664,11 @@ class TestGuardedBrowserLifecycle:
             *,
             egress_guard_proxy=None,
             executable_path=None,
+            solve_timeout=30,
         ):
             self.egress_guard_proxy = egress_guard_proxy
             self.executable_path = executable_path
+            self.solve_timeout = solve_timeout
             self.closed = False
             self.preflighted = False
             self.runtime_ready = False
@@ -705,6 +707,7 @@ class TestGuardedBrowserLifecycle:
             server = create_server(Config(data_dir=None))
 
         assert created[0].egress_guard_proxy == proxy.url
+        assert created[0].solve_timeout == 120
         assert server._browser_solver is created[0]
         assert server._browser_proxy is proxy
         assert proxy.ready
@@ -1235,6 +1238,31 @@ async def test_a_value_past_the_advertised_maximum_is_still_refused(server):
     assert _validate_tool_arguments("search_reddit", {"query": "x", "limit": 26})
 
 
+@pytest.mark.asyncio
+async def test_unified_search_schema_requires_provider_and_enforces_ddg_limit(server):
+    from fetchaller.server import _validate_tool_arguments
+
+    tools = {tool.name: tool for tool in await _list_tools(server)}
+    schema = tools["search"].inputSchema
+    assert "provider" in schema["required"]
+    assert not {"search_google", "search_ddg", "search_brave"} & tools.keys()
+    assert _validate_tool_arguments("search", {"query": "x"}) == "missing required argument: provider"
+    assert _validate_tool_arguments("search", {"query": "x", "provider": "ddg", "page": 11})
+    assert _validate_tool_arguments("search", {"query": "x", "provider": "google", "page": 100}) is None
+    for value in ([], {}, None, "unknown"):
+        assert "provider" in _validate_tool_arguments("search", {"query": "x", "provider": value})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["google", "ddg", "brave", "all"])
+async def test_search_dispatches_selected_provider(server, provider):
+    with patch("fetchaller.tools.search.search", new_callable=AsyncMock) as asked:
+        asked.return_value = {"content": "search response"}
+        result = await _call_tool(server, "search", {"query": "x", "provider": provider, "page": 2})
+    assert result.isError is False
+    asked.assert_awaited_once_with(query="x", page=2, provider=provider, browser_solver=None)
+
+
 class TestOptionalEmptyStrings:
     """An optional string may be empty, and empty means "no filter"."""
 
@@ -1324,3 +1352,51 @@ class TestLinkedInLocationRecheck:
         assert _validate_tool_arguments(
             "search_linkedin_jobs", {"keywords": "x", "strict_location": False}
         ) is None
+
+
+@pytest.mark.asyncio
+async def test_search_receives_the_server_audited_guarded_solver():
+    from fetchaller import server as srv
+
+    proxy = TestGuardedBrowserLifecycle.FakeProxy()
+    solver = TestGuardedBrowserLifecycle.FakeSolver()
+    with (
+        patch.object(srv, "BrowserEgressProxy", return_value=proxy),
+        patch.object(srv, "_browser_solver_ready", return_value=(True, "/chrome")),
+        patch.object(srv, "search_web", AsyncMock(return_value={"content": "ok"})) as search_web,
+    ):
+        instance = create_server(Config(data_dir=None), browser_solver=solver)
+        try:
+            result = await _call_tool(instance, "search", {"query": "asyncio", "provider": "brave"})
+            guarded = search_web.await_args.kwargs["browser_solver"]
+            assert isinstance(guarded, srv._AuditedBrowserSolver)
+            assert guarded._solver is solver
+            assert solver.egress_guard_proxy == proxy.url
+            assert instance._browser_dispatch_audit is guarded._audit
+            assert not result.isError
+        finally:
+            srv.close_browser_runtime(instance)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "challenge,remaining,expected",
+    [("brave", None, 120), ("brave", 135, 120), ("brave", 10, 10), ("cloudflare", 135, 135)],
+)
+async def test_browser_dispatch_respects_brave_cap_and_shorter_request_deadlines(asynchronous, challenge, remaining, expected):
+    from unittest.mock import MagicMock
+
+    from fetchaller.server import _AuditedBrowserSolver
+
+    inner = SimpleNamespace(solve=MagicMock(return_value=None), asolve=AsyncMock(return_value=None))
+    audit = {"total": 0, "reddit": 0}
+    wrapped = _AuditedBrowserSolver(inner, audit)
+    if asynchronous:
+        await wrapped.asolve("https://search.brave.com/search", challenge, timeout=remaining)
+        called = inner.asolve
+    else:
+        wrapped.solve("https://search.brave.com/search", challenge, timeout=remaining)
+        called = inner.solve
+    assert called.call_args.kwargs["timeout"] == expected
+    assert audit == {"total": 1, "reddit": 0}

@@ -1,324 +1,36 @@
-"""Tests for web search module (Google SSR + DuckDuckGo)."""
+"""Search provider parsing, pagination, fallback, provenance and cancellation."""
 
 import asyncio
+import base64
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.fetchaller.search import (
-    _MAX_RESULTS_OUTPUT_CHARS,
-    _cache,
-    _dedup_and_merge,
-    _dedup_key,
-    _format_output,
-    _format_results,
-    search,
-)
+import src.fetchaller.search as search_mod
+from src.fetchaller.ratelimit import DomainRateLimiter
+from src.fetchaller.search import _MAX_RESULTS_OUTPUT_CHARS, _cache, _dedup_key, _format_results, google, search
+from src.fetchaller.search import brave as brave_mod
+from src.fetchaller.search import ddg as ddg_mod
+from src.fetchaller.search.brave import extract_results as brave_extract
+from src.fetchaller.search.brave import fetch_brave
+from src.fetchaller.search.ddg import MAX_DDG_PAGE
 from src.fetchaller.search.ddg import extract_results as ddg_extract
 from src.fetchaller.search.ddg import search_ddg as ddg_search
-from src.fetchaller.search.google import (
-    extract_results as google_extract,
-)
-from src.fetchaller.search.google import (
-    is_captcha,
-)
-from src.fetchaller.search.google import search_google as google_search
-from src.fetchaller.search.models import SearchResult
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-# ---------------------------------------------------------------------------
-# Google extraction
-# ---------------------------------------------------------------------------
-
-
-class TestGoogleExtraction:
-    """Test Google SSR result extraction."""
-
-    def test_normal_results_from_fixture(self):
-        """Real Google SSR fixture produces expected results with clean titles and URLs."""
-        html = (FIXTURES / "google_ssr.html").read_text()
-        results = google_extract(html)
-        assert len(results) >= 8
-        # First result should be Real Python
-        assert "realpython.com" in results[0].url
-        assert "asyncio" in results[0].title.lower() or "async" in results[0].title.lower()
-        # Titles should NOT contain breadcrumb URLs (e.g., "realpython.com ›")
-        for r in results:
-            assert "›" not in r.title, f"Breadcrumb leaked into title: {r.title}"
-
-    def test_captcha_detection_sorry_url(self):
-        """CAPTCHA detected via sorry.google.com in response URL."""
-        response = MagicMock()
-        response.url = "https://sorry.google.com/sorry/index?continue=..."
-        response.text = "Our systems have detected unusual traffic"
-        response.status_code = 200
-        assert is_captcha(response) is True
-
-    def test_captcha_detection_sorry_path(self):
-        """CAPTCHA detected via /sorry path."""
-        response = MagicMock()
-        response.url = "https://www.google.com/sorry/index?continue=..."
-        response.text = "some page"
-        response.status_code = 200
-        assert is_captcha(response) is True
-
-    def test_captcha_detection_unusual_traffic_text(self):
-        """CAPTCHA detected via 'unusual traffic' in response body."""
-        response = MagicMock()
-        response.url = "https://www.google.com/search?q=test"
-        response.text = "We detected Unusual Traffic from your network"
-        response.status_code = 200
-        assert is_captcha(response) is True
-
-    def test_captcha_detection_429_status(self):
-        """CAPTCHA detected via 429 status code."""
-        response = MagicMock()
-        response.url = "https://www.google.com/search?q=test"
-        response.text = ""
-        response.status_code = 429
-        assert is_captcha(response) is True
-
-    def test_captcha_check_handles_relative_response_url(self):
-        """A malformed/relative response URL has no hostname and must not crash."""
-        response = MagicMock()
-        response.url = "/search?q=test"
-        response.text = ""
-        response.status_code = 200
-        assert is_captcha(response) is False
-
-    def test_normal_response_not_captcha(self):
-        """Normal 200 response with results is NOT detected as CAPTCHA."""
-        response = MagicMock()
-        response.url = "https://www.google.com/search?q=test"
-        response.text = "<html>normal results page</html>"
-        response.status_code = 200
-        assert is_captcha(response) is False
-
-    def test_google_internal_url_filtering(self):
-        """Google internal URLs (maps, accounts, support) are filtered out."""
-        html = """
-        <html><body>
-        <a href="/url?q=https://maps.google.com/maps%3Fq%3Dtest&sa=U">Maps</a>
-        <a href="/url?q=https://accounts.google.com/signin&sa=U">Sign in</a>
-        <a href="/url?q=https://support.google.com/help&sa=U">Help</a>
-        <a href="/url?q=https://www.google.com/preferences&sa=U">Settings</a>
-        <a href="/url?q=https://example.com/real-result&sa=U">
-            <div><h3><div>Real Result</div></h3></div>
-            <div><div>A real snippet here for the result</div></div>
-        </a>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) == 1
-        assert results[0].url == "https://example.com/real-result"
-        assert results[0].title == "Real Result"
-
-    def test_result_links_with_a_parameter_before_q(self):
-        """Google prefixes the destination since 2026-10-05: /url?opi=..&q=<dest>.
-
-        Matching the literal ``/url?q=`` dropped every organic result, and the
-        engine reported an unexpected response shape on a full results page.
-        """
-        html = """
-        <html><body><div><div>
-        <a data-ved="x" href="/url?opi=89978449&amp;q=https://www.youtube.com/watch%3Fv%3DoAkLSJNr5zY&amp;sa=U&amp;ved=2ah&amp;usg=AOv">
-            <h3><div>Python Tutorial: AsyncIO</div></h3>
-        </a></div>
-        <div>Aug 20, 2025 · In this video, we'll be learning all about AsyncIO in Python
-            <a href="/url?opi=89978449&amp;q=https://www.youtube.com/watch%3Fv%3Dother&amp;sa=U">Stacked</a>
-        </div></div>
-        <a href="/url?opi=89978449&amp;q=https://medium.com/%40moraneus/guide&amp;sa=U">
-            <h3>Mastering asyncio</h3>
-        </a>
-        <a href="/url?opi=89978449&amp;sa=U">No destination</a>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert [r.url for r in results[:2]] == [
-            "https://www.youtube.com/watch?v=oAkLSJNr5zY",
-            "https://medium.com/@moraneus/guide",
-        ]
-        assert results[0].title == "Python Tutorial: AsyncIO"
-        assert "Stacked" not in results[0].snippet
-        assert "learning all about AsyncIO" in results[0].snippet
-
-    def test_tokenized_result_links_are_kept_for_resolution(self):
-        """Some responses carry an opaque token in ``q`` instead of the destination.
-
-        Seen on 2026-10-07 in about one response in thirty: every organic link
-        was ``/url?opi=..&q=CAES..&uoh=3``, so the parser found nothing and the
-        engine failed on a full results page. The link is kept as Google's own
-        redirect URL; the stacked sitelink beside it is still dropped.
-        """
-        html = """
-        <html><body><div><div>
-        <a href="/url?opi=89978449&amp;q=CAESaQHrOzAVksU_7NBcPkha_kdOtf6&amp;sa=U&amp;uoh=3&amp;usg=AOv">
-            <div><h3><div>asyncio — Asynchronous I/O</div></h3></div>
-            <div><div>docs.python.org › library › asyncio</div></div>
-        </a></div>
-        <div><div>asyncio is a library to write concurrent code using the async/await syntax.
-            <span><a href="/url?opi=89978449&amp;q=CAESbAHrOzAVMYDJue--s-xHAICox3&amp;sa=U&amp;uoh=3">
-            <span>Asynchronous I/O</span></a></span>
-        </div></div></div>
-        <a href="/url?q=javascript:void(0)&amp;sa=U"><h3>Not a result</h3></a>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) == 1
-        assert results[0].url == (
-            "https://www.google.com/url?opi=89978449&q=CAESaQHrOzAVksU_7NBcPkha_kdOtf6&sa=U&uoh=3&usg=AOv"
-        )
-        assert results[0].title == "asyncio — Asynchronous I/O"
-        assert "concurrent code" in results[0].snippet
-        assert "Asynchronous I/O" not in results[0].snippet
-
-    def test_an_unparsed_page_is_described_by_its_link_shapes(self):
-        """The miss log names the link shapes, not just a length."""
-        from src.fetchaller.search.google import _shape_summary
-
-        html = (
-            "<html><head><title>q - Google Search</title></head><body><div id=\"main\">"
-            '<a href="/url?opi=1&amp;q=CAESxxxxxxxxxxxxxxxxxx"><h3>A</h3></a>'
-            '<a href="https://example.com/">B</a><a href="https://www.google.com/x">C</a>'
-            "</div></body></html>"
-        )
-        summary = _shape_summary(html)
-        assert "url_rel=1 url_abs=0 ext=1 h3=1 main=1 consent=0" in summary
-        assert "title='q - Google Search'" in summary
-        assert _shape_summary("").startswith("url_rel=0")
-
-    def test_cite_removal_from_title(self):
-        """<cite> elements inside links are stripped from title text."""
-        html = """
-        <html><body>
-        <a href="/url?q=https://example.com/page&sa=U">
-            <h3>Page Title</h3><cite>example.com › page</cite>
-            <div><div>This is the snippet text for the search result page</div></div>
-        </a>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) == 1
-        assert results[0].title == "Page Title"
-        assert "example.com" not in results[0].title
-
-    def test_breadcrumb_div_removal_from_title(self):
-        """Breadcrumb divs with › are stripped from title text (Google SSR uses divs not cite)."""
-        html = """
-        <html><body>
-        <a href="/url?q=https://example.com/page&sa=U">
-            <div>
-                <div><h3><div>Page Title</div></h3></div>
-                <div><div>example.com › page</div></div>
-            </div>
-            <div><div><div>This is the snippet text describing the search result</div></div></div>
-        </a>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) == 1
-        assert results[0].title == "Page Title"
-
-    def test_anchor_fragment_dedup(self):
-        """URLs with #fragment are deduped against the base URL."""
-        html = """
-        <html><body>
-        <a href="/url?q=https://example.com/page&sa=U">
-            <h3>Page Title</h3>
-            <div><div>Main result snippet text here for the actual result</div></div>
-        </a>
-        <a href="/url?q=https://example.com/page%23section-1&sa=U">
-            <span>Section 1</span>
-        </a>
-        <a href="/url?q=https://example.com/page%23section-2&sa=U">
-            <span>Section 2</span>
-        </a>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) == 1
-        assert results[0].url == "https://example.com/page"
-
-    def test_carousel_items_filtered(self):
-        """Google news carousel items (pcitem class) are skipped."""
-        html = """
-        <html><body>
-        <a href="/url?q=https://example.com/real&sa=U">
-            <h3>Real Result</h3>
-            <div><div>Real snippet about the actual search result here</div></div>
-        </a>
-        <div class="pcitem">
-            <a href="/url?q=https://news.example.com/carousel&sa=U">
-                <span>Carousel News Item</span>
-            </a>
-        </div>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) == 1
-        assert results[0].title == "Real Result"
-        assert all("carousel" not in r.url for r in results)
-
-    def test_non_http_urls_filtered(self):
-        """Non-HTTP URLs (fragments, javascript:) are filtered out."""
-        html = """
-        <html><body>
-        <a href="/url?q=%23&sa=U"><span>Fragment</span></a>
-        <a href="/url?q=javascript:void(0)&sa=U"><span>JS</span></a>
-        <a href="/url?q=https://example.com/real&sa=U">
-            <h3>Real Result</h3>
-            <div><div>A real search result snippet that is long enough</div></div>
-        </a>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) == 1
-        assert results[0].url == "https://example.com/real"
-
-    def test_bare_domain_div_stripped_from_title(self):
-        """Secondary results with bare domain divs (no ›) get domain stripped."""
-        html = """
-        <html><body>
-        <a href="/url?q=https://justpy.io/&sa=U">
-            <span><div class="UFvD1"><span>JustPy</span></div></span>
-            <span><div class="BamJPe">justpy.io</div></span>
-        </a>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) == 1
-        assert results[0].title == "JustPy"
-        assert "justpy.io" not in results[0].title
-
-    def test_featured_snippet_text_cleaned(self):
-        """'About Featured Snippets' UI text is stripped from snippet."""
-        html = """
-        <html><body>
-        <a href="/url?q=https://example.com/page&sa=U">
-            <h3>Example Page</h3>
-        </a>
-        <div>
-            <div>The actual snippet content here with details.  About Featured Snippets</div>
-        </div>
-        </body></html>
-        """
-        results = google_extract(html)
-        assert len(results) >= 1
-        for r in results:
-            assert "About Featured Snippets" not in r.snippet
-
-    def test_empty_html_returns_empty(self):
-        """Empty or minimal HTML returns no results."""
-        results = google_extract("<html><body></body></html>")
-        assert results == []
-
-
-# ---------------------------------------------------------------------------
-# DDG extraction
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def provider_pacing_state(monkeypatch):
+    # Unit tests use captured responses without wall-clock waits. Dedicated
+    # timing tests below restore the real interval on a controlled clock.
+    for module, name in ((brave_mod, "brave_search_limiter"), (ddg_mod, "ddg_search_limiter")):
+        monkeypatch.setattr(module, name, DomainRateLimiter(0.0, jitter=(0.0, 0.0)))
+        monkeypatch.setattr(module, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(module, "_backoff_until", 0.0)
 
 
 class TestDDGExtraction:
@@ -394,942 +106,253 @@ class TestDDGExtraction:
 # ---------------------------------------------------------------------------
 
 
-class TestDedupAndMerge:
-    """Test result dedup and merge logic."""
+class TestDDGPaging:
+    """DDG has no page parameter: page N is the previous page's "Next" form, POSTed."""
 
-    def test_same_url_keeps_google_version(self):
-        """When both engines return the same URL, Google version is kept."""
-        google = [SearchResult("Google Title", "https://example.com/page", "Google snippet")]
-        ddg = [SearchResult("DDG Title", "https://example.com/page", "DDG snippet")]
-        merged, ddg_new = _dedup_and_merge(google, ddg)
-        assert len(merged) == 1
-        assert merged[0].title == "Google Title"
-        assert ddg_new == 0
+    @pytest.fixture(autouse=True)
+    def clear_pages(self):
+        import src.fetchaller.search.ddg as ddg_mod
 
-    def test_fragment_dedup(self):
-        """url#section is deduped against url (base URL wins)."""
-        google = [SearchResult("Page", "https://example.com/page", "snippet")]
-        ddg = [SearchResult("Section", "https://example.com/page#section", "snippet")]
-        merged, ddg_new = _dedup_and_merge(google, ddg)
-        assert len(merged) == 1
-        assert merged[0].title == "Page"
-        assert ddg_new == 0
-
-    def test_google_first_ddg_supplements(self):
-        """Google results come first, DDG unique results appended after."""
-        google = [
-            SearchResult("G1", "https://google-only.com/a", "gs1"),
-            SearchResult("G2", "https://shared.com/page", "gs2"),
-        ]
-        ddg = [
-            SearchResult("D1", "https://shared.com/page", "ds1"),  # dup
-            SearchResult("D2", "https://ddg-only.com/b", "ds2"),
-        ]
-        merged, ddg_new = _dedup_and_merge(google, ddg)
-        assert len(merged) == 3
-        assert merged[0].title == "G1"
-        assert merged[1].title == "G2"  # Google version of shared URL
-        assert merged[2].title == "D2"  # DDG supplement
-        assert ddg_new == 1
-
-    def test_www_normalization_dedup(self):
-        """www.example.com and example.com are deduped."""
-        google = [SearchResult("With WWW", "https://www.example.com/page", "s")]
-        ddg = [SearchResult("Without WWW", "https://example.com/page", "s")]
-        merged, ddg_new = _dedup_and_merge(google, ddg)
-        assert len(merged) == 1
-        assert ddg_new == 0
-
-
-# ---------------------------------------------------------------------------
-# Output format
-# ---------------------------------------------------------------------------
-
-
-class TestOutputFormat:
-    """Test search output formatting."""
-
-    def test_normal_output(self):
-        """Normal search output has summary line and numbered results."""
-        results = [
-            SearchResult("Title One", "https://example.com/one", "Snippet one"),
-            SearchResult("Title Two", "https://example.com/two", "Snippet two"),
-        ]
-        output = _format_output("test query", results, 2, 0, False, 1)
-        assert output.startswith('Search: "test query" | google: 2 | ddg: 0 new | 2 total')
-        assert "1. Title One" in output
-        assert "   https://example.com/one" in output
-        assert "   Snippet one" in output
-        assert "2. Title Two" in output
-
-    def test_adversarial_output_ends_at_complete_result_boundary(self):
-        results = [
-            SearchResult(
-                "t" * 10_000,
-                f"https://example.com/{index}",
-                "s" * 100_000,
-            )
-            for index in range(1_000)
-        ]
-        output = _format_results(results)
-        assert len(output) <= _MAX_RESULTS_OUTPUT_CHARS
-        assert "trailing search results" in output
-        assert output.count("https://example.com/") > 0
-
-    def test_captcha_output(self):
-        """CAPTCHA summary shows 'captcha' for google count."""
-        results = [SearchResult("DDG Result", "https://ddg.com/r", "snippet")]
-        output = _format_output("test", results, 0, 1, True, 1)
-        assert "google: captcha" in output
-        assert "ddg: 1 new" in output
-
-    def test_page2_output(self):
-        """Page 2+ shows 'n/a' for DDG."""
-        results = [SearchResult("G", "https://g.com", "s")]
-        output = _format_output("test", results, 1, 0, False, 2)
-        assert "(page 2)" in output
-        assert "ddg: n/a" in output
-
-    def test_empty_results_output(self):
-        """Empty results show 'No results found.' message."""
-        output = _format_output("xyzzy nonsense", [], 0, 0, False, 1)
-        assert "google: 0" in output
-        assert "ddg: 0 new" in output
-        assert "0 total" in output
-        assert "No results found." in output
-
-
-class TestTransportErrorsAreVisible:
-    """A network failure must never render as a bare '0'.
-
-    The regression: both engines threw, both returned empty, and the output said
-    'google: 0 | ddg: 0 new | 0 total / No results found.' — indistinguishable
-    from a query that genuinely has no hits. The caller concluded search was
-    useless and worked around it.
-    """
-
-    def test_both_engines_failed_says_so(self):
-        output = _format_output(
-            "reddit api rate limits",
-            [],
-            0,
-            0,
-            False,
-            1,
-            google_error="ConnectTimeout: timed out",
-            ddg_error="ConnectTimeout: timed out",
-        )
-        assert "google: ERROR" in output
-        assert "ddg: ERROR" in output
-        assert "Search FAILED" in output
-        assert "ConnectTimeout" in output
-        # The critical distinction the old output failed to make.
-        assert "not an empty result set" in output
-        assert "No results found." not in output
-
-    def test_partial_failure_keeps_results_and_flags_engine(self):
-        results = [SearchResult("DDG hit", "https://ddg.com/r", "snippet")]
-        output = _format_output(
-            "query",
-            results,
-            0,
-            1,
-            False,
-            1,
-            google_error="HTTP 503",
-        )
-        assert "google: ERROR" in output
-        assert "ddg: 1 new" in output
-        assert "Partial results" in output
-        assert "HTTP 503" in output
-        assert "1. DDG hit" in output
-
-    def test_clean_empty_result_is_unchanged(self):
-        """A real zero-hit query must still read as a normal empty result."""
-        output = _format_output("xyzzy nonsense", [], 0, 0, False, 1)
-        assert "No results found." in output
-        assert "Search FAILED" not in output
-        assert "ERROR" not in output
-
-    def test_captcha_is_not_reported_as_an_error(self):
-        results = [SearchResult("DDG hit", "https://ddg.com/r", "s")]
-        output = _format_output("q", results, 0, 1, True, 1)
-        assert "google: captcha" in output
-        assert "ERROR" not in output
-
-    def test_page2_ddg_error_suppressed(self):
-        """DDG is not queried on page 2+, so it must not be blamed there."""
-        output = _format_output("q", [], 0, 0, False, 2, ddg_error="stale")
-        assert "ddg: n/a" in output
-        assert "stale" not in output
-
-
-class TestEngineErrorReturns:
-    """The engine functions must report transport failures to the aggregator."""
-
-    async def test_google_request_exception_returns_error(self):
-        session = MagicMock()
-        session.get = AsyncMock(side_effect=RuntimeError("connection reset"))
-        results, captcha, error = await google_search(session, "q", 1)
-        assert results == []
-        assert captcha is False
-        assert "RuntimeError" in error and "connection reset" in error
-
-    async def test_google_non_200_returns_error(self):
-        resp = MagicMock()
-        resp.text = ""
-        resp.url = "https://www.google.com/search?q=q"
-        resp.status_code = 503
-        session = MagicMock()
-        session.get = AsyncMock(return_value=resp)
-        results, captcha, error = await google_search(session, "q", 1)
-        assert results == []
-        assert error == "HTTP 503"
-
-    async def test_ddg_request_exception_returns_error(self):
-        session = MagicMock()
-        session.get = AsyncMock(side_effect=RuntimeError("dns failure"))
-        results, error = await ddg_search(session, "q")
-        assert results == []
-        assert "RuntimeError" in error and "dns failure" in error
-
-    async def test_ddg_success_returns_no_error(self):
-        resp = MagicMock()
-        resp.text = '<html><body><div class="no-results">No results found for q</div></body></html>'
-        resp.url = "https://html.duckduckgo.com/html/"
-        resp.status_code = 200
-        session = MagicMock()
-        session.get = AsyncMock(return_value=resp)
-        results, error = await ddg_search(session, "q")
-        assert error is None
-
-    @pytest.mark.parametrize(
-        ("engine", "expected"),
-        [
-            ("google", "Unexpected Google response shape"),
-            ("ddg", "Unexpected DuckDuckGo response shape"),
-        ],
-    )
-    async def test_unknown_200_shape_is_an_error(self, engine, expected):
-        """Markup breakage cannot masquerade as a legitimate zero-result query."""
-        resp = MagicMock()
-        resp.text = "<html><body>unknown provider shell</body></html>"
-        resp.url = "https://www.google.com/search?q=q" if engine == "google" else "https://html.duckduckgo.com/html/"
-        resp.status_code = 200
-        session = MagicMock()
-        session.get = AsyncMock(return_value=resp)
-
-        if engine == "google":
-            results, captcha, error = await google_search(session, "q", 1)
-            assert captcha is False
-        else:
-            results, error = await ddg_search(session, "q")
-
-        assert results == []
-        assert expected in error
-
-
-    # Skeleton of the page Google returned on 2026-09-27 for
-    # "site:reddit.com/live/*/updates/ reddit": full chrome, no result, and none
-    # of the "did not match" wording the explicit check looks for.
-    _EMPTY_SERP = (
-        '<html><head><title>q - Google Search</title></head><body>'
-        '<div id="hdr"><form id="sf"><input name="q" value="q"></form></div>'
-        '<div id="main">'
-        '<div><div id="st-toggle">Search tools</div><div id="st-card">Any time Past hour All results '
-        'Verbatim</div></div>'
-        '<style>.x{}</style>'
-        '<div></div>'
-        '<footer><div id="ewlSqd">From your IP address - Learn more Sign in Settings Privacy Terms</div>'
-        '<a href="/url?q=https://support.google.com/websearch">Learn more</a></footer>'
-        '<script>var a=1;</script>'
-        '</div></body></html>'
-    )
-
-    async def test_silent_empty_results_page_is_an_honest_zero(self):
-        resp = MagicMock()
-        resp.text = self._EMPTY_SERP
-        resp.url = "https://www.google.com/search?q=q"
-        resp.status_code = 200
-        session = MagicMock()
-        session.get = AsyncMock(return_value=resp)
-
-        results, captcha, error = await google_search(session, "q", 1)
-
-        assert (results, captcha, error) == ([], False, None)
-
-    _TOKENIZED_SERP = (
-        "<html><body><div>"
-        '<div><a href="/url?opi=1&amp;q=CAESaaaaaaaaaaaaaaaaaaaa&amp;uoh=3"><h3>Docs</h3></a></div>'
-        '<div><a href="/url?opi=1&amp;q=CAESbbbbbbbbbbbbbbbbbbbb&amp;uoh=3"><h3>Docs again</h3></a></div>'
-        '<div><a href="/url?opi=1&amp;q=CAEScccccccccccccccccccc&amp;uoh=3"><h3>Gone</h3></a></div>'
-        '<div><a href="/url?opi=1&amp;q=https://example.com/plain&amp;sa=U"><h3>Plain</h3></a></div>'
-        "</div></body></html>"
-    )
+        ddg_mod._pages.clear()
+        yield
+        ddg_mod._pages.clear()
 
     @staticmethod
-    def _redirector(locations):
-        """A follow_redirects=False session answering each token with a 302 (or a 200)."""
+    def _page(urls, next_s=None, prev_s=None):
+        rows = "".join(
+            f'<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg={u}">T {u}</a>'
+            f'<a class="result__snippet">snip</a></div>'
+            for u in urls
+        )
+        form = ""
+        if prev_s is not None:
+            form += (
+                '<form action="/html/" method="post">'
+                '<input type="submit" value="Previous">'
+                '<input type="hidden" name="q" value="q">'
+                f'<input type="hidden" name="s" value="{prev_s}">'
+                '<input type="hidden" name="dc" value="1">'
+                '<input type="hidden" name="vqd" value="4-token">'
+                "</form>"
+            )
+        if next_s is not None:
+            form += (
+                '<form action="/html/" method="post">'
+                '<input type="submit" value="Next">'
+                '<input type="hidden" name="q" value="q">'
+                f'<input type="hidden" name="s" value="{next_s}">'
+                '<input type="hidden" name="dc" value="11">'
+                '<input type="hidden" name="vqd" value="4-token">'
+                "</form>"
+            )
+        return f"<html><body>{rows}{form}</body></html>"
 
-        async def get(url, timeout=None):
-            resp = MagicMock()
-            target = next((v for k, v in locations.items() if k in url), None)
-            resp.status_code = 302 if target else 200
-            resp.headers = {"location": target} if target else {}
-            return resp
+    @staticmethod
+    def _resp(html, status=200):
+        resp = MagicMock()
+        resp.text = html
+        resp.status_code = status
+        resp.challenge_type = None
+        return resp
 
+    def _session(self, *pages):
+        """GET answers page 1; each POST answers the next scripted page."""
         session = MagicMock()
-        session.get = get
+        session.get = AsyncMock(return_value=self._resp(pages[0]))
+        session.post = AsyncMock(side_effect=[self._resp(p) for p in pages[1:]])
         return session
 
-    async def test_tokenized_links_resolve_through_googles_redirect(self, monkeypatch):
-        from src.fetchaller.search import google as google_mod
-
-        redirector = self._redirector(
-            {
-                "CAESaaaa": "https://docs.python.org/3/library/asyncio.html",
-                "CAESbbbb": "https://docs.python.org/3/library/asyncio.html#top",
-            }
+    async def test_page_two_posts_the_next_form(self):
+        session = self._session(
+            self._page(["https://a.example/1", "https://a.example/2"], next_s=2),
+            self._page(["https://a.example/3"], next_s=3),
         )
-        monkeypatch.setattr(google_mod, "_get_redirect_session", AsyncMock(return_value=redirector))
-        resp = MagicMock()
-        resp.text = self._TOKENIZED_SERP
-        resp.url = "https://www.google.com/search?q=q"
-        resp.status_code = 200
-        session = MagicMock()
-        session.get = AsyncMock(return_value=resp)
+        results, error = await ddg_search(session, "q", 2)
+        assert error is None
+        assert [r.url for r in results] == ["https://a.example/3"]
+        session.get.assert_awaited_once()
+        form = session.post.await_args.kwargs["form"]
+        assert (form["s"], form["dc"], form["vqd"], form["kp"]) == ("2", "11", "4-token", "-2")
 
-        results, captcha, error = await google_search(session, "q", 1)
-
-        # The duplicate destination collapses; the link that did not redirect
-        # is dropped rather than shown as a google.com URL.
-        assert [r.url for r in results] == [
-            "https://docs.python.org/3/library/asyncio.html",
-            "https://example.com/plain",
-        ]
-        assert results[0].title == "Docs"
-        assert (captcha, error) == (False, None)
-
-    async def test_tokenized_links_that_never_resolve_are_an_error(self, monkeypatch):
-        from src.fetchaller.search import google as google_mod
-
-        serp = self._TOKENIZED_SERP.replace(
-            '<div><a href="/url?opi=1&amp;q=https://example.com/plain&amp;sa=U"><h3>Plain</h3></a></div>', ""
+    async def test_page_drops_urls_given_on_earlier_pages(self):
+        """DDG re-ranks between requests, so page 2 repeats page 1 URLs."""
+        session = self._session(
+            self._page(["https://a.example/1", "https://a.example/2"], next_s=2),
+            self._page(["https://a.example/2/", "https://a.example/3"], next_s=3),
         )
-        monkeypatch.setattr(google_mod, "_get_redirect_session", AsyncMock(return_value=self._redirector({})))
-        resp = MagicMock()
-        resp.text = serp
-        resp.url = "https://www.google.com/search?q=q"
-        resp.status_code = 200
-        session = MagicMock()
-        session.get = AsyncMock(return_value=resp)
+        results, error = await ddg_search(session, "q", 2)
+        assert error is None
+        assert [r.url for r in results] == ["https://a.example/3"]
 
-        results, _captcha, error = await google_search(session, "q", 1)
+    async def test_page_three_after_page_two_costs_one_post(self):
+        session = self._session(
+            self._page(["https://a.example/1"], next_s=1),
+            self._page(["https://a.example/2"], next_s=2),
+            self._page(["https://a.example/3"], next_s=3),
+        )
+        await ddg_search(session, "q", 2)
+        results, error = await ddg_search(session, "q", 3)
+        assert error is None
+        assert [r.url for r in results] == ["https://a.example/3"]
+        assert session.get.await_count == 1
+        assert session.post.await_count == 2
 
+    async def test_cold_page_three_walks_page_two(self):
+        session = self._session(
+            self._page(["https://a.example/1"], next_s=1),
+            self._page(["https://a.example/2"], next_s=2),
+            self._page(["https://a.example/3"], next_s=3),
+        )
+        results, error = await ddg_search(session, "q", 3)
+        assert error is None
+        assert [r.url for r in results] == ["https://a.example/3"]
+        assert session.post.await_count == 2
+
+    async def test_previous_form_is_never_followed(self):
+        """From page 2 DDG lists "Previous" (s=0) before "Next"; page 3 is Next's offset."""
+        session = self._session(
+            self._page(["https://a.example/1"], next_s=10),
+            self._page(["https://a.example/2"], next_s=25, prev_s=0),
+            self._page(["https://a.example/3"], next_s=40, prev_s=10),
+        )
+        results, error = await ddg_search(session, "q", 3)
+        assert error is None
+        assert [r.url for r in results] == ["https://a.example/3"]
+        offsets = [call.kwargs["form"]["s"] for call in session.post.await_args_list]
+        assert offsets == ["10", "25"]
+
+    async def test_last_page_with_only_previous_has_no_next(self):
+        """A last page offers only "Previous"; that must not read as a way forward."""
+        session = self._session(
+            self._page(["https://a.example/1"], next_s=10),
+            self._page(["https://a.example/2"], next_s=None, prev_s=0),
+        )
+        results, error = await ddg_search(session, "q", 3)
+        assert (results, error) == ([], None)
+        assert session.post.await_count == 1
+
+    async def test_every_request_in_a_walk_is_paced(self):
+        session = self._session(
+            self._page(["https://a.example/1"], next_s=1),
+            self._page(["https://a.example/2"], next_s=2),
+            self._page(["https://a.example/3"], next_s=3),
+        )
+        calls = []
+
+        async def pace():
+            calls.append(1)
+
+        await ddg_search(session, "q", 3, pace=pace)
+        assert len(calls) == 3
+
+    async def test_page_past_the_last_is_empty_not_an_error(self):
+        session = self._session(self._page(["https://a.example/1"], next_s=None))
+        results, error = await ddg_search(session, "q", 2)
+        assert (results, error) == ([], None)
+        session.post.assert_not_awaited()
+
+    async def test_throttled_page_is_an_error(self):
+        session = self._session(
+            self._page(["https://a.example/1"], next_s=1),
+            "<html><body>DuckDuckGo homepage</body></html>",
+        )
+        session.post = AsyncMock(return_value=self._resp("<html></html>", status=202))
+        results, error = await ddg_search(session, "q", 2)
         assert results == []
-        assert "tokenized result links" in error
+        assert "HTTP 202" in error
 
-    async def test_results_in_unrecognized_markup_still_fail_loudly(self):
-        """If Google moved its results into markup the extractor does not read,
-        their text is still inside #main, and that must not read as zero."""
-        moved = self._EMPTY_SERP.replace(
-            "<div></div>",
-            "<div><div>Python's asyncio: A Hands-On Walkthrough realpython.com</div></div>",
-        )
-        resp = MagicMock()
-        resp.text = moved
-        resp.url = "https://www.google.com/search?q=q"
-        resp.status_code = 200
-        session = MagicMock()
-        session.get = AsyncMock(return_value=resp)
-
-        results, captcha, error = await google_search(session, "q", 1)
-
+    async def test_page_past_the_cap_makes_no_request(self):
+        session = self._session(self._page(["https://a.example/1"], next_s=1))
+        results, error = await ddg_search(session, "q", MAX_DDG_PAGE + 1)
         assert results == []
-        assert "Unexpected Google response shape" in error
+        assert error
+        session.get.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Integration: search() function with mocked HTTP
-# ---------------------------------------------------------------------------
-
-
-class TestSearchIntegration:
-    """Integration tests for the search() pipeline with mocked HTTP."""
+class TestBrave:
+    """Brave is one GET per page: `offset` is the zero-based page index."""
 
     @pytest.fixture(autouse=True)
     def clear_state(self):
-        """Clear cache and reset module state before each test."""
-        import src.fetchaller.search as search_mod
-        from src.fetchaller.search.ddg import search_ddg
-        from src.fetchaller.search.google import search_google
-
         _cache.clear()
-        search_mod._captcha_backoff_until = 0.0
-        search_mod._captcha_count = 0
-        search_mod._google_last_request = 0.0
-        search_mod._ddg_last_request = 0.0
-
-        # Bypass rate limiter sleeps — these tests use mocked HTTP
-        async def _fast_google(session, query, page):
-            return await search_google(session, query, page)
-
-        async def _fast_ddg(session, query):
-            return await search_ddg(session, query)
-
-        with (
-            patch("src.fetchaller.search._rate_limited_google", _fast_google),
-            patch("src.fetchaller.search._rate_limited_ddg", _fast_ddg),
-        ):
-            yield
-
+        yield
         _cache.clear()
 
-    def _mock_response(self, html: str, url: str = "https://www.google.com/search?q=test", status: int = 200):
-        """Create a mock response object."""
+    @staticmethod
+    def _page(rows, banner=False, extra=""):
+        snippets = "".join(
+            f'<div class="snippet svelte-x" data-type="web" data-pos="{i}">'
+            f'<a href="{url}" class="l1"><span>site</span><div class="title">{title}</div></a>'
+            f'<div class="content"><div class="generic-snippet">{desc}</div></div></div>'
+            for i, (url, title, desc) in enumerate(rows)
+        )
+        banner_html = '<div id="bad-results-info-banner">Not many great matches</div>' if banner else ""
+        return f"<html><head><title>q - Brave Search</title></head><body>{banner_html}{extra}{snippets}</body></html>"
+
+    @staticmethod
+    def _session(html, status=200):
         resp = MagicMock()
         resp.text = html
-        resp.url = url
         resp.status_code = status
-        return resp
-
-    @pytest.mark.asyncio
-    async def test_empty_query_returns_error(self):
-        """Empty query returns error dict without hitting engines."""
-        result = await search("", page=1)
-        assert "error" in result
-        assert result["error"] == "Search query cannot be empty."
-
-    @pytest.mark.asyncio
-    async def test_whitespace_query_returns_error(self):
-        """Whitespace-only query returns error."""
-        result = await search("   ", page=1)
-        assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_overlong_query_is_rejected_without_hitting_engines(self):
-        """Bound query memory, provider URLs, cache keys, output, and logs."""
-        with patch("src.fetchaller.search._get_session") as get_session:
-            result = await search("x" * 513, page=1)
-
-        assert result == {"error": "Search query is too long (maximum 512 characters)."}
-        get_session.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_schema_maximum_query_length_is_accepted(self):
-        """The implementation accepts the MCP schema's exact maxLength."""
-
-        async def google(*_args):
-            return [
-                SearchResult("Result", "https://example.com/", "snippet")
-            ], False, None
-
-        async def ddg(*_args):
-            return [], None
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-            patch("src.fetchaller.search._rate_limited_ddg", ddg),
-        ):
-            result = await search("x" * 512, page=1)
-
-        assert "content" in result
-        assert "Result" in result["content"]
-
-    @pytest.mark.parametrize("page", [0, -1, 101])
-    @pytest.mark.asyncio
-    async def test_page_out_of_range_is_rejected(self, page):
-        """Provider pagination is bounded before sessions or cache access."""
-        with patch("src.fetchaller.search._get_session") as get_session:
-            result = await search("query", page=page)
-
-        assert result == {"error": "Search page must be between 1 and 100."}
-        get_session.assert_not_called()
-
-    @pytest.mark.parametrize("page", [True, 1.5, "2"])
-    @pytest.mark.asyncio
-    async def test_noninteger_page_is_rejected(self, page):
-        """Direct callers get the same strict integer contract as MCP schema."""
-        result = await search("query", page=page)
-
-        assert result == {"error": "Search page must be an integer."}
-
-    @pytest.mark.asyncio
-    async def test_query_control_characters_are_normalized(self):
-        """Control characters cannot inject lines into summaries or log fields."""
-        google_result = [SearchResult("Google", "https://google-result.example/", "snippet")]
-
-        async def google(*_args):
-            return google_result, False, None
-
-        async def ddg(*_args):
-            return [], None
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-            patch("src.fetchaller.search._rate_limited_ddg", ddg),
-        ):
-            result = await search("  alpha\r\nINJECT\tbeta  ", page=1)
-
-        assert result["content"].startswith('Search: "alpha INJECT beta" | google: 1')
-        assert "\r" not in result["content"]
-
-    @pytest.mark.asyncio
-    async def test_parallel_engine_error_does_not_abandon_sibling(self):
-        """One engine error still allows the other engine to return results."""
-        ddg_finished = asyncio.Event()
-
-        async def google(*_args):
-            raise RuntimeError("google failed")
-
-        async def ddg(*_args):
-            await asyncio.sleep(0)
-            ddg_finished.set()
-            return [SearchResult("DDG", "https://ddg-result.example/", "snippet")], None
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-            patch("src.fetchaller.search._rate_limited_ddg", ddg),
-        ):
-            result = await search("partial engine error", page=1)
-
-        assert ddg_finished.is_set()
-        assert "Partial results" in result["content"]
-        assert "google: ERROR" in result["content"]
-        assert "DDG" in result["content"]
-
-    @pytest.mark.asyncio
-    async def test_outer_cancellation_cancels_and_drains_both_engines(self):
-        """Cancelling search cannot leave either provider task running."""
-        google_started = asyncio.Event()
-        ddg_started = asyncio.Event()
-        google_finished = asyncio.Event()
-        ddg_finished = asyncio.Event()
-        never = asyncio.Event()
-
-        async def google(*_args):
-            google_started.set()
-            try:
-                await never.wait()
-            finally:
-                google_finished.set()
-
-        async def ddg(*_args):
-            ddg_started.set()
-            try:
-                await never.wait()
-            finally:
-                ddg_finished.set()
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-            patch("src.fetchaller.search._rate_limited_ddg", ddg),
-        ):
-            search_task = asyncio.create_task(search("cancel both engines", page=1))
-            await asyncio.wait_for(google_started.wait(), timeout=1)
-            await asyncio.wait_for(ddg_started.wait(), timeout=1)
-            search_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await search_task
-
-        await asyncio.wait_for(google_finished.wait(), timeout=1)
-        await asyncio.wait_for(ddg_finished.wait(), timeout=1)
-        assert not [
-            task for task in asyncio.all_tasks() if task.get_name().startswith("fetchaller-search-") and not task.done()
-        ]
-
-    @pytest.mark.asyncio
-    async def test_outer_cancellation_detaches_noncooperative_engines(self):
-        """Provider cancellation suppression cannot hold an MCP caller open."""
-        release = asyncio.Event()
-        started = [asyncio.Event(), asyncio.Event()]
-        finished = [asyncio.Event(), asyncio.Event()]
-
-        async def noncooperative(index):
-            started[index].set()
-            try:
-                await release.wait()
-            except asyncio.CancelledError:
-                await release.wait()
-            finally:
-                finished[index].set()
-
-        async def google(*_args):
-            await noncooperative(0)
-            return [], False, None
-
-        async def ddg(*_args):
-            await noncooperative(1)
-            return [], None
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-            patch("src.fetchaller.search._rate_limited_ddg", ddg),
-        ):
-            caller = asyncio.create_task(search("noncooperative cancellation"))
-            await asyncio.gather(*(event.wait() for event in started))
-            caller.cancel()
-            done, _ = await asyncio.wait({caller}, timeout=0.2)
-            try:
-                assert caller in done
-                with pytest.raises(asyncio.CancelledError):
-                    caller.result()
-            finally:
-                release.set()
-                await asyncio.gather(*(event.wait() for event in finished))
-
-    def test_cancel_cleanup_retrieves_an_already_done_exception(self):
-        """Cancellation races must not emit unhandled task exceptions."""
-        import src.fetchaller.search as search_mod
-
-        done = MagicMock()
-        done.done.return_value = True
-
-        search_mod._cancel_and_detach((done,))
-
-        done.exception.assert_called_once_with()
-        done.cancel.assert_not_called()
-        done.add_done_callback.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_child_self_cancellation_is_engine_failure_not_outer_cancel(
-        self,
-    ):
-        """A provider cancelling itself cannot cancel the completed sibling."""
-
-        async def google(*_args):
-            raise asyncio.CancelledError
-
-        async def ddg(*_args):
-            return [SearchResult("DDG", "https://ddg-result.example/", "snippet")], None
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-            patch("src.fetchaller.search._rate_limited_ddg", ddg),
-        ):
-            result = await search("self cancelled provider", page=1)
-
-        assert "content" in result
-        assert "Partial results" in result["content"]
-        assert "CancelledError" in result["content"]
-        assert "DDG" in result["content"]
-
-    @pytest.mark.asyncio
-    async def test_page_two_provider_self_cancellation_is_search_failure(self):
-        """A child self-cancel must not cancel its MCP request task."""
-
-        async def google(*_args):
-            raise asyncio.CancelledError
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-        ):
-            result = await search("self cancelled provider page two", page=2)
-
-        assert "error" in result
-        assert "CancelledError" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_search_log_uses_length_not_query_text(self, capsys):
-        """Search terms and embedded secrets are absent from stderr."""
-        query = "private-token=supersecret"
-
-        async def google(*_args):
-            return [], False, None
-
-        async def ddg(*_args):
-            return [], None
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-            patch("src.fetchaller.search._rate_limited_ddg", ddg),
-        ):
-            await search(query, page=1)
-
-        stderr = capsys.readouterr().err
-        assert query not in stderr
-        assert "supersecret" not in stderr
-        assert f"query_len={len(query)}" in stderr
-
-    @pytest.mark.asyncio
-    async def test_engine_exception_diagnostic_is_bounded_and_redacted(
-        self,
-        capsys,
-    ):
-        """Transport exception URLs/secrets/control text cannot leak to logs."""
-        secret = "never-log-this"
-        error = RuntimeError(
-            f"GET https://user:password@example.com/private/path?token={secret}\nINJECT" + ("x" * 1_000)
-        )
-
-        async def google(*_args):
-            raise error
-
-        async def ddg(*_args):
-            return [], None
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=MagicMock(),
-            ),
-            patch("src.fetchaller.search._rate_limited_google", google),
-            patch("src.fetchaller.search._rate_limited_ddg", ddg),
-        ):
-            result = await search("safe query", page=1)
-
-        stderr = capsys.readouterr().err
-        assert secret not in stderr
-        assert "password" not in stderr
-        assert "/private/path" not in stderr
-        assert "\nINJECT" not in stderr
-        assert len(stderr) < 1_000
-        assert secret not in result["content"]
-
-    @pytest.mark.asyncio
-    async def test_full_pipeline_with_fixtures(self):
-        """Full pipeline: mock Google + DDG returning fixture HTML, verify merged output."""
-        google_html = (FIXTURES / "google_ssr.html").read_text()
-        ddg_html = (FIXTURES / "ddg_html.html").read_text()
-
-        google_resp = self._mock_response(google_html)
-        ddg_resp = self._mock_response(ddg_html, url="https://html.duckduckgo.com/html/?q=test")
-
-        call_count = 0
-
-        async def mock_get(url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if "google.com" in url:
-                return google_resp
-            return ddg_resp
-
-        mock_session = AsyncMock()
-        mock_session.get = mock_get
-
-        with (
-            patch("src.fetchaller.search._get_session", return_value=mock_session),
-            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
-        ):
-            result = await search("python asyncio tutorial", page=1)
-
-        assert "content" in result
-        content = result["content"]
-        assert content.startswith('Search: "python asyncio tutorial"')
-        assert "google:" in content
-        assert "ddg:" in content
-        # Should have numbered results
-        assert "1." in content
-        assert "https://" in content
-
-    @pytest.mark.asyncio
-    async def test_cache_hit_skips_fetch(self):
-        """Second identical query returns cached result without re-fetching."""
-        google_html = (FIXTURES / "google_ssr.html").read_text()
-        ddg_html = (FIXTURES / "ddg_html.html").read_text()
-
-        call_count = 0
-
-        async def mock_get(url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if "google.com" in url:
-                return self._mock_response(google_html)
-            return self._mock_response(ddg_html, url="https://html.duckduckgo.com/html/?q=test")
-
-        mock_session = AsyncMock()
-        mock_session.get = mock_get
-
-        with (
-            patch("src.fetchaller.search._get_session", return_value=mock_session),
-            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
-        ):
-            result1 = await search("cache test query", page=1)
-            first_call_count = call_count
-            result2 = await search("cache test query", page=1)
-
-        assert result1 == result2
-        assert call_count == first_call_count  # No additional fetches
-
-    @pytest.mark.asyncio
-    async def test_captcha_degraded_still_cached(self):
-        """CAPTCHA-degraded results (DDG only) ARE cached to avoid re-hitting DDG during backoff."""
-        ddg_html = (FIXTURES / "ddg_html.html").read_text()
-
-        async def mock_get(url, **kwargs):
-            if "google.com" in url:
-                return self._mock_response(
-                    "unusual traffic detected",
-                    url="https://sorry.google.com/sorry/index",
-                    status=200,
-                )
-            return self._mock_response(ddg_html, url="https://html.duckduckgo.com/html/?q=test")
-
-        mock_session = AsyncMock()
-        mock_session.get = mock_get
-
-        with (
-            patch("src.fetchaller.search._get_session", return_value=mock_session),
-            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
-        ):
-            result = await search("captcha test", page=1)
-
-        assert "content" in result
-        assert "google: captcha" in result["content"]
-        # DDG-only results should be cached (captcha flag preserved in cache)
-        assert ("captcha test", 1) in _cache
-        cached = _cache[("captcha test", 1)]
-        assert cached[3] is True  # captcha flag preserved
-
-    @pytest.mark.asyncio
-    async def test_explicit_empty_results_not_cached(self):
-        """Honest zero results are returned normally but never cached."""
-
-        async def mock_get(url, **kwargs):
-            if "google.com" in url:
-                return self._mock_response("<html><body>No results found for query</body></html>")
-            return self._mock_response(
-                '<html><body><div class="no-results">No results found for query</div></body></html>',
-                url="https://html.duckduckgo.com/html/?q=test",
-            )
-
-        mock_session = AsyncMock()
-        mock_session.get = mock_get
-
-        with (
-            patch("src.fetchaller.search._get_session", return_value=mock_session),
-            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
-        ):
-            result = await search("empty results test", page=1)
-
-        assert "content" in result
-        assert "No results found." in result["content"]
-        assert ("empty results test", 1) not in _cache
-
-    @pytest.mark.asyncio
-    async def test_all_engine_shape_failures_return_error_not_content(self):
-        """Total provider failure must set MCP isError via the error key."""
-
-        async def mock_get(url, **kwargs):
-            return self._mock_response(
-                "<html><body>unrecognized changed markup</body></html>",
-                url=url,
-            )
-
-        mock_session = AsyncMock()
-        mock_session.get = mock_get
-
-        with (
-            patch(
-                "src.fetchaller.search._get_session",
-                return_value=mock_session,
-            ),
-            patch(
-                "src.fetchaller.search._get_ddg_session",
-                return_value=mock_session,
-            ),
-        ):
-            result = await search("both providers broken", page=1)
-
-        assert "content" not in result
-        assert "Search FAILED" in result["error"]
-        assert "Unexpected Google response shape" in result["error"]
-        assert "Unexpected DuckDuckGo response shape" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_page2_skips_ddg(self):
-        """Page 2+ only queries Google, not DDG."""
-        google_html = (FIXTURES / "google_ssr.html").read_text()
-        urls_called = []
-
-        async def mock_get(url, **kwargs):
-            urls_called.append(url)
-            return self._mock_response(google_html)
-
-        mock_session = AsyncMock()
-        mock_session.get = mock_get
-
-        with (
-            patch("src.fetchaller.search._get_session", return_value=mock_session),
-            patch("src.fetchaller.search._get_ddg_session", return_value=mock_session),
-        ):
-            result = await search("page 2 test", page=2)
-
-        assert "content" in result
-        assert "(page 2)" in result["content"]
-        assert "ddg: n/a" in result["content"]
-        # Only Google should have been called
-        assert all("google.com" in url for url in urls_called)
-        assert not any("duckduckgo" in url for url in urls_called)
-
-
-# ---------------------------------------------------------------------------
-# Dedup key
-# ---------------------------------------------------------------------------
+        resp.challenge_type = None
+        session = MagicMock()
+        session.get = AsyncMock(return_value=resp)
+        return session
+
+    def test_extracts_only_organic_web_snippets(self):
+        cluster = '<div class="snippet" data-type="cluster"><a href="https://news.example/x"><div class="title">News</div></a></div>'
+        html = self._page([("https://a.example/1", "First", "About first")], extra=cluster)
+        results = brave_extract(html)
+        assert [(r.title, r.url, r.snippet) for r in results] == [("First", "https://a.example/1", "About first")]
+
+    def test_skips_a_snippet_without_a_title_or_an_http_link(self):
+        html = self._page([("https://a.example/1", "", "no title"), ("/relative", "Rel", "no http")])
+        assert brave_extract(html) == []
+
+    async def test_page_one_sends_no_offset(self):
+        session = self._session(self._page([("https://a.example/1", "First", "d")]))
+        results, error = await fetch_brave(session, "q", 1)
+        assert error is None and len(results) == 1
+        assert "offset" not in session.get.await_args.kwargs["params"]
+
+    async def test_page_n_sends_the_zero_based_offset(self):
+        session = self._session(self._page([("https://a.example/1", "First", "d")]))
+        await fetch_brave(session, "q", 3)
+        assert session.get.await_args.kwargs["params"]["offset"] == "2"
+
+    async def test_the_pace_runs_before_the_request(self):
+        session = self._session(self._page([("https://a.example/1", "First", "d")]))
+        order = []
+
+        async def pace():
+            order.append("pace")
+
+        async def get(*_a, **_k):
+            order.append("get")
+            return session.get.return_value
+
+        session.get = get
+        await fetch_brave(session, "q", 1, pace=pace)
+        assert order == ["pace", "get"]
+
+    async def test_banner_with_no_results_is_empty_not_an_error(self):
+        session = self._session(self._page([], banner=True))
+        assert await fetch_brave(session, "q", 40) == ([], None)
+
+    async def test_unrecognized_200_is_an_error(self):
+        session = self._session("<html><body>something else</body></html>")
+        results, error = await fetch_brave(session, "q", 1)
+        assert results == [] and "Unexpected Brave response shape" in error
+
+    async def test_non_200_is_an_error(self):
+        results, error = await fetch_brave(self._session("", status=429), "q", 1)
+        assert results == [] and "HTTP 429" in error and "backoff" in error
+
+    async def test_request_exception_is_an_error(self):
+        session = MagicMock()
+        session.get = AsyncMock(side_effect=RuntimeError("dns failure"))
+        results, error = await fetch_brave(session, "q", 1)
+        assert results == [] and "RuntimeError" in error and "dns failure" in error
 
 
 class TestDedupKey:
@@ -1350,70 +373,695 @@ class TestDedupKey:
         assert key1 == key2
 
 
-class TestEngineSessionsAreSeparate:
-    """Google and DDG must not share a TLS identity.
+@pytest.fixture
+def google_state(monkeypatch):
+    google._document_unavailable.clear()
+    google._cursors.clear()
+    monkeypatch.setattr(google, "_last_request", 0)
+    monkeypatch.setattr(google, "_backoff_until", 0)
+    monkeypatch.setattr(google, "_throttle_count", 0)
+    monkeypatch.setattr(google, "_last_document", None)
+    monkeypatch.setattr(google, "_MIN_INTERVAL", 0)
+    monkeypatch.delenv("FETCHALLER_GOOGLE_DOCUMENT_IDS", raising=False)
+    yield
+    google._document_unavailable.clear()
+    google._cursors.clear()
 
-    Regression: both engines used one Opera Mini session. That profile is
-    required by Google (its SSR request declares client=ms-opera-mini-android),
-    but DDG answers it with HTTP 202 and the generic homepage instead of
-    results — so DDG returned nothing on every query, and the old
-    "non-200 -> empty list" handling rendered that as a believable 'ddg: 0 new'.
-    """
 
-    def teardown_method(self):
-        import src.fetchaller.search as search_mod
+def captured_response(name="page1", status=200, headers=None):
+    return SimpleNamespace(
+        status_code=status, headers=headers or {}, text=(FIXTURES / "google_docs" / f"{name}.json").read_text()
+    )
 
-        search_mod._session = None
-        search_mod._ddg_session = None
 
-    async def test_ddg_session_is_not_the_google_session(self):
-        import src.fetchaller.search as search_mod
+class TestGoogleDocs:
+    def test_real_pages_and_empty_response(self):
+        first, cursor = google.parse_response(captured_response().text)
+        second, next_cursor = google.parse_response(captured_response("page2").text)
+        assert len(first) == len(second) == 10
+        assert first[0].url == "https://docs.python.org/3/library/asyncio.html"
+        assert "Asynchronous I/O" in first[0].title
+        assert not {r.url for r in first} & {r.url for r in second}
+        assert (cursor, next_cursor) == ("CAo=", "CBQ=")
+        assert google.parse_response(captured_response("empty").text) == ([], None)
+        assert google.parse_response(captured_response().text.split("\n", 1)[1])[0] == first
 
-        google_session = await search_mod._get_session()
-        ddg_session = await search_mod._get_ddg_session()
-        assert google_session is not ddg_session
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<html>Sign in</html>",
+            "{}",
+            "[]",
+            "[[]]",
+            '[["wrong"]]',
+            '[["documentsuggest.search.search_response",{}]]',
+            '[["documentsuggest.search.search_response",null,42]]',
+        ],
+    )
+    def test_protocol_errors_do_not_become_empty_results(self, body):
+        with pytest.raises(ValueError):
+            google.parse_response(body)
 
-    # Assert on the kwargs fetchaller passes, not on wafer's internals — the
-    # profile choice is the part this codebase owns.
-    async def test_google_session_keeps_opera_mini(self):
-        from wafer import Profile
+    @pytest.mark.parametrize(("page", "offset"), [(1, 0), (2, 10), (14, 130), (100, 990)])
+    def test_cursor_varint_roundtrip(self, page, offset):
+        data = base64.b64decode(google.page_cursor(page))
+        assert data[0] == 8
+        decoded = sum((byte & 127) << (7 * index) for index, byte in enumerate(data[1:]))
+        assert decoded == offset
+        assert all(byte & 128 for byte in data[1:-1])
+        assert data[-1] < 128
 
-        import src.fetchaller.search as search_mod
+    async def test_request_form_and_cached_server_cursor(self, google_state):
+        session = SimpleNamespace(post=AsyncMock(return_value=captured_response()))
+        query = 'Louvre musée & "art"'
+        first = await google.search_google(session, query)
+        assert len(first[0]) == 10 and first[1:] == (False, None)
+        url = session.post.call_args.args[0]
+        assert url.startswith("https://docs.google.com/document/d/") and url.endswith("/explore/search")
+        form = session.post.call_args.kwargs["form"]
+        assert json.loads(form["request"]) == [
+            "documentsuggest.search.search_request",
+            query,
+            [10, "CAA="],
+            ["en", "en"],
+            1,
+        ]
+        # Server-provided cursors take precedence over the synthesized offset.
+        google._cursors[(query, "en", 10, 2)] = ("server-cursor", google.time.monotonic())
+        await google.search_google(session, query, page=2)
+        assert json.loads(session.post.call_args.kwargs["form"]["request"])[2] == [10, "server-cursor"]
 
-        captured = {}
+    async def test_random_selection_avoids_consecutive_reuse(self, google_state):
+        session = SimpleNamespace(post=AsyncMock(return_value=captured_response()))
+        with patch.object(google.random, "shuffle", wraps=google.random.shuffle) as shuffle:
+            for _ in range(5):
+                await google.search_google(session, "Python asyncio documentation")
+        urls = [call.args[0] for call in session.post.call_args_list]
+        assert all(a != b for a, b in zip(urls, urls[1:]))
+        assert shuffle.call_count == 5
 
-        def _factory(**kwargs):
-            captured.update(kwargs)
-            return MagicMock()
+    @pytest.mark.parametrize("status", [401, 403, 404, 302])
+    async def test_failed_document_is_skipped_and_warned(self, google_state, capsys, status):
+        session = SimpleNamespace(
+            post=AsyncMock(
+                side_effect=[
+                    captured_response(
+                        status=status, headers={"location": "https://accounts.google.com/signin?secret=ignored"}
+                    ),
+                    captured_response(),
+                ]
+            )
+        )
+        result = await google.search_google(session, "Python asyncio documentation", page=2)
+        assert len(result[0]) == 10 and result[2] is None
+        calls = session.post.call_args_list
+        assert len(calls) == 2 and calls[0].args[0] != calls[1].args[0]
+        assert calls[0].kwargs["form"] == calls[1].kwargs["form"]
+        failed = calls[0].args[0].split("/d/")[1].split("/")[0]
+        await google.search_google(session, "another query")
+        assert failed not in session.post.call_args.args[0]
+        log = capsys.readouterr().err
+        assert "WARNING" in log and "cooling down and skipping" in log
+        assert "secret=ignored" not in log
 
-        with patch("wafer.AsyncSession", side_effect=_factory):
-            await search_mod._get_session()
-        assert captured.get("profile") == Profile.OPERA_MINI
+    async def test_all_documents_unavailable_is_bounded(self, google_state):
+        session = SimpleNamespace(post=AsyncMock(return_value=captured_response(status=403)))
+        result = await google.search_google(session, "query")
+        assert result[2] == "Google document unavailable (HTTP 403)"
+        assert session.post.await_count == 3
+        result = await google.search_google(session, "query")
+        assert "cooldown" in result[2] and session.post.await_count == 3
 
-    async def test_ddg_session_does_not_use_opera_mini(self):
-        import src.fetchaller.search as search_mod
+    async def test_429_honors_global_backoff_without_rotating(self, google_state):
+        session = SimpleNamespace(
+            post=AsyncMock(return_value=captured_response(status=429, headers={"retry-after": "600"}))
+        )
+        first = await google.search_google(session, "query")
+        second = await google.search_google(session, "different query")
+        assert first[1] and "600s" in first[2]
+        assert second[1] and "backoff" in second[2]
+        assert session.post.await_count == 1
 
-        captured = {}
+    @pytest.mark.parametrize("failure", [captured_response(status=503), TimeoutError("deadline")])
+    async def test_transient_failure_retries_once_same_document(self, google_state, failure):
+        session = SimpleNamespace(post=AsyncMock(side_effect=[failure, captured_response()]))
+        result = await google.search_google(session, "query")
+        assert len(result[0]) == 10 and result[2] is None
+        assert session.post.call_args_list[0] == session.post.call_args_list[1]
 
-        def _factory(**kwargs):
-            captured.update(kwargs)
-            return MagicMock()
+    async def test_protocol_failure_does_not_rotate(self, google_state):
+        response = captured_response()
+        response.text = "<html>Sign in</html>"
+        session = SimpleNamespace(post=AsyncMock(return_value=response))
+        result = await google.search_google(session, "query")
+        assert "Unexpected Google response" in result[2]
+        assert session.post.await_count == 1
 
-        with patch("wafer.AsyncSession", side_effect=_factory):
-            await search_mod._get_ddg_session()
-        # Must not inherit Google's Opera Mini identity — that is what DDG 202s on.
-        assert "profile" not in captured or captured["profile"] is None
+    async def test_valid_empty_stops_and_ends_pagination(self, google_state):
+        session = SimpleNamespace(post=AsyncMock(return_value=captured_response("empty")))
+        assert await google.search_google(session, "site:example.invalid wafer-search") == ([], False, None)
+        assert await google.search_google(session, "site:example.invalid wafer-search", 2) == ([], False, None)
+        assert session.post.await_count == 1
 
-    async def test_sessions_are_memoized(self):
-        import src.fetchaller.search as search_mod
+    async def test_configurable_pool_and_invalid_configuration(self, google_state, monkeypatch):
+        ids = google.document_ids()
+        monkeypatch.setenv("FETCHALLER_GOOGLE_DOCUMENT_IDS", json.dumps([ids[0], ids[0]]))
+        assert google.document_ids() == (ids[0],)
+        session = SimpleNamespace(post=AsyncMock(return_value=captured_response()))
+        for value in ("[]", '["../../sorry"]', "{}", "not-json"):
+            monkeypatch.setenv("FETCHALLER_GOOGLE_DOCUMENT_IDS", value)
+            result = await google.search_google(session, "query")
+            assert "configuration" in result[2]
+        session.post.assert_not_called()
 
-        assert await search_mod._get_ddg_session() is await search_mod._get_ddg_session()
 
-    async def test_close_session_releases_both(self):
-        import src.fetchaller.search as search_mod
+@pytest.fixture
+def search_state():
+    _cache.clear()
+    search_mod._sessions.clear()
+    search_mod._session_solvers.clear()
+    yield
+    _cache.clear()
+    search_mod._sessions.clear()
+    search_mod._session_solvers.clear()
 
-        await search_mod._get_session()
-        await search_mod._get_ddg_session()
+
+class TestUnifiedSearch:
+    async def test_google_is_default_and_source_is_explicit(self, search_state):
+        rows, _ = google.parse_response(captured_response().text)
+        with patch.object(search_mod, "_run_engine", AsyncMock(return_value=(rows, None))) as run:
+            result = await search("Python asyncio documentation")
+        run.assert_awaited_once_with("google", "Python asyncio documentation", 1)
+        assert "requested: google" in result["content"] and "[google]" in result["content"]
+        assert "[ddg]" not in result["content"]
+
+    @pytest.mark.parametrize("provider", ["ddg", "brave"])
+    async def test_explicit_other_provider_does_not_fall_back(self, search_state, provider):
+        with patch.object(search_mod, "_run_engine", AsyncMock(return_value=([], "HTTP 503"))) as run:
+            result = await search("query", provider=provider)
+        run.assert_awaited_once_with(provider, "query", 1)
+        assert "Search FAILED" in result["error"] and f"{provider}: HTTP 503" in result["error"]
+
+    async def test_google_failure_uses_ddg_and_discloses_fallback(self, search_state):
+        rows = ddg_extract((FIXTURES / "ddg_html.html").read_text())
+        with patch.object(search_mod, "_run_engine", AsyncMock(side_effect=[([], "HTTP 403"), (rows, None)])) as run:
+            result = await search("query")
+        assert [c.args[0] for c in run.await_args_list] == ["google", "ddg"]
+        assert "automatic fallback to ddg" in result["content"]
+        assert "[ddg]" in result["content"] and "[google]" not in result["content"]
+        assert "google: HTTP 403" in result["content"]
+        assert not _cache  # Retrying can recover Google; degraded results are not cached.
+
+    async def test_brave_fallback_when_google_and_ddg_fail(self, search_state):
+        rows, _ = google.parse_response(captured_response().text)
+        with patch.object(
+            search_mod, "_run_engine", AsyncMock(side_effect=[([], "HTTP 429"), ([], "HTTP 503"), (rows, None)])
+        ) as run:
+            result = await search("query")
+        assert [c.args[0] for c in run.await_args_list] == ["google", "ddg", "brave"]
+        assert "automatic fallback to brave" in result["content"] and "[brave]" in result["content"]
+
+    async def test_deep_page_fallback_skips_ddg(self, search_state):
+        rows, _ = google.parse_response(captured_response("page2").text)
+        with patch.object(search_mod, "_run_engine", AsyncMock(side_effect=[([], "unavailable"), (rows, None)])) as run:
+            result = await search("query", page=11)
+        assert [c.args[0] for c in run.await_args_list] == ["google", "brave"]
+        assert "skipped page 11" in result["content"] and "[brave]" in result["content"]
+
+    async def test_honest_google_zero_does_not_trigger_fallback(self, search_state):
+        with patch.object(search_mod, "_run_engine", AsyncMock(return_value=([], None))) as run:
+            result = await search("site:example.invalid wafer-search")
+        assert run.await_count == 1
+        assert "No results found." in result["content"] and "fallback" not in result["content"]
+
+    async def test_all_merges_deduplicates_and_preserves_sources(self, search_state):
+        first, _ = google.parse_response(captured_response().text)
+        second, _ = google.parse_response(captured_response("page2").text)
+
+        async def engine(name, query, page):
+            return ({"google": first, "ddg": first + second[:1], "brave": second}[name], None)
+
+        with patch.object(search_mod, "_run_engine", engine):
+            result = await search("query", provider="all")
+        text = result["content"]
+        assert "20 total" in text
+        assert text.count("[google]") == 10 and text.count("[ddg]") == 1 and text.count("[brave]") == 9
+
+    async def test_all_failures_are_error_not_empty(self, search_state):
+        with patch.object(search_mod, "_run_engine", AsyncMock(side_effect=RuntimeError("broken"))):
+            result = await search("query", provider="all")
+        assert "Search FAILED" in result["error"]
+        assert "No results found." not in result["error"]
+        assert all(f"{name}: RuntimeError: broken" in result["error"] for name in search_mod.PROVIDERS)
+
+    async def test_cache_separates_providers_pages_and_retains_source(self, search_state):
+        rows, _ = google.parse_response(captured_response().text)
+        with patch.object(search_mod, "_run_engine", AsyncMock(return_value=(rows, None))) as run:
+            first = await search("query")
+            assert await search("query") == first
+            await search("query", provider="brave")
+            await search("query", page=2)
+        assert run.await_count == 3
+        assert "[google]" in first["content"]
+
+    @pytest.mark.parametrize(
+        ("query", "page", "provider"),
+        [
+            ("", 1, "google"),
+            ("x" * 513, 1, "google"),
+            ("x", True, "google"),
+            ("x", 101, "google"),
+            ("x", 1, []),
+            ("x", 1, "unknown"),
+            ("x", 11, "ddg"),
+        ],
+    )
+    async def test_invalid_input_never_calls_providers(self, search_state, query, page, provider):
+        with patch.object(search_mod, "_run_engine", AsyncMock()) as run:
+            assert "error" in await search(query, page=page, provider=provider)
+        run.assert_not_called()
+
+    async def test_provider_timeout_does_not_wait_for_cancellation_resistant_task(self, search_state, monkeypatch):
+        stopped = asyncio.Event()
+        started = asyncio.Event()
+
+        async def resistant(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await stopped.wait()
+            return [], False, None
+
+        monkeypatch.setattr(search_mod, "_GOOGLE_TIMEOUT", 0.01)
+        with patch.object(search_mod, "search_google", resistant):
+            try:
+                result = await asyncio.wait_for(search_mod._run_engine("google", "query", 1), 1)
+                assert "timed out" in result[1]
+                assert started.is_set()
+            finally:
+                stopped.set()
+                await asyncio.sleep(0)
+
+    async def test_outer_cancellation_reaches_all_providers(self, search_state):
+        started = set()
+        cancelled = set()
+
+        async def engine(name, *args):
+            started.add(name)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.add(name)
+                raise
+
+        with patch.object(search_mod, "_run_engine", engine):
+            task = asyncio.create_task(search("query", provider="all"))
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if len(started) == 3:
+                    break
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.sleep(0)
+        assert cancelled == set(search_mod.PROVIDERS)
+
+    async def test_google_session_uses_plain_transport_without_redirects(self, search_state):
+        with patch("wafer.AsyncSession", return_value=object()) as factory:
+            first = await search_mod._get_session("google")
+            assert await search_mod._get_session("google") is first
+        assert factory.call_args.kwargs["follow_redirects"] is False
+        assert "profile" not in factory.call_args.kwargs
+        assert "cache_dir" not in factory.call_args.kwargs
+
+    def test_output_is_bounded_at_complete_result_boundary(self):
+        rows, _ = google.parse_response(captured_response().text)
+        output = _format_results(rows * 1000)
+        assert len(output) <= _MAX_RESULTS_OUTPUT_CHARS
+        assert "trailing search results" in output
+
+
+async def test_google_document_retries_share_global_pacing(google_state, monkeypatch):
+    clock = [1000.0]
+    sent = []
+
+    async def sleep(seconds):
+        clock[0] += seconds
+
+    async def post(*args, **kwargs):
+        sent.append(clock[0])
+        return captured_response(status=403) if len(sent) == 1 else captured_response()
+
+    monkeypatch.setattr(google.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(google.asyncio, "sleep", sleep)
+    monkeypatch.setattr(google, "_MIN_INTERVAL", 6.0)
+    session = SimpleNamespace(post=post)
+    assert (await google.search_google(session, "query"))[2] is None
+    assert (await google.search_google(session, "different query"))[2] is None
+    assert sent == [1000.0, 1006.0, 1012.0]
+
+
+async def test_google_document_recovers_after_cooldown(google_state, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(google.time, "monotonic", lambda: clock[0])
+    only = google.document_ids()[0]
+    monkeypatch.setenv("FETCHALLER_GOOGLE_DOCUMENT_IDS", json.dumps([only]))
+    session = SimpleNamespace(post=AsyncMock(side_effect=[captured_response(status=404), captured_response()]))
+    assert "HTTP 404" in (await google.search_google(session, "query"))[2]
+    assert "cooldown" in (await google.search_google(session, "query"))[2]
+    clock[0] += 901
+    results, throttled, error = await google.search_google(session, "query")
+    assert len(results) == 10 and not throttled and error is None
+    assert session.post.await_count == 2
+
+
+async def test_google_global_backoff_honors_http_date(google_state, monkeypatch):
+    from email.utils import formatdate
+
+    monkeypatch.setattr(google.time, "time", lambda: 1_000_000.0)
+    session = SimpleNamespace(
+        post=AsyncMock(
+            return_value=captured_response(status=429, headers={"retry-after": formatdate(1_000_600, usegmt=True)})
+        )
+    )
+    assert "600s" in (await google.search_google(session, "query"))[2]
+    for value in ("not-a-date", "NaN", "inf"):
+        assert google._retry_after(value) == 0
+
+
+async def test_google_cursor_expiry_uses_stateless_offset(google_state, monkeypatch):
+    google._cursors[("query", "en", 10, 2)] = ("expired-server-cursor", google.time.monotonic() - 301)
+    session = SimpleNamespace(post=AsyncMock(return_value=captured_response("page2")))
+    await google.search_google(session, "query", 2)
+    assert json.loads(session.post.call_args.kwargs["form"]["request"])[2] == [10, "CAo="]
+
+
+async def test_all_keeps_successful_results_and_visible_provider_failure(search_state):
+    rows, _ = google.parse_response(captured_response().text)
+
+    async def engine(name, *args):
+        return (rows, None) if name == "google" else ([], "HTTP 429")
+
+    with patch.object(search_mod, "_run_engine", engine):
+        result = await search("query", provider="all")
+    assert "[google]" in result["content"] and "ddg: HTTP 429" in result["content"]
+    assert "brave: HTTP 429" in result["content"] and not _cache
+
+
+async def test_provider_child_cancellation_is_failure_not_outer_cancellation(search_state):
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    with patch.object(search_mod, "fetch_brave", cancelled):
+        result = await search("query", provider="brave")
+    assert "Provider task was cancelled" in result["error"]
+
+
+async def test_search_logs_redact_query_and_provider_exception(search_state, capsys):
+    secret_query = "private query terms"
+    rows, _ = google.parse_response(captured_response().text)
+    with patch.object(search_mod, "_run_engine", AsyncMock(return_value=(rows, None))):
+        await search(secret_query)
+    assert secret_query not in capsys.readouterr().err
+    diagnostic = search_mod._safe_error(RuntimeError("token=abc123\n" + "x" * 1000))
+    assert "abc123" not in diagnostic and "\n" not in diagnostic and len(diagnostic) < 250
+
+
+def test_google_general_web_and_unicode_captures():
+    banff, _ = google.parse_response(captured_response("banff").text)
+    french, _ = google.parse_response(captured_response("french").text)
+    assert banff[0].url == "https://parks.canada.ca/pn-np/ab/banff"
+    assert banff[0].title == "Banff National Park - Parks Canada"
+    assert french[0].title == "Musée du Louvre | Ministère de la Culture"
+    assert french[0].url.startswith("https://www.culture.gouv.fr/")
+    assert all(not row.url.startswith("https://docs.google.com/document/") for row in banff + french)
+
+
+def test_real_brave_pages_have_disjoint_organic_results():
+    first = brave_extract((FIXTURES / "brave_page1.html").read_text())
+    second = brave_extract((FIXTURES / "brave_page2.html").read_text())
+    assert len(first) == len(second) == 20
+    assert not {r.url for r in first} & {r.url for r in second}
+    assert any("docs.python.org" in r.url for r in first)
+
+
+@pytest.mark.parametrize("provider", ["brave", "ddg"])
+async def test_paced_http_transport_does_not_retry_or_bunch_requests(provider, search_state, monkeypatch):
+    """Replay a 503 then a real captured page through the actual wafer client."""
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    module = brave_mod if provider == "brave" else ddg_mod
+    body = (FIXTURES / ("brave_page1.html" if provider == "brave" else "ddg_html.html")).read_bytes()
+    arrivals = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            arrivals.append(time.monotonic())
+            self.send_response(503 if len(arrivals) == 1 else 200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(module, "_ENDPOINT", f"http://127.0.0.1:{server.server_port}/search")
+    monkeypatch.setattr(module, f"{provider}_search_limiter", DomainRateLimiter(6.0, jitter=(0.3, 0.3)))
+    try:
+        first = await search("Python asyncio documentation", provider=provider)
+        assert "HTTP 503" in first["error"]
+        assert len(arrivals) == 1  # A hidden retry would already have returned 200.
+        second = await search("Python asyncio documentation", provider=provider)
+        assert f"[{provider}]" in second["content"]
+        assert len(arrivals) == 2 and arrivals[1] - arrivals[0] >= 6.0
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+
+@pytest.fixture
+def provider_clock(monkeypatch):
+    import time
+
+    clock = [1000.0]
+    real_sleep = asyncio.sleep
+
+    async def sleep(seconds):
+        clock[0] += seconds
+        await real_sleep(0)
+
+    async def parse(function, *args, **_kwargs):
+        return function(*args)
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    monkeypatch.setattr(brave_mod, "run_isolated", parse)
+    monkeypatch.setattr(ddg_mod, "run_isolated", parse)
+    return clock, real_sleep
+
+
+async def test_brave_modes_share_one_serial_paced_gate(search_state, provider_clock, monkeypatch):
+    clock, yield_once = provider_clock
+    starts = []
+    active = False
+    response = SimpleNamespace(status_code=200, headers={}, text=(FIXTURES / "brave_page1.html").read_text())
+
+    async def get(*_args, **_kwargs):
+        nonlocal active
+        assert not active
+        active = True
+        starts.append(clock[0])
+        await yield_once(0)
+        clock[0] += 2.0
+        active = False
+        return response
+
+    session = SimpleNamespace(get=get)
+    monkeypatch.setattr(brave_mod, "brave_search_limiter", DomainRateLimiter(6.0, jitter=(0.3, 0.3)))
+    with (
+        patch.object(search_mod, "_get_session", AsyncMock(return_value=session)),
+        patch.object(search_mod, "search_google", AsyncMock(return_value=([], False, "unavailable"))),
+        patch.object(search_mod, "search_ddg", AsyncMock(return_value=([], "unavailable"))),
+    ):
+        results = await asyncio.gather(
+            *(search("Python asyncio documentation", provider=name) for name in ("brave", "google", "all"))
+        )
+    assert all("[brave]" in result["content"] for result in results)
+    assert len(starts) == 3 and all(b - a >= 6.3 - 1e-8 for a, b in zip(starts, starts[1:]))
+
+
+@pytest.mark.parametrize(
+    ("provider", "status", "delay"),
+    [("brave", 429, 60), ("brave", 403, 300), ("ddg", 429, 60), ("ddg", 403, 300), ("ddg", 202, 300)],
+)
+async def test_block_response_stops_queued_queries_and_recovers(provider, status, delay, provider_clock):
+    clock, yield_once = provider_clock
+    calls = []
+    module = brave_mod if provider == "brave" else ddg_mod
+    html = (FIXTURES / ("brave_page1.html" if provider == "brave" else "ddg_html.html")).read_text()
+
+    async def get(*_args, **_kwargs):
+        calls.append(clock[0])
+        await yield_once(0)
+        return SimpleNamespace(status_code=status if len(calls) == 1 else 200, headers={}, text=html)
+
+    session = SimpleNamespace(get=get)
+    function = fetch_brave if provider == "brave" else ddg_search
+    results = await asyncio.gather(function(session, "first query"), function(session, "second query"))
+    assert len(calls) == 1
+    assert f"HTTP {status}" in results[0][1] and "backoff" in results[1][1]
+    clock[0] += delay + 1
+    rows, error = await function(session, "recovery query")
+    assert error is None and len(rows) >= 10 and len(calls) == 2
+    assert module._backoff_until < clock[0]
+
+
+@pytest.mark.parametrize("provider", ["brave", "ddg"])
+async def test_provider_retry_after_extends_cooldown(provider, provider_clock):
+    clock, _ = provider_clock
+    function = fetch_brave if provider == "brave" else ddg_search
+    response = SimpleNamespace(
+        status_code=429, headers={"retry-after": "600"}, text=(FIXTURES / "brave_captcha_429.html").read_text()
+    )
+    session = SimpleNamespace(get=AsyncMock(return_value=response))
+    assert "600s" in (await function(session, "query"))[1]
+    clock[0] += 301
+    assert "backoff" in (await function(session, "another query"))[1]
+    assert session.get.await_count == 1
+
+
+async def test_brave_sessions_reuse_only_the_same_guarded_solver(search_state):
+    from wafer.browser import BrowserSolver
+
+    # Real wafer sessions: constructing solvers does not launch a browser.
+    with BrowserSolver(solve_timeout=120) as first, BrowserSolver(solve_timeout=120) as second:
+        plain = await search_mod._get_session("brave")
+        guarded = await search_mod._get_session("brave", browser_solver=first)
+        assert guarded is not plain
+        assert guarded._browser_solver is first
+        assert await search_mod._get_session("brave", browser_solver=first) is guarded
+        other = await search_mod._get_session("brave", browser_solver=second)
+        assert other is not guarded and other._browser_solver is second
+        plain_again = await search_mod._get_session("brave")
+        assert plain_again is not other and plain_again._browser_solver is None
+        # Sharing the server solver must not attach it to Google's JSON API or DDG.
+        for provider in ("google", "ddg"):
+            session = await search_mod._get_session(provider, browser_solver=first)
+            assert session._browser_solver is None
         await search_mod.close_session()
-        assert search_mod._session is None
-        assert search_mod._ddg_session is None
+        assert not search_mod._sessions and not search_mod._session_solvers
+        assert not first._executor_closed and not second._executor_closed
+
+
+@pytest.mark.parametrize("provider", ["brave", "all", "google"])
+async def test_guarded_solver_reaches_brave_in_direct_all_and_fallback(search_state, provider):
+    from wafer.browser import BrowserSolver
+
+    rows = brave_extract((FIXTURES / "brave_page1.html").read_text())
+    with BrowserSolver(solve_timeout=120) as solver:
+        with (
+            patch.object(search_mod, "fetch_brave", AsyncMock(return_value=(rows, None))) as brave,
+            patch.object(search_mod, "search_google", AsyncMock(return_value=([], False, "unavailable"))),
+            patch.object(search_mod, "search_ddg", AsyncMock(return_value=([], "unavailable"))),
+        ):
+            result = await search("Python asyncio documentation", provider=provider, browser_solver=solver)
+        assert "[brave]" in result["content"] and "brave: 20" in result["content"]
+        assert brave.await_args.args[0]._browser_solver is solver
+        assert _cache == {} or provider == "brave"
+        assert all(
+            session._browser_solver is None
+            for name, session in search_mod._sessions.items()
+            if name != "brave"
+        )
+
+
+async def test_brave_recovery_has_its_own_budget_and_bounded_body(search_state, monkeypatch):
+    captured = SimpleNamespace(
+        status_code=200, challenge_type=None, headers={},
+        text=(FIXTURES / "brave_page1.html").read_text(),
+    )
+
+    async def get(*_args, **kwargs):
+        # A solve must outlive the old engine deadline while retaining its
+        # transport deadline and body cap, without an extra application retry.
+        assert kwargs["timeout"] == 150
+        assert kwargs["max_response_size"] == brave_mod._MAX_SEARCH_HTML_CHARS
+        await asyncio.sleep(0.03)
+        return captured
+
+    session = SimpleNamespace(get=AsyncMock(side_effect=get))
+    monkeypatch.setattr(search_mod, "_ENGINE_TIMEOUT", 0.001)
+    monkeypatch.setattr(search_mod, "_BRAVE_TIMEOUT", 5)
+    with patch.object(search_mod, "_get_session", AsyncMock(return_value=session)):
+        result = await search("Python asyncio documentation", provider="brave")
+    assert "brave: 20" in result["content"]
+    assert session.get.await_count == 1
+
+
+@pytest.mark.parametrize("status,delay", [(200, 300), (429, 60), (403, 300)])
+async def test_identified_brave_gate_is_an_error_and_holds_queued_modes(search_state, status, delay):
+    captured = SimpleNamespace(
+        status_code=status, challenge_type="brave", headers={},
+        text=(FIXTURES / "brave_captcha_429.html").read_text(),
+    )
+    session = SimpleNamespace(get=AsyncMock(return_value=captured))
+    with (
+        patch.object(search_mod, "_get_session", AsyncMock(return_value=session)),
+        patch.object(search_mod, "search_google", AsyncMock(return_value=([], False, "unavailable"))),
+        patch.object(search_mod, "search_ddg", AsyncMock(return_value=([], "unavailable"))),
+        patch.object(brave_mod, "run_isolated", AsyncMock()) as parse,
+    ):
+        results = await asyncio.gather(
+            *(search("Python asyncio documentation", provider=name) for name in ("brave", "all", "google"))
+        )
+    assert all("error" in result for result in results)
+    assert "unresolved Brave challenge" in results[0]["error"]
+    assert f"({delay:.0f}s)" in results[0]["error"]
+    assert "backoff" in results[1]["error"] and "backoff" in results[2]["error"]
+    assert session.get.await_count == 1
+    parse.assert_not_called()
+    assert not _cache
+
+
+@pytest.mark.parametrize("status", [200, 429, 403])
+async def test_cancelled_browser_exchange_keeps_gate_until_completion(search_state, status):
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    response = SimpleNamespace(
+        status_code=status, challenge_type="brave" if status != 200 else None, headers={},
+        text=(FIXTURES / ("brave_page1.html" if status == 200 else "brave_captcha_429.html")).read_text(),
+    )
+
+    async def get(*_args, **_kwargs):
+        started.set()
+        await finished.wait()
+        return response
+
+    session = SimpleNamespace(get=AsyncMock(side_effect=get))
+    with patch.object(search_mod, "_get_session", AsyncMock(return_value=session)):
+        first = asyncio.create_task(search("first query", provider="brave"))
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(first, 0.2)
+            second = asyncio.create_task(search("second query", provider="brave"))
+            await asyncio.sleep(0.02)
+            assert session.get.await_count == 1  # Cancelled browser work still holds the gate.
+            finished.set()
+            result = await asyncio.wait_for(second, 5)
+            if status == 200:
+                assert "brave: 20" in result["content"] and session.get.await_count == 2
+            else:
+                assert "backoff" in result["error"] and session.get.await_count == 1
+        finally:
+            finished.set()
+            await asyncio.sleep(0)

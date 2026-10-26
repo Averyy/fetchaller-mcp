@@ -33,14 +33,23 @@ A flagged shell also returns what it still declares — meta description,
 canonical URL, and Organization `sameAs` profiles — which on a page that renders
 to nothing is the whole usable answer.
 
-### search(query, page?)
+### search(query, provider, page?)
 
-Web search via Google + DuckDuckGo. Returns titles, URLs, and snippets. Use `fetch` to read full pages from results.
+Unified web search. Include the required `provider`: `google` (default choice), `ddg`, `brave`, or `all`. Returns titles, URLs and snippets; each result names its actual provider. Use `fetch` to read full pages.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| query | string | required | Search query |
-| page | integer | 1 | Result page (1-indexed) |
+| query | string | required | Search query, up to 512 characters |
+| provider | string | required; prefer google | google, ddg, brave, all |
+| page | integer | 1 | Pages 1-100; ddg alone supports 1-10 |
+
+Google failures fall back to DDG, then Brave, with the failure and fallback disclosed. An honest empty answer does not trigger fallback. Explicit DDG or Brave calls use only that provider. `all` queries and merges all three with URL deduplication, Google first. DDG is explicitly skipped beyond page 10 in `all` and Google fallback. Complete nonempty successes are cached for five minutes by query/page/provider; degraded results are not cached.
+
+Google uses the Google Docs research-search JSON API, not an HTML SERP: ten requested results per page, no API key, login, browser or Opera Mini. Public document IDs provide request context and do not scope the web search. Every uncached search starts with a random healthy verified ID, avoiding consecutive reuse when possible. Failed IDs are warned about, skipped and cooled down for 15 minutes. All IDs share six-second pacing, a three-attempt total budget, and global 429/Retry-After backoff. Prefer returned pagination cursors; stateless pages encode the offset as a protobuf varint. Configure eligible IDs with `FETCHALLER_GOOGLE_DOCUMENT_IDS` (JSON array); defaults are packaged in `search/google_documents.json`. Ranking/freshness/SafeSearch/geographic/time-filter parity with ordinary Google search is unverified. All engines share Reddit’s default ten-requests-per-minute budget per provider via at least six-second spacing. DDG/Brave add jitter, serialize the full HTTP exchange, and set wafer’s limiter to six seconds with hidden retries disabled. Their provider-wide cooldowns are 60 seconds after 429 and 300 after 403 (or DDG’s blocking 202), extended by longer Retry-After; cooldowns apply to explicit, all and fallback calls.
+
+Brave verification handling uses the server’s existing guarded browser solver and requires the published wafer 0.7.9 release (fetchaller 3.8.6). Its approved commit d01c811 fixes the earlier reload stall and fast spare-token classification race. Real challenge recovery through MCP has returned 20 attributed results on macOS and Linux; native headed/headless checks verified fresh PoW, spare-token reuse and browser-free restart. See docs/brave-search-investigation.md. Brave consumes token cookies after HTTP reads; wafer can reuse session-local spare tokens for later gates. Only unspent cookies persist across restart, and a later gate may need fresh PoW. Brave has a 150-second total HTTP budget and a 180-second provider budget; the default solver cap is 120 seconds. Brave’s first-party browser exchanges share wafer’s six-second limiter. An unresolved challenge is a disclosed provider error with a cooldown, even on HTTP 200; it is never an empty result. Google and DDG remain browser-free. MCP clients should allow 360 seconds for the full Google/DDG/Brave fallback chain.
+
+Example: `search({"query":"Python asyncio documentation","provider":"google"})`. Use `"provider":"all"` to compare sources. The former standalone web-search tools have been replaced by this tool; allow-list only `mcp__fetchaller__search`.
 
 ### browse_reddit(subreddit, sort?, time?, limit?, after?, timeout?)
 

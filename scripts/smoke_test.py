@@ -109,7 +109,7 @@ LIVE_SUITE_EXEMPT = frozenset(
         # Federal postings close, so a hardcoded poster id fails on a date
         # nobody chose — the same reason as get_gojobs_job.
         "get_gcjobs_job",
-        }
+    }
 )
 
 _STDIO_COMMAND_ENV = "SMOKE_STDIO_COMMAND"
@@ -282,6 +282,17 @@ def _validate_web_search(text: str) -> str | None:
     return None
 
 
+def _validate_provider_web_search(text: str, provider: str) -> str | None:
+    error = _validate_web_search(text)
+    if error:
+        return error
+    required = ("google", "ddg", "brave") if provider == "all" else (provider,)
+    for name in required:
+        if (provider != "all" and f"[{name}]" not in text) or not re.search(rf"\b{name}: [1-9]\d*\b", text):
+            return f"missing successful {name} results (fallback does not satisfy this gate)"
+    return None
+
+
 def _validate_aliexpress_search(text: str) -> str | None:
     if not re.search(
         r'(?m)^Search: "usb c cable" \| page 1 \| [1-9][\d,]* results$',
@@ -435,7 +446,8 @@ async def _call(
         response = await session.call_tool(
             name,
             arguments,
-            read_timeout_seconds=timedelta(seconds=180),
+            # Google + DDG failures can precede Brave's bounded browser solve.
+            read_timeout_seconds=timedelta(seconds=360),
         )
     except Exception as exc:
         return Result(
@@ -586,15 +598,19 @@ async def run_live_tool_suite(
                 semantic_check=_validate_search_reddit,
             )
         )
-    results.append(
-        await _call(
-            session,
-            "search",
-            {"query": "Python asyncio documentation", "page": 1},
-            minimum_chars=100,
-            semantic_check=_validate_web_search,
+    # Every provider is gated explicitly; Google fallback cannot mask a failure.
+    for provider, domain in (("google", "docs.google.com"), ("ddg", "duckduckgo.com"),
+                             ("brave", "search.brave.com"), ("all", "docs.google.com")):
+        await _pace_domain(last_call, domain)
+        results.append(
+            await _call(
+                session,
+                "search",
+                {"query": "Python asyncio documentation", "provider": provider, "page": 1},
+                minimum_chars=100,
+                semantic_check=lambda text, selected=provider: _validate_provider_web_search(text, selected),
+            )
         )
-    )
 
     if not skip_aliexpress:
         await _pace_domain(last_call, "aliexpress.com")

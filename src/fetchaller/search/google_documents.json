@@ -1,0 +1,70 @@
+{
+  "validated_on": "2026-10-25",
+  "endpoint_template": "https://docs.google.com/document/d/{document_id}/explore/search",
+  "note": "These are publicly linked Kubernetes community documents, not verified Google-owned documents. Inclusion records observed acceptance, not a guarantee of future availability.",
+  "documents": [
+    {
+      "id": "1RvhQAEIrVLHbyNnuaT99-6u9ZUMp7BfkPupT2LAZK7w",
+      "title": "Kubernetes SIG Autoscaling Agenda",
+      "source_url": "https://github.com/kubernetes/community/blob/master/sig-autoscaling/README.md",
+      "preview_url": "https://docs.google.com/document/d/1RvhQAEIrVLHbyNnuaT99-6u9ZUMp7BfkPupT2LAZK7w/preview",
+      "verified_on": "2026-10-25",
+      "verification": {
+        "client": "macOS /usr/bin/curl 8.7.1 with -q",
+        "cookies": false,
+        "custom_user_agent": false,
+        "browser_impersonation": false,
+        "query": "site:reddit.com mechanical keyboard recommendations",
+        "requested_count": 10,
+        "page_1_http_status": 200,
+        "page_1_results": 10,
+        "page_2_http_status": 200,
+        "page_2_results": 10,
+        "url_overlap": 0,
+        "public_preview_http_status": 200
+      }
+    },
+    {
+      "id": "10QkXwiZfBL7wBKHHFslooXvGDKHA75jkkgiIXuKFryM",
+      "title": "SIG Arch - Production Readiness Agenda and Notes",
+      "source_url": "https://github.com/kubernetes/community/blob/master/sig-architecture/README.md",
+      "preview_url": "https://docs.google.com/document/d/10QkXwiZfBL7wBKHHFslooXvGDKHA75jkkgiIXuKFryM/preview",
+      "verified_on": "2026-10-25",
+      "verification": {
+        "client": "macOS /usr/bin/curl 8.7.1 with -q",
+        "cookies": false,
+        "custom_user_agent": false,
+        "browser_impersonation": false,
+        "query": "site:reddit.com mechanical keyboard recommendations",
+        "requested_count": 10,
+        "page_1_http_status": 200,
+        "page_1_results": 10,
+        "page_2_http_status": 200,
+        "page_2_results": 10,
+        "url_overlap": 0,
+        "public_preview_http_status": 200
+      }
+    },
+    {
+      "id": "1HtTI0rJEGP_MSf6eO87aCmx_tzpovPAAg7U2Zxwm8FE",
+      "title": "Kube SIG Arch: Code Organization",
+      "source_url": "https://github.com/kubernetes/community/blob/master/sig-architecture/README.md",
+      "preview_url": "https://docs.google.com/document/d/1HtTI0rJEGP_MSf6eO87aCmx_tzpovPAAg7U2Zxwm8FE/preview",
+      "verified_on": "2026-10-25",
+      "verification": {
+        "client": "macOS /usr/bin/curl 8.7.1 with -q",
+        "cookies": false,
+        "custom_user_agent": false,
+        "browser_impersonation": false,
+        "query": "site:reddit.com mechanical keyboard recommendations",
+        "requested_count": 10,
+        "page_1_http_status": 200,
+        "page_1_results": 10,
+        "page_2_http_status": 200,
+        "page_2_results": 10,
+        "url_overlap": 0,
+        "public_preview_http_status": 200
+      }
+    }
+  ]
+}

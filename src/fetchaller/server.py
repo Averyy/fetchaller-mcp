@@ -35,6 +35,8 @@ from .meta_careers.search import search_meta_jobs
 from .oracle_recruiting.search import search_oracle_jobs
 from .queue.reddit_queue import QueueConfig, RedditRequestQueue
 from .realtor.search import search_realtor
+from .search.brave import BROWSER_SOLVE_TIMEOUT
+from .search.ddg import MAX_DDG_PAGE
 from .security.browser_proxy import BrowserEgressProxy, BrowserProxyError
 from .security.xss import redact_secrets_for_log, sanitize_for_log
 from .tools.browse_reddit import browse_reddit
@@ -101,11 +103,40 @@ class _AuditedBrowserSolver:
 
     def solve(self, url: str, *args, **kwargs):
         self._record(url)
-        return self._solver.solve(url, *args, **kwargs)
+        args, kwargs = self._bound_brave_solve(args, kwargs)
+        result = self._solver.solve(url, *args, **kwargs)
+        self._log_brave_result(args, kwargs, result)
+        return result
 
     async def asolve(self, url: str, *args, **kwargs):
         self._record(url)
-        return await self._solver.asolve(url, *args, **kwargs)
+        args, kwargs = self._bound_brave_solve(args, kwargs)
+        result = await self._solver.asolve(url, *args, **kwargs)
+        self._log_brave_result(args, kwargs, result)
+        return result
+
+    @staticmethod
+    def _bound_brave_solve(args, kwargs):
+        if (args[0] if args else kwargs.get("challenge_type")) == "brave":
+            # wafer supplies the request's remaining budget explicitly; that
+            # overrides BrowserSolver's default, so bound this dispatch too.
+            if len(args) > 1:
+                timeout = args[1]
+                args = (args[0], min(timeout, BROWSER_SOLVE_TIMEOUT) if timeout is not None else BROWSER_SOLVE_TIMEOUT, *args[2:])
+            else:
+                timeout = kwargs.get("timeout")
+                kwargs["timeout"] = min(timeout, BROWSER_SOLVE_TIMEOUT) if timeout is not None else BROWSER_SOLVE_TIMEOUT
+        return args, kwargs
+
+    @staticmethod
+    def _log_brave_result(args, kwargs, result) -> None:
+        if (args[0] if args else kwargs.get("challenge_type")) != "brave":
+            return
+        response = getattr(result, "response", None)
+        _log(
+            f"BRAVE_BROWSER_SOLVE response_status={getattr(response, 'status', None)} "
+            f"challenge_absent={getattr(result, 'challenge_absent', None)}"
+        )
 
     # ``intercept_iframe`` drives the same browser to ``embedder_url``. Auditing
     # only solve/asolve let a real navigation reach the browser uncounted, so a
@@ -518,7 +549,7 @@ def _summarize_args(tool_name: str, args: dict) -> str:
     elif tool_name == "search_reddit":
         return f"query_len={len(str(args.get('query', '')))} subreddit={'set' if args.get('subreddit') else 'all'}"
     elif tool_name == "search":
-        return f"query_len={len(str(args.get('query', '')))} page={args.get('page', 1)}"
+        return f"query_len={len(str(args.get('query', '')))} provider={sanitize_for_log(str(args.get('provider', '?')), max_length=20)} page={args.get('page', 1)}"
     elif tool_name == "get_aliexpress_product":
         return (
             f"product_id_len={len(str(args.get('product_id', '')))} "
@@ -575,7 +606,7 @@ _TOOL_ARGUMENTS: dict[str, set[str]] = {
         "after",
         "timeout",
     },
-    "search": {"query", "page"},
+    "search": {"query", "provider", "page"},
     "get_aliexpress_product": {"product_id", "timeout"},
     "search_aliexpress": {
         "query",
@@ -727,7 +758,7 @@ _TOOL_REQUIRED = {
     "fetch": {"url"},
     "browse_reddit": {"subreddit"},
     "search_reddit": {"query"},
-    "search": {"query"},
+    "search": {"query", "provider"},
     "get_aliexpress_product": {"product_id"},
     "search_aliexpress": {"query"},
     "get_alibaba_product": {"product_id"},
@@ -867,6 +898,7 @@ _TOOL_ENUMS = {
     ("search_eightfold_jobs", "sort"): {"relevance", "recent"},
     ("search_amazon_jobs", "sort"): {"relevant", "recent"},
     ("search_google_jobs", "sort"): {"relevance", "date"},
+    ("search", "provider"): {"google", "ddg", "brave", "all"},
     ("search_linkedin_jobs", "sort"): {"relevance", "recent"},
     ("search_linkedin_jobs", "date_posted"): {"any", "24h", "week", "month"},
     ("search_linkedin_jobs", "workplace"): {"on_site", "remote", "hybrid"},
@@ -918,6 +950,37 @@ _TOOL_ENUMS = {
         "price-desc",
     },
 }
+
+def _web_search_schema(max_page: int) -> dict:
+    """One web search tool with explicit provider selection."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Search query",
+            },
+            "provider": {
+                "type": "string",
+                "enum": ["google", "ddg", "brave", "all"],
+                "default": "google",
+                "description": "Required. Prefer google; google failures fall back to DDG then Brave. all merges all providers. Every result names its source.",
+            },
+            "page": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": max_page,
+                "default": 1,
+                "description": "Result page (1-indexed, default: 1)",
+            },
+        },
+        "required": ["query", "provider"],
+    }
+
+
 _INTEGER_RANGES = {
     "maxTokens": (1, 250_000),
     "timeout": (1, 300),
@@ -998,6 +1061,12 @@ def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
     # satisfies it, and rejecting the blank one broke exactly the partial-filter
     # call that clients send when a field is unfilled. The anyOf itself is still
     # enforced above — at least one member must be present.
+    if tool_name == "search":
+        provider = arguments.get("provider")
+        if not isinstance(provider, str) or provider not in {"google", "ddg", "brave", "all"}:
+            return "provider must be google, ddg, brave, or all"
+        if provider == "ddg" and type(arguments.get("page", 1)) is int and arguments.get("page", 1) > MAX_DDG_PAGE:
+            return f"DuckDuckGo supports pages 1-{MAX_DDG_PAGE}"
     mandatory = set(_TOOL_REQUIRED[tool_name])
 
     for name, value in arguments.items():
@@ -1178,7 +1247,10 @@ def create_server(
             browser_proxy = BrowserEgressProxy()
             browser_proxy.start()
             if browser_solver is None:
-                solver_kwargs = {"egress_guard_proxy": browser_proxy.url}
+                solver_kwargs = {
+                    "egress_guard_proxy": browser_proxy.url,
+                    "solve_timeout": BROWSER_SOLVE_TIMEOUT,
+                }
                 if config.browser_executable_path is not None:
                     solver_kwargs["executable_path"] = (
                         config.browser_executable_path
@@ -1448,29 +1520,13 @@ def create_server(
             Tool(
                 name="search",
                 description=(
-                    "Search the web and return results with titles, URLs, and snippets. "
-                    "Use this to discover URLs, then use fetch to read full page content."
+                    "Search the web for titles, URLs, and snippets, then use fetch to read full pages. "
+                    "Specify provider: google (default choice, automatic fallback to DDG then Brave on failure), "
+                    "ddg, brave, or all (merge all three). Sources and fallback are disclosed. "
+                    "Google and Brave support pages 1-100; DDG supports 1-10 and is skipped beyond page 10 in all/fallback. "
+                    "Brave challenge recovery may take up to three minutes."
                 ),
-                inputSchema={
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 512,
-                            "description": "Search query",
-                        },
-                        "page": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 100,
-                            "default": 1,
-                            "description": "Result page (1-indexed, default: 1)",
-                        },
-                    },
-                    "required": ["query"],
-                },
+                inputSchema=_web_search_schema(100),
             ),
             Tool(
                 name="get_aliexpress_product",
@@ -2897,7 +2953,9 @@ def create_server(
             elif name == "search":
                 result = await search_web(
                     query=arguments["query"],
-                    page=max(1, arguments.get("page", 1)),
+                    provider=arguments["provider"],
+                    page=arguments.get("page", 1),
+                    browser_solver=browser_solver,
                 )
                 return _format_result(name, result, start_time)
 

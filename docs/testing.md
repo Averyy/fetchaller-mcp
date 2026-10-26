@@ -20,6 +20,7 @@ Rules for live testing:
 - **Wait 5+ seconds between requests** to the same domain. Use `asyncio.sleep()` or just wait between manual tests.
 - **Always go through `fetch_url()`** — never make raw HTTP requests outside wafer.
 - **Save HTML responses to files** during development (`/tmp/alibaba_search.html`, etc.) and test parsing against saved files instead of hitting the site repeatedly. This is the fastest way to iterate on extraction code.
+- **Guard standalone scripts.** Put `asyncio.run(main())` under `if __name__ == "__main__":`. Isolated parsing uses spawned worker processes on macOS; an unguarded script can run its live requests again in each worker and bypass process-local pacing. Prefer the stdio MCP smoke harness for acceptance checks.
 - **When blocked, stop.** Don't retry — you'll make it worse. Switch to saved HTML, fix the code, and try again after 10+ minutes.
 - **Test against the MCP tool** (not direct Python) when checking end-to-end — the MCP tool goes through wafer and has proper cookie caching.
 
@@ -34,8 +35,8 @@ For each new site module:
 4. Only commit after manual verification passes
 
 For a deployed HTTP server, run the protocol/readiness/OAuth smoke after every
-restart and use `--all-tools` for the release gate so all twelve tools must return
-semantically useful live data:
+restart and use `--all-tools` for the release gate so each non-exempt tool must
+return semantically useful live data:
 
 ```bash
 uv run python scripts/http_smoke_test.py \
@@ -151,7 +152,8 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_timeouts.py` — A single request exceeding its wafer session limit (`WaferTimeout`, a `TimeoutError` subclass) is reported as that request, not as the tool's whole budget running out; the budget itself still says so (end to end through `search_oracle_jobs`)
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
-- `test_search.py` — Search module tests: Google/DDG extraction, dedup, merge, cache, CAPTCHA, output format, integration with mocked HTTP; Google's silent empty results page is an honest zero while results in unrecognized markup still fail loudly; result links read the `q` parameter wherever it sits (`/url?opi=..&q=..`, Google's 2026-10-05 shape) and stacked links in that shape stay out of snippets; tokenized links (`q=CAES..`, `uoh=3`) resolve through Google's redirect, a duplicate destination collapses, an unresolved link is dropped and a page where none resolve is an error
+- `test_search.py` — Captured Google Docs JSON responses (two disjoint pages and a valid empty response), strict schema/XSSI parsing, varint cursors, server-cursor preference, randomized document selection, cooldown/failover, global 429 backoff, bounded transient retries, required provider dispatch, source attribution, all-provider deduplication, Google fallback, cache isolation, output limits and cancellation; existing DDG Next-form walks and Brave HTML extraction. Fixtures in `tests/fixtures/google_docs/` were captured live on 2026-10-25. Brave page fixtures were also captured live on 2026-10-25 (20 + 20 results, zero overlap). Local HTTP replay tests exercise the actual wafer client and verify that 503s do not trigger hidden retries and subsequent wire requests remain at least six seconds apart. Concurrent-call tests cover shared explicit/all/fallback pacing and 429/403/202 cooldowns, including Retry-After and recovery. The smoke suite calls the unified tool with `google`, `ddg`, `brave` and `all`; each gate requires its selected provider's results, so fallback cannot hide a Google failure.
+- Brave integration coverage also verifies reuse only with the same injected solver, separation from Google/DDG, direct/all/fallback propagation, ownership at cleanup, transport/body limits, a longer recovery budget, cancellation that holds the gate until wafer finishes, and queued-call cooldowns for identified challenges including HTTP 200. Server tests verify that search receives the audited solver bound to the egress guard.
 - `test_reddit.py` — Strict Reddit host recognition; normal URL→structured routing;
   thread/listing/profile/rules/wiki renderers; score/upvote-ratio semantics;
   nested/deleted/rich-media comments; gallery/video/crosspost/poll/status
@@ -371,3 +373,83 @@ copied into the docs as a constant, only as a dated measurement.
 - Simple: `https://example.com/`, `https://httpbin.org/html`
 - Cloudflare protected: `https://apollomapping.com`, `https://www.miata.net/`, `https://beyond.ca/`
 - Cloudflare + geo-redirect: `https://www.glassdoor.com/`
+
+## Brave search with local wafer
+
+Fetchaller 3.8.6 requires published wafer 0.7.9; its lockfile pins the PyPI
+artifact. Test the released package with normal environment synchronization:
+
+```bash
+uv sync --extra dev
+uv run python scripts/verify_brave_search.py --include-all --rounds 10 --require-recovery
+```
+
+For future wafer development, override it with local source without changing
+the published dependency or lockfile:
+
+```bash
+uv run --with-editable ../wafer python scripts/verify_brave_search.py --wafer-path ../wafer --include-all
+```
+
+The main-guarded probe launches the real local stdio MCP server, verifies the
+wafer import path from its process identity, checks Brave pages 1 and 2 and
+optional all-provider results, and prints overlap and browser/egress audits. It
+stops on the first provider error. There is no synthetic challenge or traffic
+burst. A successful browser response with `challenge_absent=False`, followed by
+real attributed MCP results, is evidence of recovery. This can use fresh PoW or
+retained spare tokens; that flag alone does not distinguish them. Challenge-free
+runs leave recovery unverified. Cookie acceptance on later HTTP requests and
+after restart requires separate live evidence and must not be inferred from a
+clean run. Brave consumes token cookies rather than granting unlimited reuse.
+
+For local server use:
+
+```bash
+uv run --with-editable ../wafer python -m fetchaller.main
+```
+
+Alternatively install the local checkout into the existing environment with
+`uv pip install --python .venv/bin/python -e '../wafer[browser]'`, then run tests
+and the server using `uv run --no-sync ...`. An ordinary syncing `uv run` would
+restore the published wafer version from the lockfile. The 0.7.9 dependency
+floor and lock update are complete; no editable override is needed in normal use.
+
+Brave keeps its provider gate through the entire HTTP/solve exchange. The shared
+server solver allows 120s, the total wafer request 150s, and the provider 180s
+including queueing, pacing and parsing. The smoke caller allows 360s to cover
+the full Google/DDG/Brave fallback chain. The solver is the same audited,
+SSRF-guarded instance used by other tools; Google and DDG stay browser-free.
+
+To continue paced queries until a live recovery is observed or a failure is
+encountered, use `--rounds 10 --require-recovery`. Each round uses a distinct
+query/page pair; no result-cache hit is counted as another HTTP probe. The probe
+returns 1 on provider failure, 2 if the batch finishes without observed recovery,
+and 0 only on success (requiring recovery when that flag is set). It stops after
+the first recovered challenge, completing the round's pages and merged check
+when `--include-all` is set, or immediately on an unresolved block. Keep the
+provider pacing intact; never manufacture a challenge response or retry through
+a cooldown.
+
+Local wafer commit `d01c811` passed independent release validation. Both native
+headed and headless runs verified fresh accepted PoW, real search content,
+browser-free HTTP token consumption, two correctly classified spare-token
+recoveries without new PoW, and browser-free cache restart. A separate process
+also loaded an unspent token and returned real content without a browser.
+The pacing probe completed awaited fetch/reload operations with send gaps of
+6.473 / 6.437 / 6.274 seconds.
+
+Guarded MCP runs on macOS and in the Linux amd64 runtime each returned Brave
+20 + 20 with zero overlap, Google 10 / DDG 10 / Brave 20 for `all`, and two
+correctly classified recoveries with no denied egress. Fresh MCP solves took
+31.50s / 34.02s respectively. Fetchaller's full suite passed with 4,603 tests
+and 5 skips; wafer's passed with 2,856 tests and 25 skips (75 Brave cases).
+The earlier classification race is resolved. Approval is recorded in
+`../wafer/todo-brave-search.md`; evidence and historical failures are in
+`docs/brave-search-investigation.md`. The published 0.7.9 package is now required
+and locked; all 49 installed Python/JavaScript files match the approved source.
+To run wafer's native probe from its checkout:
+
+```bash
+cd ../wafer
+uv run --no-sync python tests/live_brave.py --headless --rounds 10 --require-recovery
+```

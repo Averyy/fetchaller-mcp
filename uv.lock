@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "fetchaller-mcp"
-version = "3.8.5"
+version = "3.8.6"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -428,7 +428,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.7" },
+    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.9" },
 ]
 provides-extras = ["dev"]
 
@@ -1325,6 +1325,23 @@ wheels = [
 ]
 
 [[package]]
+name = "quickjs-ng"
+version = "0.17.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/a4/611b1c2e3a505dd66cc03fb6e5963f0550a09ef2bd7c51243a9237d64db8/quickjs_ng-0.17.0.2.tar.gz", hash = "sha256:43d2e48272208721a7aaea8e3f02d4b9318f12ef20cc4f5421b59d9a470706ef", size = 548468, upload-time = "2026-10-22T23:10:26.261Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/36/7e91b954af2229a3bd257bd2d380c0c740622a8ac49094f9c81ace850d8c/quickjs_ng-0.17.0.2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:80dd1d2d4b83eef6bdf9ce85de020b99b8a641e52c809ba4b2193535a68dbd13", size = 533474, upload-time = "2026-10-22T23:09:52.662Z" },
+    { url = "https://files.pythonhosted.org/packages/54/1e/f53ee49cb88c1a75f9abea0a1148d024bea1cce09cdf46a9c537ef39c79f/quickjs_ng-0.17.0.2-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3f87be3bdadc5fae7bd1f1d711838b35ef850fdbd6e55bed2a7d3ebc76c1456d", size = 2470446, upload-time = "2026-10-22T23:09:54.82Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/25/c4ae89980638fc9e81cfeab0ed876e8ce08f2d821a915c02409660c7010d/quickjs_ng-0.17.0.2-cp310-abi3-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl", hash = "sha256:88be7657cb5983e99a2ae3736ee145f00604cff69ccac45e4e1bd21dfb46cff5", size = 2415266, upload-time = "2026-10-22T23:09:57.179Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/ad/8afe9aba7dbca9d6da0e92599f6f31bd5acb11d8c8c8c5a476292c2992ef/quickjs_ng-0.17.0.2-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:28cf98a33bf4c58f9d59957d0d71d8f7c72d9b85d80bdf63d0229b176f4353cd", size = 2550993, upload-time = "2026-10-22T23:09:59.61Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/ab/a9447dc667d2c173973e07afb317ac19dc53e50e2ddbaac5d4a3673d5acb/quickjs_ng-0.17.0.2-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:718350f3ed2dee04ee21e8d22abde8490196c6746826c8c3b91c5664948238b7", size = 2454139, upload-time = "2026-10-22T23:10:01.295Z" },
+    { url = "https://files.pythonhosted.org/packages/43/c1/7ca4834725d292db566de8583e5f6c8240aec706e2fce5e5a8bc7496c802/quickjs_ng-0.17.0.2-cp310-abi3-musllinux_1_2_i686.whl", hash = "sha256:77bcbb35340142a2ad9c9caa40bdb6908ec44d12644ca27209f566c513fd3aef", size = 2444620, upload-time = "2026-10-22T23:10:03.349Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/b0/4b051ba1f738575fb062bbeb9144413159b833cc98061d7b102f97111c25/quickjs_ng-0.17.0.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:bc3c4f2b2542ff624c74520670f4785a55f061cd7aaaaedef06ab6d4e18a7fed", size = 2539126, upload-time = "2026-10-22T23:10:04.998Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/8d/6b72f2b02c5eebaad3f34ea2e39f5b871ae2b3e5f1c342cfdc474dc8c1c8/quickjs_ng-0.17.0.2-cp310-abi3-win32.whl", hash = "sha256:2303c84092a0ed62f4068f2d4c1a273fd6833509ceb53da72266f96ced7b4dfe", size = 395466, upload-time = "2026-10-22T23:10:06.52Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/0e/3923bd3bc864e107219ce1e6f1a156a48743f4c73b008109440889bbb727/quickjs_ng-0.17.0.2-cp310-abi3-win_amd64.whl", hash = "sha256:3052711482264fd98563a94a55444280659b955155506f333169d9dfd19db892", size = 519428, upload-time = "2026-10-22T23:10:08.132Z" },
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1629,15 +1646,15 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.7.7"
+version = "0.7.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b6/d0/e37a9bc4d015927f7a52965c0690c060900a1c8c1eae7c81645090a2ef8c/wafer_py-0.7.7.tar.gz", hash = "sha256:4e25680bc0d694c5b57b5fa7961426a682ec6ed9be8951cd1acb5f97b2e6a53b", size = 1671279, upload-time = "2026-10-08T22:32:19.64Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/1e/b150f542f87b8640ba56d493125d8000361cc13599b23abee9f23abc8f80/wafer_py-0.7.9.tar.gz", hash = "sha256:2b55fd6565a58ffd930710864c38b899eb2634a11d20203d62a5a88877437f42", size = 1835681, upload-time = "2026-10-26T00:38:59.558Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/d9/3ba17d39ac390414385e0c6c3f215ea1b65d8b50232dae43a745224d0681/wafer_py-0.7.7-py3-none-any.whl", hash = "sha256:e3269c7552c3aeced59bf55ab043210adeeb7be649e22ff17cbc408b58795bea", size = 620808, upload-time = "2026-10-08T22:32:17.606Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/1f/906a309a56ba5f21118cfdbdc0eaa8beef5ee3933423cb6a6ffc8db96945/wafer_py-0.7.9-py3-none-any.whl", hash = "sha256:d476a51ac383d3b477dbf44b0b3ee67548582a34d1af45571c3dd599da8b4bc0", size = 638172, upload-time = "2026-10-26T00:38:57.301Z" },
 ]
 
 [package.optional-dependencies]
@@ -1648,6 +1665,7 @@ browser = [
     { name = "opencv-python-headless" },
     { name = "patchright" },
     { name = "pillow" },
+    { name = "quickjs-ng" },
 ]
 
 [[package]]

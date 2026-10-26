@@ -108,8 +108,8 @@ def test_basic_tool_semantic_gates_accept_complete_results() -> None:
     )
     assert (
         _validate_web_search(
-            'Search: "Python asyncio documentation" | google: 1 | 1 total\n\n'
-            "1. asyncio\n"
+            'Search: "Python asyncio documentation" | requested: google | page 1 | google: 1 | 1 total\n\n'
+            "1. asyncio [google]\n"
             "   https://docs.python.org/3/library/asyncio.html\n"
         )
         is None
@@ -382,6 +382,9 @@ async def test_shared_live_suite_calls_every_tool_and_uses_search_ids() -> None:
         "browse_reddit",
         "search_reddit",
         "search",
+        "search",
+        "search",
+        "search",
         "search_aliexpress",
         "get_aliexpress_product",
         "search_alibaba",
@@ -393,9 +396,9 @@ async def test_shared_live_suite_calls_every_tool_and_uses_search_ids() -> None:
         "search_realtor",
     ]
     # Every registered tool must get a live call except the explicitly
-    # exempt job boards; +1 for the stdio-cleanliness gate, +2 for the two
+    # exempt job boards; +3 for extra provider variants, +1 for stdio cleanliness, +2 for the two
     # RedFlagDeals fetch gates (listing, then the proof-of-work-gated thread).
-    assert len(results) == len(EXPECTED_TOOLS) - len(LIVE_SUITE_EXEMPT) + 3
+    assert len(results) == len(EXPECTED_TOOLS) - len(LIVE_SUITE_EXEMPT) + 6
     assert calls[2] == (
         "fetch",
         {
@@ -404,16 +407,16 @@ async def test_shared_live_suite_calls_every_tool_and_uses_search_ids() -> None:
             "timeout": 90,
         },
     )
-    assert calls[7] == (
+    assert calls[10] == (
         "get_aliexpress_product",
         {"product_id": "1005001234567890"},
     )
-    assert calls[12] == ("get_linkedin_job", {"job_id": "4445926062"})
-    assert calls[9] == (
+    assert calls[15] == ("get_linkedin_job", {"job_id": "4445926062"})
+    assert calls[12] == (
         "get_alibaba_product",
         {"product_id": "1600123456789"},
     )
-    assert pace.await_count == 5
+    assert pace.await_count == 9
 
 
 @pytest.mark.asyncio
@@ -563,7 +566,7 @@ class TestLiveSuiteExemptions:
         # token. The property actually being protected is "third-party job
         # board", which is not derivable from a name, so the boards are named.
         boards = ("jobs", "job", "gojobs", "gcjobs", "jobbank", "indeed", "oracle", "workday",
-                  "eightfold", "amazon", "google", "apple", "meta", "uber")
+                  "eightfold", "amazon", "google_jobs", "apple", "meta", "uber")
         assert all(any(b in name for b in boards) for name in LIVE_SUITE_EXEMPT)
 
     def test_detail_tools_are_exempt_only_for_a_recorded_reason(self):
@@ -584,3 +587,13 @@ class TestLiveSuiteExemptions:
     def test_core_tools_are_never_exempt(self):
         for name in ("fetch", "search", "browse_reddit", "search_reddit", "search_realtor"):
             assert name not in LIVE_SUITE_EXEMPT, name
+
+
+def test_web_provider_gate_rejects_fallback_but_accepts_deduplicated_all():
+    from scripts.smoke_test import _validate_provider_web_search
+
+    fallback = ('Search: "Python asyncio documentation" | requested: google | google: ERROR | ddg: 1 | 1 total\n\n'
+                '1. asyncio [ddg]\n   https://docs.python.org/3/library/asyncio.html\n')
+    assert _validate_provider_web_search(fallback, "google")
+    all_sources = fallback.replace("google: ERROR | ddg: 1", "google: 1 | ddg: 1 | brave: 1").replace("[ddg]", "[google]")
+    assert _validate_provider_web_search(all_sources, "all") is None
