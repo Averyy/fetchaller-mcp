@@ -340,6 +340,9 @@
         }
 
         .hero-help {
+            display: grid;
+            grid-template-columns: max-content minmax(0, 1fr);
+            column-gap: 8px;
             margin-top: 16px;
             font-size: 0.9375rem;
             line-height: 1.8;
@@ -348,18 +351,18 @@
         }
 
         .hero-help .cmd {
-            display: flex;
-            gap: 8px;
+            display: contents;
         }
 
         .hero-help .cmd-name {
             color: var(--screen-green);
-            min-width: 165px;
             text-shadow: 0 0 4px rgba(126, 204, 142, 0.35);
         }
 
         .hero-help .cmd-desc {
             color: var(--screen-dim);
+            min-width: 0;
+            overflow-wrap: anywhere;
         }
 
         .hero-tagline {
@@ -1257,8 +1260,7 @@
             .hero { padding: 28px 0 0; }
             .hero-screen { padding: 16px 14px 14px; }
             h1 { font-size: 1.75rem; }
-            .hero-help .cmd-name { min-width: 110px; font-size: 0.75rem; }
-            .hero-help .cmd-desc { font-size: 0.75rem; }
+            .hero-help { font-size: 0.75rem; grid-template-columns: 18ch minmax(0, 1fr); }
             .hero-tagline { font-size: 0.6875rem; }
             .monitor-chin { padding: 4px 10px; }
             .floppy-slot { display: none; }
