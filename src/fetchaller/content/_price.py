@@ -7,6 +7,11 @@ import re
 
 _MAX_PRICE_CHARS = 256
 _CURRENCY_SYMBOLS = "$€£¥₩₹₽₺₫฿₱"
+# AliExpress prices a UK session's search page with the fullwidth pound sign
+# (``￡0.99``, U+FFE1), not ``£``; observed 2026-10-31. These four fullwidth
+# signs are the same currencies, so they are mapped to the standard sign before
+# validation and for display.
+_FULLWIDTH_CURRENCY_SIGNS = str.maketrans({"＄": "$", "￡": "£", "￥": "¥", "￦": "₩"})
 _CURRENCY_CODES = frozenset(
     {
         "aed",
@@ -66,6 +71,12 @@ _REGIONAL_DOLLAR_PREFIX_RE = re.compile(
 )
 
 
+def normalize_currency_signs(text: str) -> str:
+    """Replace fullwidth currency signs with their standard forms."""
+
+    return text.translate(_FULLWIDTH_CURRENCY_SIGNS)
+
+
 def _positive_amounts(value: str) -> bool:
     """Whether a bounded string contains at least one finite positive amount."""
 
@@ -108,7 +119,7 @@ def has_positive_price(
     if not isinstance(value, str) or len(value) > _MAX_PRICE_CHARS:
         return False
 
-    text = " ".join(value.split())
+    text = normalize_currency_signs(" ".join(value.split()))
     if not text or _EXPONENT_RE.search(text):
         return False
     if not require_currency and _BARE_AMOUNT_RE.fullmatch(text):

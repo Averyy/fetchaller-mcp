@@ -309,7 +309,7 @@ Search Canadian homes for sale or rent on realtor.ca with full filters. Returns 
 
 ### get_aliexpress_product(product_id, timeout?)
 
-Get AliExpress product details: price, specifications, ratings, and recent reviews.
+Get AliExpress product details: price, specifications, ratings, and recent reviews. Priced in SHOPPING_CURRENCY for SHOPPING_COUNTRY when set, otherwise USD for the US.
 
 | Param | Type | Description |
 |-------|------|-------------|
@@ -410,6 +410,7 @@ Add to `~/.claude/settings.json` (or `.claude/settings.local.json` for per-proje
 
 | Variable | Description |
 |----------|-------------|
+| SHOPPING_COUNTRY, SHOPPING_CURRENCY | Ship-to country and currency (e.g. GB, GBP) for AliExpress and Alibaba prices; set both. Unset, those sites price by the server's IP (AliExpress product details: USD). Amazon is always read in the marketplace's own currency. |
 | MOUSER_API_KEY | Mouser Search API key (enables structured API responses for mouser.com) |
 | DIGIKEY_CLIENT_ID | DigiKey API client ID (enables structured API responses for digikey.com) |
 | DIGIKEY_CLIENT_SECRET | DigiKey API client secret |

@@ -19,6 +19,7 @@ from fetchaller.aliexpress.search import (
 from fetchaller.content.aliexpress import (
     _format_search_product,
     extract_init_data,
+    extract_search_products,
     format_search_results,
     valid_search_product,
 )
@@ -40,6 +41,23 @@ def _search_html(products: object) -> str:
         f"_dida_config_._init_data_= {{ data: {json.dumps(init_data)} }}"
         "/*!-->init-data-end--*/"
     )
+
+
+# One item of a live UK-session search page ("ld2450", 2026-10-31), trimmed to
+# the fields the parser reads. Every price carries the fullwidth pound sign.
+_LIVE_GBP_PRODUCT = {
+    "productId": "1005006121923099",
+    "title": {"displayTitle": "24G HLK-LD2450 MM Wave Human Body Motion Tracking Radar Sensor Module"},
+    "prices": {
+        "currencySymbol": "￡",
+        "originalPrice": {"currencyCode": "GBP", "minPrice": 3.71, "formattedPrice": "￡3.71", "cent": 371},
+        "salePrice": {"discount": 73, "currencyCode": "GBP", "minPrice": 0.99, "formattedPrice": "￡0.99", "cent": 99},
+        "taxRate": "0.200000",
+    },
+    "evaluation": {"starRating": 4.9},
+    "trade": {"tradeDesc": "4,000+ sold"},
+    "itemType": "productV3",
+}
 
 
 class TestExtractInitData:
@@ -150,6 +168,8 @@ class TestProductSearchSnapshots:
             "sale_price": "US $12.99",
             "original_price": "US $25.98",
             "discount": "50",
+            "new_shopper_price": False,
+            "new_shopper_saving": "",
             "rating": "4.8",
             "orders": "5000+",
         }
@@ -159,6 +179,106 @@ class TestProductSearchSnapshots:
             == "USB C Hub 8 in 1"
         )
         assert get_recent_product_snapshot("1005006367324383") is None
+
+    def test_live_gbp_page_parses_with_standard_pound_sign(self):
+        result = _parse_search_html(_search_html([_LIVE_GBP_PRODUCT]), "ld2450")
+
+        assert result is not None
+        assert "Price: £0.99 (was £3.71) -73%" in result["content"]
+        assert "￡" not in result["content"]
+        assert "new-shopper" not in result["content"]
+        snapshot = get_recent_product_snapshot("1005006121923099")
+        assert snapshot["sale_price"] == "£0.99"
+        assert snapshot["original_price"] == "£3.71"
+        assert snapshot["new_shopper_price"] is False
+
+    def test_welcome_deal_price_is_labelled_new_shopper(self):
+        # The same item's card on another UK session, 2026-10-31: the first-order
+        # price, no original price, and only selling-point tags saying so.
+        product = {
+            **_LIVE_GBP_PRODUCT,
+            "prices": {
+                "currencySymbol": "￡",
+                "salePrice": {"discount": 73, "currencyCode": "GBP", "minPrice": 0.99, "formattedPrice": "￡0.99"},
+            },
+            "trade": {"tradeDesc": "4K+ sold"},
+            "sellingPoints": [
+                {"sellingPointTagId": "m0000142", "materials": [{"type": "TEXT", "value": "Free shipping"}]},
+                {
+                    "sellingPointTagId": "welcomedeal_save_atm",
+                    "materials": [
+                        {
+                            "materialCode": "atm_text",
+                            "type": "TEXT",
+                            "value": '<span style="color:#F00633;"><strong>￡1.24</strong> saved</span>',
+                        },
+                        {"materialCode": "background_color", "type": "TEXT", "value": "#FEEBEF"},
+                    ],
+                },
+                {"sellingPointTagId": "welcomedeal_test", "materials": [{"type": "TEXT", "value": "New shoppers - ￡1.24"}]},
+            ],
+        }
+
+        result = _parse_search_html(_search_html([product]), "ld2450")
+
+        assert "Price: £0.99 -73% (new-shopper price, £1.24 off)" in result["content"]
+        assert "4K+ sold" in result["content"]
+        snapshot = get_recent_product_snapshot("1005006121923099")
+        assert snapshot["new_shopper_price"] is True
+        assert snapshot["new_shopper_saving"] == "£1.24"
+
+    @pytest.mark.parametrize(
+        "saved_text",
+        ["<b>lots</b> saved", "￡0 saved", "-￡1.24 saved", "￡1.24", 7, "￡1.24 saved" + "x" * 1_000],
+    )
+    def test_unreadable_welcome_deal_saving_keeps_the_bare_label(self, saved_text):
+        product = {
+            **_LIVE_GBP_PRODUCT,
+            "sellingPoints": [
+                {"sellingPointTagId": "welcomedeal_save_atm", "materials": [{"type": "TEXT", "value": saved_text}]},
+            ],
+        }
+
+        result = _parse_search_html(_search_html([product]), "ld2450")
+
+        assert "(new-shopper price)" in result["content"]
+        assert " off)" not in result["content"]
+
+    @pytest.mark.parametrize(
+        "selling_points",
+        [None, "welcomedeal", [None, "welcomedeal_test"], [{"sellingPointTagId": 7}], [{"sellingPointTagId": "m0000377"}]],
+    )
+    def test_malformed_or_unrelated_selling_points_are_not_a_new_shopper_price(self, selling_points):
+        product = {**_LIVE_GBP_PRODUCT, "sellingPoints": selling_points}
+
+        result = _parse_search_html(_search_html([product]), "ld2450")
+
+        assert "new-shopper" not in result["content"]
+
+    def test_zero_result_page_is_an_empty_answer_not_a_failure(self):
+        # "AS7343 spectral sensor module", £3-15, sorted by price (2026-10-31):
+        # no itemList mod at all, and totalResults counting the unfiltered 54.
+        init_data = {
+            "data": {
+                "root": {
+                    "fields": {
+                        "mods": {"bigSaleBanner": {}, "searchRefineFilters": {}, "searchTips": {}, "sortBar": {}},
+                        "pageInfo": {"searchResultType": "zero_result", "totalResults": 54, "page": 1},
+                    }
+                }
+            }
+        }
+        html = (
+            "/*!-->init-data-start--*/"
+            f"_dida_config_._init_data_= {{ data: {json.dumps(init_data)} }}"
+            "/*!-->init-data-end--*/"
+        )
+
+        result = _parse_search_html(html, "AS7343 spectral sensor module")
+        fetched = extract_search_products(html, "https://www.aliexpress.com/w/wholesale-AS7343.html?minPrice=3")
+
+        assert result == {"content": 'Search: "AS7343 spectral sensor module" | page 1 | 0 results\n\nNo products found.'}
+        assert fetched == 'Search: "AS7343" | page 1 | 0 results\n\nNo products found.'
 
     def test_invalid_offer_is_not_retained(self):
         invalid = {
@@ -292,6 +412,9 @@ class TestFormatProduct:
 
         assert valid_search_product(product) is True
 
+    def test_live_gbp_item_is_a_valid_product(self):
+        assert valid_search_product(_LIVE_GBP_PRODUCT) is True
+
     @pytest.mark.parametrize(
         "price",
         [
@@ -359,6 +482,29 @@ class TestFormatProduct:
         rendered = _format_search_product(1, product)
 
         assert "Price: US $1 (was US $5) -12.5%" in rendered
+
+    @pytest.mark.parametrize("trade_description", ["8K+ sold", "1.5K+ sold", "2M+ sold", "10k sold"])
+    def test_abbreviated_sold_count_is_rendered(self, trade_description):
+        # A UK session drew "8K+ sold" where another drew "8,000+ sold" (2026-10-31).
+        product = {
+            "productId": "1005007198006311",
+            "title": {"displayTitle": "Real Widget"},
+            "prices": {"salePrice": {"formattedPrice": "￡0.99"}},
+            "trade": {"tradeDesc": trade_description},
+        }
+
+        assert trade_description in _format_search_product(1, product)
+
+    @pytest.mark.parametrize("trade_description", ["NaNK sold", "1e4K sold", "-5K sold", "8KK sold", "K sold", "8B sold"])
+    def test_malformed_abbreviated_sold_count_is_omitted(self, trade_description):
+        product = {
+            "productId": "1005007198006311",
+            "title": {"displayTitle": "Real Widget"},
+            "prices": {"salePrice": {"formattedPrice": "￡0.99"}},
+            "trade": {"tradeDesc": trade_description},
+        }
+
+        assert "sold" not in _format_search_product(1, product)
 
     @pytest.mark.parametrize(
         ("star_rating", "trade_description"),
@@ -631,6 +777,29 @@ class TestSearchAliexpress:
         assert "content" in result
         assert "Fast Widget" in result["content"]
         assert 0 < mock_session.get.await_args.kwargs["timeout"] <= 180
+        mock_session.add_cookie.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shopping_locale_is_pinned_before_every_search(self, monkeypatch):
+        # The site re-sets aep_usuc_f from the egress IP (a Frankfurt VPN exit
+        # drew EUR and 19% VAT on 2026-10-31), so the pin goes on each request.
+        monkeypatch.setenv("SHOPPING_COUNTRY", "GB")
+        monkeypatch.setenv("SHOPPING_CURRENCY", "GBP")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = _search_html([_LIVE_GBP_PRODUCT])
+        mock_session = _make_mock_session()
+        mock_session.get = AsyncMock(return_value=mock_resp)
+        mock_session.add_cookie = MagicMock()
+
+        with patch("fetchaller.aliexpress.search._get_session", return_value=mock_session):
+            for _ in range(2):
+                assert "content" in await search_aliexpress("ld2450", browser_solver=MagicMock())
+
+        assert mock_session.add_cookie.call_count == 2
+        cookie, url = mock_session.add_cookie.call_args.args
+        assert cookie.startswith("aep_usuc_f=site=glo&c_tp=GBP&region=GB&")
+        assert url.startswith("https://www.aliexpress.com/w/wholesale-ld2450.html")
 
     @pytest.mark.asyncio
     async def test_explicit_timeout_reaches_browser_capable_session(self):
