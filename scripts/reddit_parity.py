@@ -3191,17 +3191,6 @@ async def _discovery_call(
     return text, evidence
 
 
-def _walk_json(value: object):
-    pending = [value]
-    while pending:
-        current = pending.pop()
-        yield current
-        if isinstance(current, dict):
-            pending.extend(current.values())
-        elif isinstance(current, list):
-            pending.extend(current)
-
-
 async def _discover_live_targets(
     session: ClientSession,
     directory: Path,
@@ -3274,78 +3263,52 @@ async def _discover_live_targets(
                 )
 
     if selected_post is not None and "thread" in targets:
-        thread_json, evidence = await _discovery_call(
+        # Reddit refuses a thread's .json to every logged-out client since
+        # 2026-10-20, so comment IDs come from the thread as fetchaller renders
+        # it (post over /by_id, comments over the app's GraphQL): each comment
+        # card carries its permalink. The morechildren route takes any comment
+        # IDs of one post now that it reads them as a batch.
+        thread_text, evidence = await _discovery_call(
             session,
             directory,
-            "current_thread_json",
+            "current_thread_render",
             "fetch",
             {
-                "url": (
-                    targets["thread"]
-                    + ".json?limit=500&depth=10&raw_json=1"
-                ),
+                "url": targets["thread"] + "?limit=100&depth=2",
                 "maxTokens": 250_000,
                 "timeout": 90,
             },
         )
         records.append(evidence)
-        if thread_json is not None:
-            try:
-                thread_payload = json.loads(thread_json)
-            except ValueError:
-                thread_payload = None
-            for current in _walk_json(thread_payload):
-                if not isinstance(current, dict):
-                    continue
-                current_data = current.get("data")
-                if not isinstance(current_data, dict):
-                    continue
-                if (
-                    "listing_by_id_comment" not in targets
-                    and current.get("kind") == "t1"
-                    and isinstance(current_data.get("id"), str)
-                    and re.fullmatch(
-                        r"[A-Za-z0-9]{2,16}",
-                        current_data["id"],
-                    )
-                ):
-                    comment_fullname = f"t1_{current_data['id']}"
-                    targets["listing_by_id_comment"] = (
-                        "https://www.reddit.com/by_id/"
-                        f"{comment_fullname}/"
-                    )
-                    targets["listing_by_id_mixed"] = (
-                        "https://www.reddit.com/by_id/"
-                        f"{comment_fullname},t3_{selected_post['id']}/"
-                    )
-                if (
-                    current.get("kind") != "more"
-                    or "morechildren" in targets
-                ):
-                    continue
-                child_ids = current_data.get("children")
-                if not (
-                    isinstance(child_ids, list)
-                    and child_ids
-                    and all(
-                        isinstance(child_id, str)
-                        and re.fullmatch(r"[A-Za-z0-9]{2,16}", child_id)
-                        for child_id in child_ids[:20]
-                    )
-                ):
-                    continue
-                targets["morechildren"] = (
-                    "https://www.reddit.com/api/morechildren?"
-                    + urlencode(
-                        {
-                            "link_id": f"t3_{selected_post['id']}",
-                            "children": ",".join(child_ids[:20]),
-                            "sort": "confidence",
-                            "depth": "10",
-                            "limit_children": "true",
-                        }
-                    )
+        comment_ids = list(
+            dict.fromkeys(
+                re.findall(
+                    r"(?m)^Permalink: https://www\.reddit\.com/r/[A-Za-z0-9_]+/"
+                    rf"comments/{re.escape(selected_post['id'])}/[^/\s]+/"
+                    r"([A-Za-z0-9]{2,16})/$",
+                    thread_text or "",
                 )
+            )
+        )
+        if comment_ids:
+            comment_fullname = f"t1_{comment_ids[0]}"
+            targets["listing_by_id_comment"] = (
+                f"https://www.reddit.com/by_id/{comment_fullname}/"
+            )
+            targets["listing_by_id_mixed"] = (
+                "https://www.reddit.com/by_id/"
+                f"{comment_fullname},t3_{selected_post['id']}/"
+            )
+            targets["morechildren"] = (
+                "https://www.reddit.com/api/morechildren?"
+                + urlencode(
+                    {
+                        "link_id": f"t3_{selected_post['id']}",
+                        "children": ",".join(comment_ids[1:21] or comment_ids[:1]),
+                        "sort": "confidence",
+                    }
+                )
+            )
 
     related_seed, evidence = await _discovery_call(
         session,
@@ -3544,6 +3507,10 @@ async def _discover_live_targets(
         "search",
         {
             "query": "site:reddit.com/user/*/m/ reddit multireddit",
+            # search has required an explicit provider since 3.8.6; without
+            # one the call failed validation and every multireddit entry
+            # went undiscovered.
+            "provider": "google",
             "page": 1,
         },
     )
@@ -3730,7 +3697,7 @@ _REQUIRED_INFRASTRUCTURE_STAGES = {
 }
 _REQUIRED_DISCOVERY_STAGES = {
     "discovery_current_post_listing": frozenset({"discovery"}),
-    "discovery_current_thread_json": frozenset({"discovery"}),
+    "discovery_current_thread_render": frozenset({"discovery"}),
     "discovery_current_link_post_listing": frozenset({"discovery"}),
     "discovery_current_gallery_listing": frozenset({"discovery"}),
     "discovery_current_wiki_revisions": frozenset({"discovery"}),

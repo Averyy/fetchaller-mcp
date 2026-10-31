@@ -10,6 +10,7 @@ from math import isfinite
 from urllib.parse import (
     parse_qs,
     quote,
+    unquote,
     urlencode,
     urlparse,
     urlunparse,
@@ -19,16 +20,31 @@ import wafer
 
 from ..config import Config
 from ..content.reddit import (
+    COMMENT_STREAM_REFUSED,
     RedditRoute,
     normalize_moderator_roster_children,
     parse_reddit_related_html,
     parse_reddit_wiki_page_tree,
     parse_reddit_wiki_pages_html,
     render_reddit_route,
+    route_reddit_url,
+)
+from ..content.reddit_graphql import (
+    RedditGraphQLRequest,
+    account_cake_day,
+    account_cake_day_request,
+    comments_by_ids_things,
+    graphql_request,
+    post_comments_listing,
+    posts_by_ids_request,
+    posts_by_ids_things,
+    user_profile_about,
+    user_profile_request,
+    valid_comment_cursor,
 )
 from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..ratelimit import reddit_limiter
-from .browse_reddit import _get_session, fetch_reddit_json
+from .browse_reddit import _get_session, fetch_reddit_graphql, fetch_reddit_json
 
 _MODERATOR_AUTH_REQUIRED = (
     "Reddit requires a logged-in account for exact moderator rosters, and "
@@ -55,6 +71,7 @@ _DIRECTORY_USERNAME = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 _THING_FULLNAME = re.compile(r"t[13]_[A-Za-z0-9]{2,16}\Z")
 _PAGINATION_FULLNAME = re.compile(r"t[1-6]_[A-Za-z0-9]{2,16}\Z")
 _COMMENT_FULLNAME = re.compile(r"t1_[A-Za-z0-9]{2,16}\Z")
+_POST_FULLNAME = re.compile(r"t3_[A-Za-z0-9]{2,16}\Z")
 _GLOBAL_COMMENTS_MIN_TRANSFER = 25
 _SHREDDIT_GRAPHQL_URL = "https://www.reddit.com/svc/shreddit/graphql"
 _WIKI_PAGE_TREE_OPERATION = "WikiPageRevisionsV2"
@@ -330,9 +347,23 @@ def _is_post_data(
     )
 
 
+def _is_idless_deleted_comment(data: dict) -> bool:
+    """A GraphQL ``DeletedComment`` with no replies: Reddit selects no id for
+    it, and nothing about it is claimed beyond that it was deleted."""
+
+    return (
+        data.get("_fetchaller_reddit_provenance") == "graphql"
+        and "id" not in data
+        and "name" not in data
+        and "permalink" not in data
+        and data.get("author") == "[deleted]"
+        and data.get("body") in {"[deleted]", "[removed]"}
+    )
+
+
 def _is_comment_data(data: dict) -> bool:
     return (
-        _valid_thing_identity(data, "t1")
+        (_valid_thing_identity(data, "t1") or _is_idless_deleted_comment(data))
         and isinstance(data.get("body"), str)
         and _valid_optional_fields(
             data,
@@ -435,13 +466,21 @@ def _valid_directory_user_about(payload: object, username: str) -> bool:
     ):
         return False
     data = payload["data"]
+    created = data.get("created_utc") or data.get("created")
     return (
         isinstance(data.get("name"), str)
         and data["name"].casefold() == username.casefold()
         and _finite_number(data.get("link_karma"))
         and _finite_number(data.get("comment_karma"))
-        and _finite_number(data.get("created_utc") or data.get("created"))
-        and float(data.get("created_utc") or data.get("created")) > 0
+        and (
+            (_finite_number(created) and float(created) > 0)
+            # An account without a profile is dated only by its cake day.
+            or (
+                isinstance(data.get("cake_day"), str)
+                and re.fullmatch(r"\d{4}-\d{2}-\d{2}", data["cake_day"])
+                is not None
+            )
+        )
     )
 
 
@@ -485,15 +524,11 @@ async def _hydrate_user_directory(
             return {
                 "error": "Reddit user directory profile hydration timed out."
             }
-        about_url = (
-            "https://www.reddit.com/user/"
-            f"{quote(username, safe='')}/about.json?raw_json=1"
-        )
-        result = await fetch_reddit_json(
-            about_url,
-            session,
-            queue,
-            remaining,
+        result = await _fetch_user_about(
+            username,
+            session=session,
+            queue=queue,
+            deadline=deadline,
         )
         if "error" in result:
             detail = _bounded_related_detail(result["error"])
@@ -513,7 +548,13 @@ async def _hydrate_user_directory(
             }
         about_data = about["data"]
         enriched_card = dict(card)
-        for field in ("link_karma", "comment_karma", "created_utc", "created"):
+        for field in (
+            "link_karma",
+            "comment_karma",
+            "created_utc",
+            "created",
+            "cake_day",
+        ):
             if field in about_data:
                 enriched_card[field] = about_data[field]
         enriched_child = dict(child)
@@ -1664,19 +1705,9 @@ async def _enrich_related_listing(
                 "the overall Reddit request timed out before enrichment",
             )
             break
-        info_url = "https://www.reddit.com/api/info.json?" + urlencode(
-            {
-                "raw_json": "1",
-                "limit": str(len(batch)),
-                "id": ",".join(fullnames),
-            }
-        )
-        result = await fetch_reddit_json(
-            info_url,
-            session,
-            queue,
-            remaining,
-        )
+        # /api/info, and /by_id for more than one post, are refused to
+        # logged-out clients; PostsByIds reads the batch in one request.
+        result = await _fetch_post_listing(fullnames, session, queue, remaining)
         if "error" in result:
             _add_related_notice(enriched, len(batch), result["error"])
             continue
@@ -1715,6 +1746,513 @@ async def _enrich_related_listing(
     return enriched
 
 
+async def _fetch_post_listing(
+    fullnames: list[str],
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    timeout: float,
+) -> dict:
+    """Several posts in one read, as a REST post Listing in request order.
+
+    ``/by_id`` serves one post but refuses a list (and ``/api/info``) to
+    logged-out clients, so a batch is the app's ``PostsByIds``. Posts Reddit
+    returns nothing for are left out; callers already name what is missing.
+    """
+
+    if not fullnames or not all(_POST_FULLNAME.fullmatch(value) for value in fullnames):
+        return {"error": "Invalid Reddit post ID batch."}
+    result = await fetch_reddit_graphql(
+        posts_by_ids_request([value[3:] for value in fullnames]),
+        session,
+        queue,
+        timeout,
+    )
+    if "error" in result:
+        return result
+    converted = posts_by_ids_things(result["data"], fullnames)
+    if "error" in converted:
+        return converted
+    things = converted["things"]
+    return {
+        "data": {
+            "kind": "Listing",
+            "data": {
+                "children": [things[value] for value in fullnames if value in things],
+                "after": None,
+                "before": None,
+            },
+        }
+    }
+
+
+def _refused_detail(result: dict, what: str) -> dict:
+    """Name the read Reddit refused, keeping the refusal marker."""
+
+    if result.get("reddit_refused"):
+        return {"error": f"{what}: {result['error']}", "reddit_refused": True}
+    return result
+
+
+def _markdown(route: RedditRoute, content: str) -> dict:
+    return {
+        "content": content,
+        "content_type": "markdown",
+        "url": route.canonical_url,
+    }
+
+
+async def _fetch_user_about(
+    username: str,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+) -> dict:
+    """A user's about payload, read the way the Reddit app reads it.
+
+    ``/user/<name>/about.json`` is refused to logged-out clients, so this is
+    the app's ``UserProfile`` operation in the REST ``t2`` shape. An account
+    without a profile has no profile date; its account-level cake day is then
+    read with one more call so the profile still says when it was created.
+    """
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return {"error": "Request timed out."}
+    result = await fetch_reddit_graphql(
+        user_profile_request(username),
+        session,
+        queue,
+        remaining,
+    )
+    if "error" in result:
+        return result
+    converted = user_profile_about(result["data"], username)
+    if "error" in converted:
+        return converted
+    if "content_state" in converted:
+        return {"data": {"_reddit_content_state": converted["content_state"]}}
+    about = converted["data"]
+    account_id = converted.get("needs_cake_day")
+    remaining = deadline - time.monotonic()
+    if isinstance(account_id, str) and remaining > 0:
+        cake = await fetch_reddit_graphql(
+            account_cake_day_request(account_id),
+            session,
+            queue,
+            remaining,
+        )
+        day = account_cake_day(cake.get("data"), account_id)
+        if day is not None:
+            about["data"]["cake_day"] = day
+    return {"data": about}
+
+
+async def _fetch_reddit_thread(
+    route: RedditRoute,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+    timeout: float,
+    max_tokens: int,
+    chars_per_token: int,
+    comments_mode: str = "fast",
+) -> dict:
+    """A thread: its post over ``/by_id``, its comments over GraphQL.
+
+    The two are joined into the REST thread's two-Listing shape, so the
+    renderer and its rules (score as score, ``upvote_ratio`` only when
+    returned) are unchanged. A pinned-post route first resolves Reddit's
+    sticky redirect, then reads the thread it names.
+    """
+
+    if route.label == "sticky":
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"error": f"Request timed out ({timeout:g}s limit)"}
+        resolved = await fetch_reddit_json(
+            route.requests[0],
+            session,
+            queue,
+            remaining,
+            resolve_sticky=True,
+        )
+        if "error" in resolved:
+            return resolved
+        data = resolved.get("data")
+        if isinstance(data, dict) and data.get("_reddit_content_state"):
+            return _markdown(route, f"# Reddit\n\n{data['_reddit_content_state']}")
+        target = urlparse(str(resolved.get("sticky_thread") or ""))
+        match = re.fullmatch(
+            r"/r/([A-Za-z0-9][A-Za-z0-9_]{0,20})/comments/([A-Za-z0-9]{2,16})/"
+            r"[^/]{1,512}/\.json",
+            target.path,
+        )
+        if match is None:
+            return {
+                "error": "Reddit did not name a pinned thread for this community."
+            }
+        query = parse_qs(urlparse(route.canonical_url).query, keep_blank_values=True)
+        kept = {
+            name: values[0]
+            for name, values in query.items()
+            if name in {"sort", "limit", "depth"} and values
+        }
+        thread_url = (
+            f"https://www.reddit.com/r/{match.group(1)}/comments/{match.group(2)}/"
+            + (f"?{urlencode(kept)}" if kept else "")
+        )
+        resolved_route = route_reddit_url(thread_url, max_tokens=max_tokens)
+        if resolved_route is None or resolved_route.kind != "thread":
+            return {"error": "Reddit named an unreadable pinned thread."}
+        route = resolved_route
+
+    post_payload: object = None
+    comment_payload: object = {}
+    for request in route.requests:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"error": f"Request timed out ({timeout:g}s limit)"}
+        if isinstance(request, RedditGraphQLRequest):
+            post_id = str(request.variables.get("id") or "").removeprefix("t3_")
+            result = await fetch_reddit_graphql(request, session, queue, remaining)
+            if "error" in result:
+                return _refused_detail(result, "Reddit thread comments")
+            converted = post_comments_listing(result["data"], post_id=post_id)
+            if "content_state" in converted:
+                return _markdown(route, "# Reddit thread\n\nPost not found.")
+            if "error" in converted:
+                return converted
+            if not _is_comment_listing_payload(converted["data"]):
+                return {"error": "Reddit returned an invalid thread response."}
+            comment_payload = converted["data"]
+            continue
+        result = await fetch_reddit_json(request, session, queue, remaining)
+        if "error" in result:
+            return _refused_detail(result, "Reddit thread post")
+        data = result["data"]
+        if isinstance(data, dict) and data.get("_reddit_content_state"):
+            return _markdown(route, f"# Reddit\n\n{data['_reddit_content_state']}")
+        if not _is_listing_payload(data, allowed_kinds=frozenset({"t3"})):
+            return {"error": "Reddit returned an invalid thread response."}
+        if not data["data"]["children"]:
+            return _markdown(route, "# Reddit thread\n\nPost not found.")
+        post_payload = data
+    comments_request = next(
+        (r for r in route.requests if isinstance(r, RedditGraphQLRequest)), None
+    )
+    if (
+        comments_request is not None
+        and isinstance(comment_payload, dict)
+        and isinstance(comment_payload.get("data"), dict)
+    ):
+        if comments_mode == "more":
+            await _load_more_comments(
+                route,
+                comments_request,
+                post_payload,
+                comment_payload,
+                session=session,
+                queue=queue,
+                deadline=deadline,
+                max_chars=max(1, max_tokens * chars_per_token),
+            )
+        elif _comment_continuations(
+            comment_payload, top_level=route.selected_comment_id is None
+        ):
+            comment_payload["_fetchaller_notice"] = (
+                "[More comments are linked below. Reddit returns at most 200 "
+                "per read; fetch with redditComments \"more\" to follow the "
+                "links automatically.]"
+            )
+    content = render_reddit_route(
+        route,
+        [[post_payload, comment_payload]],
+        max_tokens=max_tokens,
+        chars_per_token=chars_per_token,
+    )
+    return _markdown(route, content)
+
+
+# redditComments="more": Reddit returns at most 200 comments per PostComments
+# read whatever ``count`` asks for (measured 2026-10-31 at 500, 1,000 and
+# 2,000), so a fuller thread is the forest's own continuations followed in
+# turn. Bounded by reads, the caller's output budget and its deadline.
+REDDIT_COMMENT_MODES = frozenset({"fast", "more"})
+_MORE_COMMENT_READS = 5
+_MORE_COMMENT_PAGE = 200
+# Leave room for the shared queue's pacing (~6 s) plus the read itself, so an
+# extra read is never cut off by the caller's own timeout -- which would lose
+# everything already loaded, not just that read.
+_MORE_COMMENT_MIN_REMAINING = 8.0
+_MORE_COMMENT_MARGIN = 1.5
+
+
+def _comment_continuations(listing: dict, *, top_level: bool) -> list[tuple[list, int]]:
+    """``(siblings, index)`` of each cursor stub, top-level page first.
+
+    The top-level page is worth up to 200 comments a read; a nested "more
+    replies" stub measured 25. So the top-level continuation comes first and
+    nested ones follow in reading order.
+    """
+
+    top: list[tuple[list, int]] = []
+    nested: list[tuple[list, int]] = []
+    pending: list[tuple[list, int, bool]] = [(listing["data"]["children"], 0, True)]
+    while pending:
+        siblings, index, is_top = pending.pop()
+        if index >= len(siblings):
+            continue
+        pending.append((siblings, index + 1, is_top))
+        child = siblings[index]
+        data = child.get("data") if isinstance(child, dict) else None
+        if not isinstance(data, dict):
+            continue
+        if child.get("kind") == "more" and valid_comment_cursor(data.get("cursor")):
+            (top if is_top else nested).append((siblings, index))
+        elif child.get("kind") == "t1" and isinstance(data.get("replies"), dict):
+            pending.append((data["replies"]["data"]["children"], 0, False))
+    return (top if top_level else []) + nested
+
+
+def _rendered_thread_length(route: RedditRoute, post: object, comments: dict) -> int:
+    return len(
+        render_reddit_route(route, [[post, comments]], max_tokens=10**8)
+    )
+
+
+async def _load_more_comments(
+    route: RedditRoute,
+    request: RedditGraphQLRequest,
+    post_payload: object,
+    comments: dict,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+    max_chars: int,
+) -> None:
+    """Follow the forest's continuations into ``comments`` until full.
+
+    Stops at the read cap, when the rendered thread already fills the
+    caller's budget, before the deadline, or at the first failed read, and
+    says how many extra reads were made. What it does not load keeps its link.
+    """
+
+    post_id = str(request.variables.get("id") or "").removeprefix("t3_")
+    base = {
+        key: value
+        for key, value in request.variables.items()
+        if key not in {"after", "focusedCommentContext", "numParents"}
+    }
+    base["count"] = _MORE_COMMENT_PAGE
+    reads = 0
+    stopped = ""
+    while reads < _MORE_COMMENT_READS:
+        stubs = _comment_continuations(
+            comments,
+            # A focused permalink is about one comment's thread; its top-level
+            # continuation is the rest of the post, not more of that thread.
+            top_level=route.selected_comment_id is None,
+        )
+        if not stubs:
+            break
+        if _rendered_thread_length(route, post_payload, comments) >= max_chars:
+            stopped = "the output budget is full"
+            break
+        remaining = deadline - time.monotonic()
+        if remaining < _MORE_COMMENT_MIN_REMAINING:
+            stopped = "the request's timeout is near (raise timeout for more)"
+            break
+        siblings, index = stubs[0]
+        stub = siblings[index]["data"]
+        result = await fetch_reddit_graphql(
+            graphql_request("PostComments", {**base, "after": stub["cursor"]}),
+            session,
+            queue,
+            remaining - _MORE_COMMENT_MARGIN,
+        )
+        converted = (
+            post_comments_listing(result["data"], post_id=post_id)
+            if "data" in result
+            else result
+        )
+        page = converted.get("data")
+        if not isinstance(page, dict) or not _is_comment_listing_payload(page):
+            stopped = "a continuation read failed: " + _bounded_related_detail(
+                converted.get("error") or converted.get("content_state") or "invalid"
+            )
+            break
+        siblings[index : index + 1] = page["data"]["children"]
+        reads += 1
+    left = _comment_continuations(
+        comments, top_level=route.selected_comment_id is None
+    )
+    if left and not stopped:
+        stopped = f"the {_MORE_COMMENT_READS}-read limit was reached"
+    comments["_fetchaller_notice"] = (
+        f"[redditComments=more: followed {reads} continuation "
+        f"{'read' if reads == 1 else 'reads'}"
+        + (f"; stopped because {stopped}" if stopped else "")
+        + (
+            "; the rest are linked below]"
+            if left
+            else "; every comment Reddit lists here is loaded]"
+        )
+    )
+
+
+def _requested_fullnames(route: RedditRoute) -> list[str]:
+    parts = [part for part in urlparse(route.canonical_url).path.split("/") if part]
+    raw = unquote(parts[1]) if len(parts) == 2 else ""
+    return list(
+        dict.fromkeys(
+            value
+            for value in re.split(r"[\s,]+", raw)
+            if _THING_FULLNAME.fullmatch(value)
+        )
+    )
+
+
+def _missing_notice(missing: list[str]) -> str | None:
+    if not missing:
+        return None
+    shown = ", ".join(missing[:10])
+    more = f" and {len(missing) - 10} more" if len(missing) > 10 else ""
+    return (
+        f"Reddit returned nothing for {len(missing)} requested "
+        f"{'item' if len(missing) == 1 else 'items'} (deleted, removed or "
+        f"never existed): {shown}{more}."
+    )
+
+
+async def _fetch_items_by_id(
+    route: RedditRoute,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+    timeout: float,
+    max_tokens: int,
+    chars_per_token: int,
+) -> dict:
+    """``/by_id`` with comments: one GraphQL batch plus one ``/by_id`` read.
+
+    The two answers are merged back into the order the URL asked for, and any
+    fullname Reddit returned nothing for is named rather than dropped.
+    """
+
+    requested = _requested_fullnames(route)
+    things: dict[str, dict] = {}
+    for request in route.requests:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"error": f"Request timed out ({timeout:g}s limit)"}
+        if isinstance(request, RedditGraphQLRequest):
+            fullnames = [str(value) for value in request.variables.get("ids") or []]
+            is_posts = request.operation == "PostsByIds"
+            result = await fetch_reddit_graphql(request, session, queue, remaining)
+            if "error" in result:
+                return _refused_detail(
+                    result,
+                    "Reddit post lookup" if is_posts else "Reddit comment lookup",
+                )
+            converted = (
+                posts_by_ids_things if is_posts else comments_by_ids_things
+            )(result["data"], fullnames)
+            if "error" in converted:
+                return converted
+            things.update(converted["things"])
+            continue
+        result = await fetch_reddit_json(request, session, queue, remaining)
+        if "error" in result:
+            return _refused_detail(result, "Reddit post lookup")
+        data = result["data"]
+        if isinstance(data, dict) and data.get("_reddit_content_state"):
+            continue
+        if not _is_listing_payload(data, allowed_kinds=frozenset({"t3"})):
+            return {"error": "Reddit returned an invalid listing response."}
+        for child in data["data"]["children"]:
+            child_data = child["data"]
+            fullname = str(child_data.get("name") or f"t3_{child_data.get('id')}")
+            if fullname in requested and fullname not in things:
+                things[fullname] = child
+    children = [things[fullname] for fullname in requested if fullname in things]
+    listing_data: dict[str, object] = {
+        "children": children,
+        "after": None,
+        "before": None,
+    }
+    notice = _missing_notice([value for value in requested if value not in things])
+    if notice:
+        listing_data["_fetchaller_notice"] = notice
+    listing = {"kind": "Listing", "data": listing_data}
+    if not _is_listing_payload(listing, allowed_kinds=frozenset({"t1", "t3"})):
+        return {"error": "Reddit returned an invalid listing response."}
+    content = render_reddit_route(
+        route,
+        [listing],
+        max_tokens=max_tokens,
+        chars_per_token=chars_per_token,
+    )
+    return _markdown(route, content)
+
+
+async def _fetch_morechildren(
+    route: RedditRoute,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+    timeout: float,
+    max_tokens: int,
+    chars_per_token: int,
+) -> dict:
+    """The comments a legacy ``/api/morechildren`` link names.
+
+    The endpoint is refused to logged-out clients. The comments themselves
+    come from one GraphQL batch; their replies are not part of that answer,
+    and the output says so and points at each comment's permalink.
+    """
+
+    request = route.requests[0]
+    if not isinstance(request, RedditGraphQLRequest):
+        return {"error": "Invalid Reddit comment-expansion route."}
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return {"error": f"Request timed out ({timeout:g}s limit)"}
+    result = await fetch_reddit_graphql(request, session, queue, remaining)
+    if "error" in result:
+        return _refused_detail(result, "Reddit comment lookup")
+    fullnames = [str(value) for value in request.variables.get("ids") or []]
+    converted = comments_by_ids_things(result["data"], fullnames)
+    if "error" in converted:
+        return converted
+    things = [converted["things"][value] for value in fullnames if value in converted["things"]]
+    notices = [
+        "Reddit no longer serves /api/morechildren to logged-out clients, so "
+        "these comments were read individually and their own replies are not "
+        "included: open a comment's permalink to read its replies."
+    ]
+    missing = _missing_notice([value for value in fullnames if value not in converted["things"]])
+    if missing:
+        notices.append(missing)
+    payload = {
+        "json": {"data": {"things": things}},
+        "_fetchaller_notice": "\n\n".join(notices),
+    }
+    if not _is_morechildren_payload(payload):
+        return {"error": "Reddit returned an invalid comment-expansion response."}
+    content = render_reddit_route(
+        route,
+        [payload],
+        max_tokens=max_tokens,
+        chars_per_token=chars_per_token,
+    )
+    return _markdown(route, content)
+
+
 async def fetch_mapped_reddit(
     route: RedditRoute,
     *,
@@ -1724,8 +2262,16 @@ async def fetch_mapped_reddit(
     config: Config | None = None,
     queue: RedditRequestQueue | None = None,
     browser_solver=None,
+    reddit_comments: str = "fast",
 ) -> dict:
-    """Fetch every JSON leg for a mapped URL under one overall deadline."""
+    """Fetch every JSON leg for a mapped URL under one overall deadline.
+
+    ``reddit_comments`` is ``"fast"`` (one comment read) or ``"more"``
+    (follow a thread's continuations to fill ``max_tokens``).
+    """
+
+    if reddit_comments not in REDDIT_COMMENT_MODES:
+        return {"error": "redditComments must be \"fast\" or \"more\"."}
 
     deadline = time.monotonic() + timeout
     payloads: list[object] = []
@@ -1802,8 +2348,35 @@ async def fetch_mapped_reddit(
             "url": route.canonical_url,
         }
 
+    # Reads Reddit serves logged-out clients only over GraphQL (or as a
+    # GraphQL batch merged with /by_id) have their own fetchers.
+    graphql_fetchers = {
+        "thread": _fetch_reddit_thread,
+        "morechildren": _fetch_morechildren,
+    }
+    if route.kind in graphql_fetchers or (
+        route.kind == "listing"
+        and any(isinstance(request, RedditGraphQLRequest) for request in route.requests)
+    ):
+        fetcher = graphql_fetchers.get(route.kind, _fetch_items_by_id)
+        extra = {"comments_mode": reddit_comments} if route.kind == "thread" else {}
+        return await fetcher(
+            route,
+            session=session,
+            queue=queue,
+            deadline=deadline,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            chars_per_token=chars_per_token,
+            **extra,
+        )
+
     for index, request_url in enumerate(route.requests):
-        global_comments_transfer = _global_comments_transfer(route, request_url)
+        global_comments_transfer = (
+            _global_comments_transfer(route, request_url)
+            if isinstance(request_url, str)
+            else None
+        )
         requested_global_comments_limit = None
         if global_comments_transfer is not None:
             request_url, requested_global_comments_limit = global_comments_transfer
@@ -1816,25 +2389,39 @@ async def fetch_mapped_reddit(
                 )
                 break
             return {"error": f"Request timed out ({timeout:g}s limit)"}
-        result = await fetch_reddit_json(
-            request_url,
-            session,
-            queue,
-            remaining,
-            auth_required_on_403=route.kind == "moderators",
-            account_private_on_403=(
-                route.kind == "user_listing"
-                and route.label in {"upvoted", "downvoted"}
-            ),
-            # Reddit retired gilded listings and answers them itself (400, a
-            # 404, a structured 403 on /comments/gilded, or a redirect to the
-            # profile); that answer is reported as it is, and its 403 must not
-            # hold every other Reddit read for five minutes.
-            forbidden_is_answer="gilded" in (route.label or ""),
-        )
+        if isinstance(request_url, RedditGraphQLRequest):
+            # The profile leg: /user/<name>/about.json is refused to
+            # logged-out clients, so it is the app's UserProfile read.
+            if request_url.operation != "UserProfile" or route.username is None:
+                return {"error": "Invalid Reddit GraphQL route."}
+            result = await _fetch_user_about(
+                route.username,
+                session=session,
+                queue=queue,
+                deadline=deadline,
+            )
+        else:
+            result = await fetch_reddit_json(
+                request_url,
+                session,
+                queue,
+                remaining,
+                auth_required_on_403=route.kind == "moderators",
+                account_private_on_403=(
+                    route.kind == "user_listing"
+                    and route.label in {"upvoted", "downvoted"}
+                ),
+                # Reddit retired gilded listings and answers them itself (400,
+                # a 404, a structured 403 on /comments/gilded, or a redirect to
+                # the profile); that answer is reported as it is, and its 403
+                # must not hold every other Reddit read for five minutes.
+                forbidden_is_answer="gilded" in (route.label or ""),
+            )
         if result.get("auth_required"):
             return {"error": _MODERATOR_AUTH_REQUIRED}
         if "error" in result:
+            if route.kind == "comment_listing" and result.get("reddit_refused"):
+                return {"error": COMMENT_STREAM_REFUSED}
             if route.kind in {"multi_profile", "user_profile", "live"}:
                 payloads.append({"_fetch_error": result["error"]})
                 continue
@@ -1911,10 +2498,11 @@ async def fetch_mapped_reddit(
             result = dict(result)
             result["data"] = sliced
         result = dict(result)
-        result["data"] = _restore_reverse_listing_after(
-            result["data"],
-            request_url,
-        )
+        if isinstance(request_url, str):
+            result["data"] = _restore_reverse_listing_after(
+                result["data"],
+                request_url,
+            )
         if route.kind == "moderators" and route.subreddit is not None:
             result = await _paginate_anonymous_moderators(
                 result["data"],
@@ -2110,19 +2698,17 @@ async def fetch_mapped_reddit(
                         f"hydration timed out ({timeout:g}s limit)."
                     )
                 }
-            info_url = "https://www.reddit.com/api/info.json?" + urlencode(
-                {
-                    "raw_json": "1",
-                    "limit": str(len(batch)),
-                    "id": ",".join(batch),
+            if not all(
+                isinstance(value, str) and _POST_FULLNAME.fullmatch(value)
+                for value in batch
+            ):
+                return {
+                    "error": (
+                        "Reddit collection is unavailable: metadata returned an "
+                        "invalid post ID."
+                    )
                 }
-            )
-            result = await fetch_reddit_json(
-                info_url,
-                session,
-                queue,
-                remaining,
-            )
+            result = await _fetch_post_listing(batch, session, queue, remaining)
             if "error" in result:
                 detail = _bounded_related_detail(result["error"])
                 return {

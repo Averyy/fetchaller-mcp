@@ -1295,11 +1295,9 @@ class TestRedditUrlTransform:
 
         short = "https://redd.it/abc123"
         permalink = "https://www.reddit.com/r/Python/comments/abc123/title/"
-        json_url = "https://www.reddit.com/r/Python/comments/abc123.json?sort=confidence&limit=250&depth=10&raw_json=1"
-        json_transport_url = json_url.replace(
-            "www.reddit.com",
-            "api.reddit.com",
-        )
+        # The thread JSON is refused to logged-out clients: the post comes
+        # from /by_id and the comments from the app's PostComments read.
+        by_id_transport_url = "https://api.reddit.com/by_id/t3_abc123.json?raw_json=1"
         redirect = MockResponse(
             b"",
             "text/html",
@@ -1308,40 +1306,56 @@ class TestRedditUrlTransform:
             headers={"location": permalink},
         )
         redirect_session = MockWaferSession(responses={short: redirect})
-        payload = [
-            {
-                "data": {
-                    "children": [
-                        {
-                            "kind": "t3",
-                            "data": {
-                                "id": "abc123",
-                                "title": "Redirected Reddit thread",
-                                "subreddit": "Python",
-                                "author": "alice",
-                                "score": 1,
-                                "num_comments": 0,
-                                "created_utc": 1,
-                                "permalink": "/r/Python/comments/abc123/title/",
-                                "is_self": True,
-                                "selftext": "Full body",
-                            },
-                        }
-                    ]
+        post_listing = {
+            "data": {
+                "children": [
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "id": "abc123",
+                            "title": "Redirected Reddit thread",
+                            "subreddit": "Python",
+                            "author": "alice",
+                            "score": 1,
+                            "num_comments": 0,
+                            "created_utc": 1,
+                            "permalink": "/r/Python/comments/abc123/title/",
+                            "is_self": True,
+                            "selftext": "Full body",
+                        },
+                    }
+                ]
+            }
+        }
+        forest = {
+            "data": {
+                "postInfoById": {
+                    "__typename": "SubredditPost",
+                    "id": "t3_abc123",
+                    "title": "Redirected Reddit thread",
+                    "subreddit": {"name": "Python"},
+                    "commentForest": {"trees": [], "pageInfo": {"commentCount": 0}},
                 }
-            },
-            {"data": {"children": []}},
-        ]
+            }
+        }
         reddit_session = MockWaferSession(
             responses={
-                json_transport_url: MockResponse(
-                    json.dumps(payload).encode(),
+                by_id_transport_url: MockResponse(
+                    json.dumps(post_listing).encode(),
                     "application/json",
                     200,
-                    json_transport_url,
+                    by_id_transport_url,
                 )
             }
         )
+        graphql_answer = MockResponse(
+            json.dumps(forest).encode(),
+            "application/graphql-response+json",
+            200,
+            "https://gql-fed.reddit.com/",
+        )
+        graphql_answer.emulation = "reddit_app"
+        reddit_session.post = AsyncMock(return_value=graphql_answer)
 
         async def _rac(_host):
             return False, ["203.0.113.10"]
@@ -1359,8 +1373,15 @@ class TestRedditUrlTransform:
         assert result["content_type"] == "markdown"
         assert "Redirected Reddit thread" in result["content"]
         assert "Full body" in result["content"]
+        assert "No comments returned." in result["content"]
         assert redirect_session.calls == [short]
-        assert reddit_session.calls == [json_transport_url]
+        assert reddit_session.calls == [by_id_transport_url]
+        payload = reddit_session.post.await_args.kwargs["json"]
+        assert reddit_session.post.await_args.args == ("https://gql-fed.reddit.com/",)
+        assert payload["operationName"] == "PostComments"
+        assert payload["variables"]["id"] == "t3_abc123"
+        assert payload["variables"]["count"] == 250
+        assert payload["variables"]["maxDepth"] == 10
 
     async def test_redirect_leaving_reddit_uses_generic_html_cleanup(self):
         from fetchaller.tools.fetch import fetch_url
@@ -1855,6 +1876,35 @@ class TestErrorHandling:
             result = await fetch_url("https://protected.example.com")
         assert "error" in result
         assert "cloudflare" in result["error"].lower()
+
+    @_PATCH_SSRF
+    async def test_reddit_refused_explicit_json_never_reaches_the_browser(self, _mock_ssrf):
+        """A thread's .json is refused to every logged-out client; say so."""
+        import wafer
+
+        from fetchaller.tools.browse_reddit import REDDIT_REFUSED_MESSAGE
+        from fetchaller.tools.fetch import fetch_url
+
+        url = "https://www.reddit.com/r/Python/comments/abc123.json"
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.RequestBlocked("reddit", url, 403))
+        render = AsyncMock(return_value=None)
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            _patch_wafer(session),
+            patch("fetchaller.tools.fetch._render_after_challenge", render),
+        ):
+            result = await fetch_url(
+                url,
+                reddit_queue=PassthroughRedditQueue(),
+                browser_solver=object(),
+            )
+
+        assert result["error"] == REDDIT_REFUSED_MESSAGE
+        render.assert_not_awaited()
 
     @_PATCH_SSRF
     async def test_a_failed_homedepot_solve_holds_its_pages(self, _mock_ssrf):

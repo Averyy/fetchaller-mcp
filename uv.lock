@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "fetchaller-mcp"
-version = "3.8.6"
+version = "3.8.7"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -428,7 +428,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.9" },
+    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.10" },
 ]
 provides-extras = ["dev"]
 
@@ -1646,15 +1646,15 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.7.9"
+version = "0.7.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/df/1e/b150f542f87b8640ba56d493125d8000361cc13599b23abee9f23abc8f80/wafer_py-0.7.9.tar.gz", hash = "sha256:2b55fd6565a58ffd930710864c38b899eb2634a11d20203d62a5a88877437f42", size = 1835681, upload-time = "2026-10-26T00:38:59.558Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/36/d2f0942e2c2eb644b0594fad4e379d9437dd35ddba09fecea24c4fe6ef4c/wafer_py-0.7.10.tar.gz", hash = "sha256:d19dc5a31ffcac14f2fae64f16b6e925ed1e787c5c12fbf35e28528e79dff4f9", size = 1858152, upload-time = "2026-10-31T18:25:08.67Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f4/1f/906a309a56ba5f21118cfdbdc0eaa8beef5ee3933423cb6a6ffc8db96945/wafer_py-0.7.9-py3-none-any.whl", hash = "sha256:d476a51ac383d3b477dbf44b0b3ee67548582a34d1af45571c3dd599da8b4bc0", size = 638172, upload-time = "2026-10-26T00:38:57.301Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/22/d35c55645d62bd49fdc69c74fbff0550eb5340655daead2c9573926c99c9/wafer_py-0.7.10-py3-none-any.whl", hash = "sha256:85bd2f273715d64599fcebc0b335193d8bfb033556d5408dee2521609d1b1a3a", size = 647664, upload-time = "2026-10-31T18:25:06.881Z" },
 ]
 
 [package.optional-dependencies]

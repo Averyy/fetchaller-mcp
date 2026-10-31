@@ -23,6 +23,7 @@ from .amazon_jobs.search import search_amazon_jobs
 from .apple_jobs.search import search_apple_jobs
 from .cache.response_cache import ResponseCache
 from .config import Config, load_config, set_wafer_cache_dir
+from .content.reddit import REDDIT_SORT_OPTIONS
 from .eightfold.search import search_eightfold_jobs
 from .gcjobs.search import get_gcjobs_job, search_gcjobs
 from .gojobs.search import get_gojobs_job, search_gojobs
@@ -595,7 +596,17 @@ def _summarize_args(tool_name: str, args: dict) -> str:
 
 
 _TOOL_ARGUMENTS: dict[str, set[str]] = {
-    "fetch": {"url", "maxTokens", "timeout", "raw", "method", "headers", "body"},
+    "fetch": {
+        "url",
+        "maxTokens",
+        "timeout",
+        "raw",
+        "method",
+        "headers",
+        "body",
+        "redditComments",
+        "redditSort",
+    },
     "browse_reddit": {"subreddit", "sort", "time", "limit", "after", "timeout"},
     "search_reddit": {
         "query",
@@ -893,6 +904,8 @@ _ENUMS = {
     "ownership": {"freehold", "condo"},
 }
 _TOOL_ENUMS = {
+    ("fetch", "redditComments"): {"fast", "more"},
+    ("fetch", "redditSort"): set(REDDIT_SORT_OPTIONS),
     ("browse_reddit", "sort"): {"hot", "new", "top", "rising"},
     ("get_unifi_manual", "format"): {"pdf", "png", "svg"},
     ("search_eightfold_jobs", "sort"): {"relevance", "recent"},
@@ -1407,6 +1420,31 @@ def create_server(
                             "description": (
                                 "Request body (POST only). Content-Type defaults to "
                                 "application/json when the body is valid JSON."
+                            ),
+                        },
+                        "redditComments": {
+                            "type": "string",
+                            "enum": ["fast", "more"],
+                            "description": (
+                                "Reddit threads only (default: fast). Reddit returns "
+                                "at most 200 comments per read; \"fast\" makes one "
+                                "read and links the rest. \"more\" follows those "
+                                "links automatically (top-level comments first, up "
+                                "to 5 extra reads, ~6s each) until maxTokens is "
+                                "full, so raise maxTokens and timeout (e.g. 60) "
+                                "with it."
+                            ),
+                        },
+                        "redditSort": {
+                            "type": "string",
+                            "enum": list(REDDIT_SORT_OPTIONS),
+                            "description": (
+                                "Reddit threads only, optional (default: best, "
+                                "Reddit's own ranking). Comment order: best, top "
+                                "(highest score), new, old, controversial, or qa "
+                                "(comments the poster answered first, for AMAs). "
+                                "Same as ?sort= on the thread URL, and wins over "
+                                "it; load-more links keep it."
                             ),
                         },
                     },
@@ -2920,6 +2958,8 @@ def create_server(
                     method=arguments.get("method", "GET"),
                     headers=arguments.get("headers"),
                     body=arguments.get("body"),
+                    reddit_comments=arguments.get("redditComments", "fast"),
+                    reddit_sort=arguments.get("redditSort"),
                 )
                 return _format_result(name, result, start_time)
 

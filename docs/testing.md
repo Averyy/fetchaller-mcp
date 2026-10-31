@@ -79,12 +79,16 @@ SMOKE_STDIO_COMMAND='["docker","run","--rm","-i","fetchaller-mcp:candidate","pyt
 
 Fixture-only routes never run live, including with `--include-unstable`; they
 are restricted to inherently non-public access states and to surfaces Reddit
-itself retired (the sitewide comment stream, gilded listings, post collections,
+itself retired or refuses to logged-out clients (every comment stream, gilded
+listings, post collections,
 the gold-only directory), whose offline reason records Reddit's actual answer.
 A retired surface is never rebuilt from an archive to pass live.
 `--include-unstable` dynamically discovers current real
 post/comment, revision, multireddit and live IDs, records the
-discovery bodies, and requires every such entry. A live thread is found through
+discovery bodies, and requires every such entry. Comment IDs (for `/by_id`
+comments and `morechildren`) are read off the permalinks of the discovered
+thread as fetchaller renders it, since Reddit refuses the thread's `.json` to
+logged-out clients. A live thread is found through
 Reddit's own search for posts linking one (`url:reddit.com/live`, newest first;
 r/worldnews opens one a day) and an update ID is read off that thread; the web
 search it replaced indexes almost none. Strict mode requires stable
@@ -171,6 +175,26 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
   a redirect to the profile) with one read and no archive lookup, Reddit's
   structured 403 there holds no other read while an opaque one still does, and
   a same-origin redirect is named while a cross-origin one never is
+- `test_reddit_graphql.py` — The reads Reddit serves logged-out clients only
+  over the app's GraphQL (since 2026-10-20): `RequestBlocked` is final (no
+  gate retry, no backoff, also when returned under `max_rotations=0`); the
+  persisted POST carries no headers and an answer the app route did not carry,
+  `errors` without `data`, 429 and a block are each reported; the comment
+  forest nests by `parentId`, maps only fields GraphQL returned (no invented
+  `controversiality`), renders deleted/removed comments as Reddit does, and
+  turns "more" stubs into cursor links that route back to `PostComments`; a
+  thread is `/by_id` plus `PostComments`, an `after` page heads itself from the
+  forest, a sticky resolves its redirect with the caller's scope, a missing
+  post stops before the comment read; profiles map the karma split and date a
+  profile-less account by its cake day; `morechildren` and `/by_id` comments
+  are one batch with missing IDs named; a refused comment stream says so; `redditComments: "more"` follows the top-level page first, splices pages
+  where their stubs were, and stops at the read cap, a full budget or a near
+  deadline (a focused permalink skips the top-level page); live shapes: an
+  id-less `DeletedComment` is placed by depth and gets its id back from a
+  reply, and `PostsByIds` cards keep score, ratio, flair, gallery and video;
+  `redditSort` maps `best` to Reddit's confidence sort, wins over the URL's
+  `?sort=`, stays on the canonical URL, never re-sorts a listing, and rejects
+  values outside its six
 - `test_reddit_parity_corpus.py` — Checked-in zero-gap corpus coverage for every
   routed representation, access-state contract, and fixture gating; the Reddit
   session audit is parsed from the line the server's own
@@ -376,7 +400,7 @@ copied into the docs as a constant, only as a dated measurement.
 
 ## Brave search with local wafer
 
-Fetchaller 3.8.6 requires published wafer 0.7.9; its lockfile pins the PyPI
+Fetchaller 3.8.7 requires published wafer 0.7.10; its lockfile pins the PyPI
 artifact. Test the released package with normal environment synchronization:
 
 ```bash

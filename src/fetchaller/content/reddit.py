@@ -16,9 +16,26 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import unescape
 from math import isfinite
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    quote,
+    unquote,
+    urlencode,
+    urlparse,
+    urlunparse,
+)
 
 from bs4 import BeautifulSoup
+
+from .reddit_graphql import (
+    RedditGraphQLRequest,
+    comments_by_ids_request,
+    post_comments_request,
+    posts_by_ids_request,
+    user_profile_request,
+    valid_comment_cursor,
+)
 
 # Keep both New Reddit chrome and legacy selectors here. The legacy selectors
 # make explicitly fetched snapshots readable, but no normal fetch path routes to
@@ -138,7 +155,9 @@ class RedditRoute:
 
     canonical_url: str
     kind: str
-    requests: tuple[str, ...] = ()
+    # A REST JSON URL, or a persisted GraphQL operation for the reads Reddit
+    # now serves logged-out clients only over GraphQL (see reddit_graphql).
+    requests: tuple[str | RedditGraphQLRequest, ...] = ()
     subreddit: str | None = None
     username: str | None = None
     selected_comment_id: str | None = None
@@ -276,6 +295,9 @@ def _thread_params(
         else depth
     )
     requested_sort = _first_query(query, "sort")
+    if requested_sort == "best":
+        # Reddit's "Best" is the API's ``confidence`` sort.
+        requested_sort = "confidence"
     params = {
         "sort": (
             requested_sort
@@ -285,15 +307,9 @@ def _thread_params(
         "limit": str(effective_limit),
         "depth": str(effective_depth),
     }
-    sr_detail = _boolean_query(query, "sr_detail")
-    if sr_detail is not None:
-        params["sr_detail"] = sr_detail
-    # These documented controls can reduce or reshape the public comment
-    # representation. Preserve only their bounded, typed forms.
-    for name in ("showedits", "showmedia", "showmore", "showtitle", "threaded"):
-        value = _boolean_query(query, name)
-        if value is not None:
-            params[name] = value
+    # REST's display toggles (threaded, showmore, showedits, showmedia,
+    # showtitle, sr_detail) have no PostComments equivalent and are not sent;
+    # truncate is a PostComments variable.
     truncate_at = _first_query(query, "truncate")
     if truncate_at and truncate_at.isdigit():
         params["truncate"] = str(min(50, int(truncate_at)))
@@ -494,6 +510,60 @@ def _json_url(path: str, params: dict[str, str] | None = None) -> str:
     return f"{url}?{urlencode(complete)}"
 
 
+def _thread_route(
+    canonical_url: str,
+    post_id: str,
+    query: dict[str, list[str]],
+    limit: int,
+    depth: int,
+    *,
+    subreddit: str | None = None,
+    comment_id: str | None = None,
+) -> RedditRoute:
+    """A thread: its post over ``/by_id`` and its comments over GraphQL.
+
+    Reddit refuses ``/comments/<id>.json`` to every logged-out client since
+    2026-10-20, but still serves ``/by_id/t3_<id>`` -- the same post Thing the
+    thread JSON opened with -- and the app's ``PostComments`` forest. ``after``
+    is the forest's own cursor, carried on the thread URL by this module's
+    "load more" links; a selected comment becomes the app's focused-comment
+    read, with ``context`` as its parent count.
+    """
+
+    params = _thread_params(query, limit, depth)
+    after = _first_query(query, "after")
+    if not valid_comment_cursor(after):
+        after = None
+    num_parents = None
+    if comment_id and after is None:
+        context = _first_query(query, "context")
+        num_parents = min(8, int(context)) if context and context.isdigit() else 3
+    comments = post_comments_request(
+        post_id,
+        sort=params["sort"],
+        count=int(params["limit"]),
+        max_depth=int(params["depth"]),
+        after=after,
+        focused_comment_id=comment_id if after is None else None,
+        num_parents=num_parents,
+        truncate=int(params["truncate"]) if "truncate" in params else None,
+    )
+    # A "load more" page heads itself from the forest's own post title rather
+    # than re-reading and re-printing the whole post.
+    requests: tuple[str | RedditGraphQLRequest, ...] = (
+        (comments,)
+        if after is not None
+        else (_json_url(f"/by_id/t3_{quote(post_id)}.json"), comments)
+    )
+    return RedditRoute(
+        canonical_url,
+        "thread",
+        requests,
+        subreddit=subreddit,
+        selected_comment_id=comment_id if after is None else None,
+    )
+
+
 def _safe_part(value: str, pattern: re.Pattern[str]) -> str | None:
     return value if pattern.fullmatch(value) else None
 
@@ -504,6 +574,40 @@ def _safe_wiki_parts(parts: list[str]) -> bool:
     return bool(parts) and sum(len(part) for part in parts) <= 1024 and all(
         part not in {"", ".", ".."} and len(part) <= 256
         for part in parts
+    )
+
+
+# fetch's ``redditSort``: the comment orders offered as a tool option. A
+# thread URL's own ``?sort=`` still accepts every Reddit sort (random, live
+# and confidence too), as Reddit's links do.
+REDDIT_SORT_OPTIONS = ("best", "top", "new", "old", "controversial", "qa")
+
+
+def route_reddit_url_with_sort(
+    url: str,
+    max_tokens: int = 25000,
+    sort: str | None = None,
+) -> RedditRoute | None:
+    """Route ``url``, setting a thread's comment order to ``sort`` if given.
+
+    Only a thread route is affected, so the option can never re-sort a
+    listing or search. The sort replaces any ``?sort=`` already on the URL and
+    is kept on the canonical URL, so "load more" links carry it.
+    """
+
+    route = route_reddit_url(url, max_tokens=max_tokens)
+    if sort is None or route is None or route.kind != "thread":
+        return route
+    parsed = urlparse(route.canonical_url)
+    query = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if name != "sort"
+    ]
+    query.append(("sort", sort))
+    return route_reddit_url(
+        urlunparse(parsed._replace(query=urlencode(query))),
+        max_tokens=max_tokens,
     )
 
 
@@ -600,26 +704,14 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                     _first_query(query, "comment") or "",
                     _THING_ID_RE,
                 )
-            params = _thread_params(query, limit, depth)
-            if comment_id:
-                context = _first_query(query, "context")
-                params["comment"] = comment_id
-                params["context"] = (
-                    str(min(8, int(context)))
-                    if context and context.isdigit()
-                    else "3"
-                )
-            endpoint = (
-                f"/r/{quote(subreddit)}/comments/{quote(post_id)}.json"
-                if subreddit
-                else f"/comments/{quote(post_id)}.json"
-            )
-            return RedditRoute(
+            return _thread_route(
                 transformed.url,
-                "thread",
-                (_json_url(endpoint, params),),
+                post_id,
+                query,
+                limit,
+                depth,
                 subreddit=subreddit,
-                selected_comment_id=comment_id,
+                comment_id=comment_id,
             )
 
     # Subreddit surfaces.
@@ -652,12 +744,7 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                 return RedditRoute(
                     transformed.url,
                     "related",
-                    (
-                        _json_url(
-                            "/api/info.json",
-                            {"id": f"t3_{post_id}", "limit": "1"},
-                        ),
-                    ),
+                    (_json_url(f"/by_id/t3_{quote(post_id)}.json"),),
                     subreddit=subreddit,
                     label="related posts",
                 )
@@ -754,14 +841,21 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                     label="sidebar",
                 )
             if tail == ["about", "sticky"]:
+                # Reddit answers with a redirect to the pinned thread, whose
+                # JSON it refuses; the fetcher resolves the redirect and reads
+                # that thread like any other (see _thread_route).
                 number = _first_query(query, "num")
-                params = _thread_params(query, limit, depth)
-                params["num"] = number if number in {"1", "2"} else "1"
                 return RedditRoute(
                     transformed.url,
                     "thread",
-                    (_json_url(f"{base}/about/sticky.json", params),),
+                    (
+                        _json_url(
+                            f"{base}/about/sticky.json",
+                            {"num": number if number in {"1", "2"} else "1"},
+                        ),
+                    ),
                     subreddit=subreddit,
+                    label="sticky",
                 )
             if tail and tail[0] == "wiki":
                 wiki_action = tail[1] if len(tail) > 1 else None
@@ -858,7 +952,9 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                     transformed.url,
                     "user_profile",
                     (
-                        _json_url(f"{base}/about.json"),
+                        # /user/<name>/about.json is refused to logged-out
+                        # clients; the app reads the profile over GraphQL.
+                        user_profile_request(username),
                         _json_url(f"{base}/overview.json", params),
                         _json_url(f"{base}/trophies.json"),
                         _json_url(f"/api/multi/user/{quote(username)}.json"),
@@ -870,7 +966,7 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                 return RedditRoute(
                     transformed.url,
                     "user_about",
-                    (_json_url(f"{base}/about.json"),),
+                    (user_profile_request(username),),
                     username=username,
                 )
             if activity in {
@@ -1002,26 +1098,13 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
             and 1 <= len(child_ids) <= 100
             and all(_THING_ID_RE.fullmatch(value) for value in child_ids)
         ):
-            sort = _first_query(query, "sort")
-            requested_depth = _first_query(query, "depth")
-            params = {
-                "link_id": link_id,
-                "children": ",".join(child_ids),
-                "sort": sort if sort in _COMMENT_SORTS else "confidence",
-                "depth": str(min(int(requested_depth), depth, 10))
-                if requested_depth and requested_depth.isdigit()
-                else "0",
-                "api_type": "json",
-            }
-            more_id = _first_query(query, "id")
-            if more_id and _THING_ID_RE.fullmatch(more_id):
-                params["id"] = more_id
-            limit_children = _boolean_query(query, "limit_children")
-            params["limit_children"] = limit_children or "true"
+            # /api/morechildren is refused to logged-out clients. The named
+            # comments are read in one batch; each one's permalink opens its
+            # own replies, which the batch lookup does not return.
             return RedditRoute(
                 transformed.url,
                 "morechildren",
-                (_json_url("/api/morechildren.json", params),),
+                (comments_by_ids_request(list(dict.fromkeys(child_ids))),),
                 label=f"{len(child_ids)} comments",
             )
 
@@ -1048,7 +1131,10 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                 top=sort in {"top", "controversial"},
             )
         )
-        endpoint = "/r/all/rising.json" if sort == "randomrising" else f"/{sort}.json"
+        # Reddit refuses every /r/all read to logged-out clients (403 on the
+        # app API, 2026-10-31) while /rising.json is served, so the sitewide
+        # random-rising pool is the front page's rising listing.
+        endpoint = f"/{'rising' if sort == 'randomrising' else sort}.json"
         return RedditRoute(
             transformed.url,
             "listing",
@@ -1139,16 +1225,7 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
     if len(parts) == 2 and parts[0].lower() in {"gallery", "comments"}:
         post_id = _safe_part(parts[1], _THING_ID_RE)
         if post_id:
-            return RedditRoute(
-                transformed.url,
-                "thread",
-                (
-                    _json_url(
-                        f"/comments/{quote(post_id)}.json",
-                        _thread_params(query, limit, depth),
-                    ),
-                ),
-            )
+            return _thread_route(transformed.url, post_id, query, limit, depth)
     if len(parts) in {2, 3} and parts[0].lower() == "duplicates":
         post_id = _safe_part(parts[1], _THING_ID_RE)
         if post_id:
@@ -1168,12 +1245,7 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
             return RedditRoute(
                 transformed.url,
                 "related",
-                (
-                    _json_url(
-                        "/api/info.json",
-                        {"id": f"t3_{post_id}", "limit": "1"},
-                    ),
-                ),
+                (_json_url(f"/by_id/t3_{quote(post_id)}.json"),),
                 label="related posts",
             )
     if len(parts) == 2 and parts[0].lower() == "by_id":
@@ -1184,19 +1256,31 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
             re.fullmatch(r"t[13]_[A-Za-z0-9]{2,16}", value)
             for value in requested_fullnames
         ):
-            fullnames = ",".join(requested_fullnames)
-            # New Reddit's /by_id endpoint no longer returns t1 comments.
-            # Its public /api/info endpoint accepts the same fullname list and
-            # preserves both comment-only and mixed t1/t3 lookups.
-            request = (
-                _json_url("/api/info.json", {"id": fullnames})
-                if any(value.startswith("t1_") for value in requested_fullnames)
-                else _json_url(f"/by_id/{quote(fullnames, safe=',_')}.json")
-            )
+            requested_fullnames = list(dict.fromkeys(requested_fullnames))
+            # /by_id serves one post, but refuses a list of them -- as it
+            # refuses /api/info, which also served comments -- to logged-out
+            # clients. Comments are one GraphQL batch; one post stays on
+            # /by_id (every REST field), several are one PostsByIds batch; the
+            # fetcher merges them back into the order asked for.
+            comment_ids = [
+                value[3:] for value in requested_fullnames if value.startswith("t1_")
+            ]
+            post_fullnames = [
+                value for value in requested_fullnames if value.startswith("t3_")
+            ]
+            requests: list[str | RedditGraphQLRequest] = []
+            if comment_ids:
+                requests.append(comments_by_ids_request(comment_ids))
+            if len(post_fullnames) == 1:
+                requests.append(_json_url(f"/by_id/{quote(post_fullnames[0])}.json"))
+            elif post_fullnames:
+                requests.append(
+                    posts_by_ids_request([value[3:] for value in post_fullnames])
+                )
             return RedditRoute(
                 transformed.url,
                 "listing",
-                (request,),
+                tuple(requests),
                 label="items by ID",
             )
     if (
@@ -1839,6 +1923,16 @@ def _comment_navigation(
         parent_context = (
             f"https://www.reddit.com/comments/{quote(parent_id[3:])}/"
         )
+    elif not parent_id and permalink and "/comments/" in permalink:
+        # The parent is unknown (Reddit's batch comment lookup names none).
+        # The comment's own permalink with context shows it beneath its
+        # parents, which is the context; the bare thread would not be.
+        parsed = urlparse(permalink)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query["context"] = ["3"]
+        parent_context = urlunparse(
+            parsed._replace(query=urlencode(query, doseq=True))
+        )
     elif _THING_ID_RE.fullmatch(resolved_post_id):
         parent_context = (
             f"https://www.reddit.com/comments/{quote(resolved_post_id)}/"
@@ -1950,6 +2044,28 @@ def _more_comment_sections(
     count = data.get("count")
     child_ids = data.get("children") or []
     count = int(count) if isinstance(count, (int, float)) else len(child_ids)
+    cursor = data.get("cursor")
+    if not child_ids and valid_comment_cursor(cursor) and _THING_ID_RE.fullmatch(post_id):
+        # A GraphQL forest names no child IDs, only an opaque cursor. Reddit
+        # serves the omitted comments to PostComments with that cursor as
+        # ``after``: the next top-level page, or the rest of one comment's
+        # replies. The thread route carries it on the thread URL.
+        query = {"after": cursor}
+        if sort != "confidence":
+            query["sort"] = sort
+        continuation = (
+            f"https://www.reddit.com/comments/{quote(post_id)}/?"
+            + urlencode(query)
+        )
+        parent_id = str(data.get("parent_id") or "")
+        top_level = not parent_id.startswith("t1_")
+        noun = (
+            ("comment" if count == 1 else "comments")
+            if top_level
+            else ("reply" if count == 1 else "replies")
+        )
+        amount = f"{count:,} more" if count else "more"
+        return [(f"[Load {amount} {noun}: {continuation}]", 0, True)]
     valid_ids = [
         value
         for value in child_ids
@@ -2603,12 +2719,32 @@ def _fit_sections(
 def _render_thread(payload: object, route: RedditRoute, max_chars: int) -> str:
     if not isinstance(payload, list) or not payload:
         return "# Reddit thread\n\nNo post data returned."
-    posts = _listing_children(payload[0])
-    if not posts:
-        return "# Reddit thread\n\nPost not found."
-    post_data = posts[0].get("data") or {}
-    post = _render_post(post_data)
-    comments = _listing_children(payload[1]) if len(payload) > 1 else []
+    comment_payload = payload[1] if len(payload) > 1 else {}
+    if payload[0] is None:
+        # A "load more" page (``after`` cursor): the post was shown on the
+        # page that linked here, so name it instead of repeating it.
+        about = (
+            comment_payload.get("_post")
+            if isinstance(comment_payload, dict)
+            else None
+        )
+        about = about if isinstance(about, dict) else {}
+        post_data = {"id": str(about.get("id") or "")}
+        title = str(about.get("title") or "Reddit thread")
+        place = f"r/{about['subreddit']} · " if about.get("subreddit") else ""
+        thread_url = (
+            f"https://www.reddit.com/comments/{quote(post_data['id'])}/"
+            if _THING_ID_RE.fullmatch(post_data["id"])
+            else route.canonical_url
+        )
+        post = f"# {title}\n\n{place}more comments · Thread: {thread_url}"
+    else:
+        posts = _listing_children(payload[0])
+        if not posts:
+            return "# Reddit thread\n\nPost not found."
+        post_data = posts[0].get("data") or {}
+        post = _render_post(post_data)
+    comments = _listing_children(comment_payload)
     query = parse_qs(urlparse(route.canonical_url).query, keep_blank_values=True)
     requested_sort = _first_query(query, "sort")
     sort = requested_sort if requested_sort in _COMMENT_SORTS else "confidence"
@@ -2624,6 +2760,16 @@ def _render_thread(payload: object, route: RedditRoute, max_chars: int) -> str:
     # must never consume the required-section reserve and erase the post that
     # gives them meaning under a tight output budget.
     sections = [(text, count) for text, count, _required in walked]
+    notice = (
+        comment_payload.get("_fetchaller_notice")
+        if isinstance(comment_payload, dict)
+        else None
+    )
+    heading = (
+        f"## Comments\n\n{notice}"
+        if isinstance(notice, str) and notice
+        else "## Comments"
+    )
     if not sections:
         return _fit_sections(
             f"{post}\n\n## Comments\n\nNo comments returned.",
@@ -2633,7 +2779,7 @@ def _render_thread(payload: object, route: RedditRoute, max_chars: int) -> str:
             introduction_label="Post content",
         )
     return _fit_sections(
-        f"{post}\n\n## Comments",
+        f"{post}\n\n{heading}",
         sections,
         max_chars,
         omission_label="comments/replies",
@@ -2642,17 +2788,24 @@ def _render_thread(payload: object, route: RedditRoute, max_chars: int) -> str:
 
 
 # The sitewide comment stream (/comments/, r/all, r/popular) is never really
-# empty, yet anonymous reads of it now answer 200 with no children and
+# empty, yet anonymous reads of it answered 200 with no children and
 # reddit.com's own /comments/ page is "Page not found" (2026-09-27). Rendering
-# "0 items returned" alone read as a quiet site; say what it is instead.
-# Per-subreddit streams still return data and can be genuinely empty, so they
-# are left alone.
+# "0 items returned" alone read as a quiet site; say what it is instead. Since
+# 2026-10-20 Reddit refuses every /r/<name>/comments read to logged-out
+# clients outright (see COMMENT_STREAM_REFUSED); this covers an empty answer.
 _SITEWIDE_COMMENT_STREAMS = frozenset({"", "all", "popular"})
 _SITEWIDE_COMMENTS_WITHDRAWN = (
     "Reddit no longer serves the sitewide comment stream to logged-out "
     "readers: the listing answers with no comments and reddit.com's own "
-    "/comments/ page is \"Page not found\". This is not an empty stream. "
-    "Per-community streams (/r/<name>/comments/) still return comments."
+    "/comments/ page is \"Page not found\". This is not an empty stream."
+)
+COMMENT_STREAM_REFUSED = (
+    "Reddit no longer serves comment streams to logged-out clients: since "
+    "2026-10-20 it answers /r/<name>/comments (and the sitewide stream) with "
+    "its network-security block page (HTTP 403) for every anonymous client, "
+    "and the Reddit app has no logged-out equivalent. This is Reddit's "
+    "answer, not an empty stream. A community's posts (/r/<name>/new/) and a "
+    "user's comments (/user/<name>/comments/) are still served."
 )
 
 
@@ -2701,6 +2854,9 @@ def _render_listing(payload: object, route: RedditRoute, max_chars: int) -> str:
         if requested_time in _TIME_FILTERS:
             label = f"{label} · time {requested_time}"
     prefix = f"# {place} · {label}\n\n{len(children)} items returned"
+    notice = listing_data.get("_fetchaller_notice")
+    if isinstance(notice, str) and notice:
+        prefix += f"\n\n{notice}"
     if (
         not children
         and route.kind == "comment_listing"
@@ -2922,19 +3078,36 @@ def _render_user_about(payload: object) -> str:
         lines.extend(["", str(profile_subreddit["title"])])
     if profile_subreddit.get("public_description"):
         lines.extend(["", str(profile_subreddit["public_description"])])
+    unavailable = data.get("profile_unavailable")
+    if isinstance(unavailable, str) and unavailable:
+        lines.extend(["", f"**Profile unavailable:** {unavailable}"])
+    created = (
+        _created(data.get("created_utc"))
+        if data.get("created_utc")
+        # GraphQL dates an account without a profile only by its cake day.
+        else str(data["cake_day"])
+        if isinstance(data.get("cake_day"), str)
+        else None
+    )
     fields = [
         ("Post karma", data.get("link_karma")),
         ("Comment karma", data.get("comment_karma")),
         ("Total karma", data.get("total_karma")),
-        ("Created", _created(data.get("created_utc")) if data.get("created_utc") else None),
+        ("Posts", _counter_text(data.get("post_count"))),
+        ("Comments", _counter_text(data.get("comment_count"))),
+        ("Created", created),
         ("Verified", "yes" if _flag(data, "verified") else None),
         ("Reddit employee", "yes" if _flag(data, "is_employee") else None),
         ("Reddit Premium", "yes" if _flag(data, "is_gold") else None),
+        ("NSFW profile", "yes" if _flag(profile_subreddit, "over_18") else None),
     ]
     lines.extend(f"- **{label}:** {value}" for label, value in fields if value is not None)
     icon = unescape(profile_subreddit.get("icon_img") or data.get("icon_img") or "")
     if icon:
         lines.append(f"- **Avatar:** {icon}")
+    snoovatar = data.get("snoovatar_img")
+    if isinstance(snoovatar, str) and snoovatar.startswith("https://"):
+        lines.append(f"- **Snoovatar:** {snoovatar}")
     lines.append(f"- **Profile:** https://www.reddit.com/user/{quote(str(name), safe='')}/")
     return "\n".join(lines)
 
@@ -3236,6 +3409,8 @@ def _render_user_directory_item(data: dict, index: int) -> str:
             f"   Created: "
             f"{_created(data.get('created_utc') or data.get('created'))}"
         )
+    elif isinstance(data.get("cake_day"), str):
+        lines.append(f"   Created: {data['cake_day']}")
     title = str(data.get("title") or "").strip()
     description = str(data.get("public_description") or "").strip()
     icon = unescape(data.get("icon_img") or "")
@@ -3856,6 +4031,9 @@ def _render_morechildren(
             else:
                 sections.append((text, count))
     prefix = f"# More Reddit comments\n\n{len(comments)} comments returned"
+    notice = payload.get("_fetchaller_notice") if isinstance(payload, dict) else None
+    if isinstance(notice, str) and notice:
+        prefix += f"\n\n{notice}"
     return _fit_sections(
         prefix,
         sections,

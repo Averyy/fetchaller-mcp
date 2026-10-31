@@ -86,10 +86,12 @@ def test_reddit_parity_corpus_covers_every_declared_route_representation():
         "access_not_found",
         "access_private",
         "access_quarantined",
-        # Reddit withdrew both of these from anonymous callers: the global
-        # comment firehose answers 200-with-zero-children, and moderator
-        # rosters 403 or redirect to login.
+        # Reddit withdrew these from anonymous callers: the global comment
+        # firehose answered 200-with-zero-children, every comment stream is
+        # refused with its network-security 403 since 2026-10-20, and
+        # moderator rosters 403 or redirect to login.
         "comments_global",
+        "comment_listing",
         "moderators",
         # Reddit retired gilded listings and answers them with 400, 403, 404
         # or a redirect to the profile; fetchaller reports that answer as is.
@@ -358,9 +360,11 @@ def test_result_starved_routes_do_not_claim_pagination():
         assert not by_id[entry_id].pagination_round_trip, entry_id
     # The assertion must stay broadly enforced everywhere else.
     asserting = [e.id for e in by_id.values() if e.pagination]
-    # 37 since the five gilded listings left (Reddit retired them; their
-    # pagination was through an archive reconstruction, not Reddit).
-    assert len(asserting) >= 37, f"pagination coverage collapsed to {len(asserting)}"
+    # 37 once the five gilded listings left (Reddit retired them; their
+    # pagination was through an archive reconstruction, not Reddit), then 36
+    # when Reddit refused the per-community comment stream to logged-out
+    # clients (2026-10-20) and comment_listing became fixture-only.
+    assert len(asserting) >= 36, f"pagination coverage collapsed to {len(asserting)}"
 
 
 def test_activity_gate_requires_every_comment_body_and_exact_navigation():
@@ -1231,32 +1235,23 @@ async def test_dynamic_discovery_materializes_every_opaque_public_route(tmp_path
             "num_comments": 100,
         },
     }
-    thread = [
-        {"kind": "Listing", "data": {"children": [post]}},
-        {
-            "kind": "Listing",
-            "data": {
-                "children": [
-                    {
-                        "kind": "t1",
-                        "data": {
-                            "id": "comment0",
-                            "name": "t1_comment0",
-                            "body": "Current exact comment",
-                        },
-                    },
-                    {
-                        "kind": "more",
-                        "data": {
-                            "id": "more123",
-                            "children": ["comment1", "comment2"],
-                            "count": 2,
-                        },
-                    }
-                ]
-            },
-        },
-    ]
+    # Reddit refuses a thread's .json to logged-out clients, so discovery
+    # reads comment IDs off the thread as fetchaller renders it.
+    thread = (
+        "# Current post\n\n## Comments\n\n"
+        "### u/bob · 9 score · 2026-10-31 08:56 UTC\n\nCurrent exact comment\n\n"
+        "Permalink: https://www.reddit.com/r/AskReddit/comments/post123/"
+        "current_post/comment0/\n"
+        "Parent context: https://www.reddit.com/comments/post123/\n\n"
+        "#### ↳ u/carol · 2 score · 2026-10-31 09:00 UTC\n\nA reply\n\n"
+        "Permalink: https://www.reddit.com/r/AskReddit/comments/post123/"
+        "current_post/comment1/\n\n"
+        "### u/dave · 1 score · 2026-10-31 09:01 UTC\n\nAnother\n\n"
+        "Permalink: https://www.reddit.com/r/AskReddit/comments/post123/"
+        "current_post/comment2/\n"
+        # A comment of another post is never taken for this one.
+        "Permalink: https://www.reddit.com/r/AskReddit/comments/other1/x/zzz9/\n"
+    )
     link_post = {
         "kind": "t3",
         "data": {
@@ -1290,7 +1285,7 @@ async def test_dynamic_discovery_materializes_every_opaque_public_route(tmp_path
     revision_two = "12345678-1234-1234-1234-123456789abc"
     session = _Session(
         json.dumps({"kind": "Listing", "data": {"children": [post]}}),
-        json.dumps(thread),
+        thread,
         json.dumps({
             "kind": "Listing",
             "data": {"children": [link_post]},
@@ -1319,6 +1314,10 @@ async def test_dynamic_discovery_materializes_every_opaque_public_route(tmp_path
 
     targets, records = await _discover_live_targets(session, tmp_path)
 
+    # Every web-search call names its provider: search has required one since
+    # 3.8.6, and a missing one failed validation and lost every multireddit.
+    search_calls = [args for name, args in session.calls if name == "search"]
+    assert search_calls and all(args.get("provider") for args in search_calls)
     assert len(targets) == 17
     assert all(record.status == "passed" for record in records)
     assert {

@@ -7,7 +7,7 @@ import re
 import time
 from html import escape
 from unittest.mock import AsyncMock, Mock, patch
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import pytest
 import wafer
@@ -22,6 +22,7 @@ from fetchaller.content.reddit import (
     render_reddit_route,
     route_reddit_url,
 )
+from fetchaller.content.reddit_graphql import RedditGraphQLRequest
 from fetchaller.tools.browse_reddit import (
     _get_session,
     _instrument_reddit_session,
@@ -40,6 +41,15 @@ from fetchaller.tools.reddit_fetch import (
     fetch_mapped_reddit,
 )
 from fetchaller.tools.search_reddit import search_reddit
+
+
+def _comments_variables(route) -> dict:
+    """The PostComments variables of a thread route (its last request)."""
+
+    request = route.requests[-1]
+    assert isinstance(request, RedditGraphQLRequest)
+    assert request.operation == "PostComments"
+    return request.variables
 
 
 def _post(**overrides) -> dict:
@@ -89,6 +99,157 @@ def _thread(post: dict, comments: list[dict]) -> list[dict]:
     ]
 
 
+_GQL_URL = "https://gql-fed.reddit.com/"
+
+
+def _gql_comment(
+    comment_id: str,
+    body: str,
+    *,
+    post_id: str = "abc123",
+    author: str = "bob",
+    score: int = 9,
+    **overrides,
+) -> dict:
+    """A GraphQL ``Comment`` node in the app's commentFragment shape."""
+
+    node = {
+        "__typename": "Comment",
+        "id": f"t1_{comment_id}",
+        "createdAt": "2023-11-14T22:15:00.000000+0000",
+        "editedAt": None,
+        "authorInfo": {"__typename": "Redditor", "id": "t2_x", "name": author},
+        "content": {"__typename": "Content", "markdown": body, "richtextMedia": []},
+        "score": score,
+        "isScoreHidden": False,
+        "isOP": False,
+        "isStickied": False,
+        "isLocked": False,
+        "isArchived": False,
+        "isRemoved": False,
+        "isInitiallyCollapsed": False,
+        "initiallyCollapsedReason": None,
+        "removedByCategory": None,
+        "distinguishedAs": None,
+        "authorFlair": None,
+        "awardings": [],
+        "permalink": f"/r/Python/comments/{post_id}/title/{comment_id}/",
+    }
+    node.update(overrides)
+    return node
+
+
+def _gql_tree(
+    node: dict | None = None,
+    *,
+    depth: int = 0,
+    parent: str | None = None,
+    more: dict | None = None,
+) -> dict:
+    return {
+        "depth": depth,
+        "parentId": parent,
+        "node": node,
+        "more": more,
+        "childCount": 0,
+    }
+
+
+def _post_comments(
+    trees: list[dict],
+    *,
+    post_id: str = "abc123",
+    title: str = "Post",
+    subreddit: str = "Python",
+) -> dict:
+    return {
+        "data": {
+            "postInfoById": {
+                "__typename": "SubredditPost",
+                "id": f"t3_{post_id}",
+                "title": title,
+                "subreddit": {"name": subreddit},
+                "commentForest": {
+                    "trees": trees,
+                    "pageInfo": {"commentCount": len(trees), "hasNextPage": False},
+                },
+            }
+        }
+    }
+
+
+def _gql_post(
+    post_id: str,
+    title: str,
+    *,
+    author: str = "alice",
+    subreddit: str = "Python",
+    **overrides,
+) -> dict:
+    """A ``PostsByIds`` post node with the fields a listing card renders."""
+
+    node = {
+        "__typename": "SubredditPost",
+        "id": f"t3_{post_id}",
+        "postTitle": title,
+        "authorInfo": {"__typename": "Redditor", "name": author},
+        "createdAt": "2023-11-14T22:13:20.000000+0000",
+        "editedAt": None,
+        "score": 10,
+        "upvoteRatio": 0.9,
+        "commentCount": 2,
+        "permalink": f"/r/{subreddit}/comments/{post_id}/title/",
+        "subreddit": {"name": subreddit},
+        "isSelfPost": True,
+        "url": f"https://www.reddit.com/r/{subreddit}/comments/{post_id}/title/",
+        "content": {"markdown": "Body"},
+        "flair": None,
+        "authorFlair": None,
+        "awardings": [],
+        "gallery": None,
+        "media": None,
+    }
+    node.update(overrides)
+    return node
+
+
+def _gql_profile(
+    name: str,
+    *,
+    posts: int | float = 1,
+    comments: int | float = 2,
+    created: str | None = "2023-11-14T22:13:20.000000+0000",
+    **overrides,
+) -> dict:
+    """A ``UserProfile`` answer (redditorInfoByName)."""
+
+    info = {
+        "__typename": "Redditor",
+        "id": "t2_abc12",
+        "name": name,
+        "karma": {"fromPosts": posts, "fromComments": comments, "total": posts + comments},
+        "isEmployee": False,
+        "contributionStats": {"postCount": 3, "commentCount": 4},
+        "profile": (
+            {
+                "createdAt": created,
+                "title": f"{name} profile",
+                "publicDescriptionText": "About me",
+                "isNsfw": False,
+                "styles": {
+                    "legacyIcon": {"url": "https://styles.redditmedia.com/i.png"}
+                },
+            }
+            if created is not None
+            else None
+        ),
+        "profileInfo": {"__typename": "Profile"} if created is not None else None,
+        "snoovatarIcon": None,
+    }
+    info.update(overrides)
+    return {"data": {"redditorInfoByName": info}}
+
+
 def _moderator_route() -> RedditRoute:
     return RedditRoute(
         "https://www.reddit.com/r/Python/about/moderators/",
@@ -121,8 +282,9 @@ class TestRedditRouting:
         ("url", "request_path"),
         [
             (
+                # /r/all is refused to logged-out clients; /rising is served.
                 "https://www.reddit.com/randomrising/",
-                "/r/all/rising.json",
+                "/rising.json",
             ),
             (
                 "https://www.reddit.com/r/Python/randomrising/",
@@ -154,25 +316,35 @@ class TestRedditRouting:
         assert route.kind == "thread"
         assert route.canonical_url.startswith("https://www.reddit.com/")
         assert route.selected_comment_id == "def456"
-        assert all("old.reddit.com" not in request for request in route.requests)
-        parsed = urlparse(route.requests[0])
-        params = parse_qs(parsed.query)
-        assert parsed.path == "/r/Python/comments/abc123.json"
-        assert params == {
-            "raw_json": ["1"],
-            "sort": ["new"],
-            "limit": ["8"],
-            "depth": ["1"],
-            "comment": ["def456"],
-            "context": ["5"],
+        # The post is read over /by_id (still served); the thread JSON is
+        # refused to logged-out clients, so comments are a focused
+        # PostComments read with the permalink's context as its parent count.
+        assert route.requests[0] == (
+            "https://www.reddit.com/by_id/t3_abc123.json?raw_json=1"
+        )
+        assert _comments_variables(route) == {
+            "id": "t3_abc123",
+            "sortType": "NEW",
+            "count": 8,
+            "maxDepth": 1,
+            "focusedCommentContext": {
+                "commentId": "t1_def456",
+                "isFocusedThreadOnly": True,
+            },
+            "numParents": 5,
+            "includeConsistencyToken": False,
+            "includePremiumAvatarTreatment": False,
         }
-        assert "utm_source" not in route.requests[0]
+        assert "utm_source" not in str(route.requests)
 
-    def test_thread_without_subreddit_maps_to_json(self):
+    def test_thread_without_subreddit_maps_to_by_id_and_post_comments(self):
         route = route_reddit_url("https://reddit.com/comments/abc123/")
 
         assert route is not None
-        assert urlparse(route.requests[0]).path == "/comments/abc123.json"
+        assert route.kind == "thread"
+        assert urlparse(route.requests[0]).path == "/by_id/t3_abc123.json"
+        assert _comments_variables(route)["id"] == "t3_abc123"
+        assert "focusedCommentContext" not in _comments_variables(route)
 
     def test_percent_encoded_safe_path_parts_are_decoded_once(self):
         route = route_reddit_url("https://www.reddit.com/r/%50ython/wiki/getting%2Dstarted/")
@@ -189,7 +361,6 @@ class TestRedditRouting:
             "https://www.reddit.com/r/Python/comments/": ("comment_listing", "/r/Python/comments.json"),
             "https://www.reddit.com/r/Python/search/?q=asyncio": ("search", "/r/Python/search.json"),
             "https://www.reddit.com/search/?q=asyncio": ("search", "/search.json"),
-            "https://www.reddit.com/user/spez/about/": ("user_about", "/user/spez/about.json"),
             "https://www.reddit.com/user/spez/overview/": ("user_listing", "/user/spez/overview.json"),
             "https://www.reddit.com/user/spez/submitted/": ("user_listing", "/user/spez/submitted.json"),
             "https://www.reddit.com/u/spez/comments/": ("user_listing", "/user/spez/comments.json"),
@@ -224,13 +395,20 @@ class TestRedditRouting:
         assert route.kind == "html_fallback"
         assert route.requests == ()
 
-    def test_profile_root_uses_about_and_bounded_overview(self):
+    def test_profile_root_uses_graphql_profile_and_bounded_overview(self):
         route = route_reddit_url("https://www.reddit.com/user/spez/?after=t3_abc")
+        about = route_reddit_url("https://www.reddit.com/user/spez/about/")
 
-        assert route is not None
+        assert route is not None and about is not None
         assert route.kind == "user_profile"
+        assert about.kind == "user_about"
+        profile = RedditGraphQLRequest(
+            "UserProfile",
+            '{"includePremiumAvatarTreatment":false,"name":"spez"}',
+        )
+        assert about.requests == (profile,)
         assert route.requests == (
-            "https://www.reddit.com/user/spez/about.json?raw_json=1",
+            profile,
             "https://www.reddit.com/user/spez/overview.json?limit=250&raw_json=1&after=t3_abc",
             "https://www.reddit.com/user/spez/trophies.json?raw_json=1",
             "https://www.reddit.com/api/multi/user/spez.json?raw_json=1",
@@ -262,10 +440,9 @@ class TestRedditRouting:
         )
 
         assert small is not None and large is not None
-        assert parse_qs(urlparse(small.requests[0]).query)["limit"] == ["8"]
-        large_params = parse_qs(urlparse(large.requests[0]).query)
-        assert large_params["limit"] == ["500"]
-        assert large_params["depth"] == ["10"]
+        assert _comments_variables(small)["count"] == 8
+        assert _comments_variables(large)["count"] == 500
+        assert _comments_variables(large)["maxDepth"] == 10
 
     def test_lower_public_limits_depth_and_show_all_are_preserved(self):
         listing = route_reddit_url(
@@ -296,9 +473,8 @@ class TestRedditRouting:
             "show": ["all"],
             "t": ["week"],
         }
-        thread_params = parse_qs(urlparse(thread.requests[0]).query)
-        assert thread_params["limit"] == ["6"]
-        assert thread_params["depth"] == ["2"]
+        assert _comments_variables(thread)["count"] == 6
+        assert _comments_variables(thread)["maxDepth"] == 2
         wiki_params = parse_qs(urlparse(wiki.requests[0]).query)
         assert wiki_params["limit"] == ["4"]
         assert wiki_params["show"] == ["all"]
@@ -371,28 +547,22 @@ class TestRedditRouting:
         assert route.kind == "html_fallback"
         assert not route.requests
 
-    def test_thread_representation_controls_are_typed_and_bounded(self):
+    def test_thread_truncate_is_bounded_and_rest_display_toggles_are_not_sent(self):
         route = route_reddit_url(
             "https://www.reddit.com/comments/abc123/"
             "?threaded=false&showmore=true&showmedia=false"
             "&showtitle=false&showedits=true&truncate=999"
         )
-        invalid = route_reddit_url(
-            "https://www.reddit.com/comments/abc123/"
-            "?threaded=maybe&showmore=yes"
-        )
 
-        assert route is not None and invalid is not None
-        params = parse_qs(urlparse(route.requests[0]).query)
-        assert params["threaded"] == ["false"]
-        assert params["showmore"] == ["true"]
-        assert params["showmedia"] == ["false"]
-        assert params["showtitle"] == ["false"]
-        assert params["showedits"] == ["true"]
-        assert params["truncate"] == ["50"]
-        invalid_params = parse_qs(urlparse(invalid.requests[0]).query)
-        assert "threaded" not in invalid_params
-        assert "showmore" not in invalid_params
+        assert route is not None
+        variables = _comments_variables(route)
+        assert variables["truncate"] == 50
+        # REST's display toggles have no PostComments variable.
+        for name in ("threaded", "showmore", "showmedia", "showtitle", "showedits"):
+            assert name not in variables
+        assert route.requests[0] == (
+            "https://www.reddit.com/by_id/t3_abc123.json?raw_json=1"
+        )
 
     def test_limits_cannot_expand_the_budget_derived_transfer_bound(self):
         listing = route_reddit_url(
@@ -406,9 +576,8 @@ class TestRedditRouting:
 
         assert listing is not None and thread is not None
         assert parse_qs(urlparse(listing.requests[0]).query)["limit"] == ["8"]
-        thread_params = parse_qs(urlparse(thread.requests[0]).query)
-        assert thread_params["limit"] == ["8"]
-        assert thread_params["depth"] == ["1"]
+        assert _comments_variables(thread)["count"] == 8
+        assert _comments_variables(thread)["maxDepth"] == 1
 
     def test_thread_comment_query_preserves_selected_comment_context(self):
         route = route_reddit_url(
@@ -418,33 +587,59 @@ class TestRedditRouting:
 
         assert route is not None
         assert route.selected_comment_id == "def456"
-        assert parse_qs(urlparse(route.requests[0]).query) == {
-            "sort": ["confidence"],
-            "limit": ["250"],
-            "depth": ["10"],
-            "comment": ["def456"],
-            "context": ["7"],
-            "raw_json": ["1"],
+        variables = _comments_variables(route)
+        assert variables["sortType"] == "CONFIDENCE"
+        assert variables["count"] == 250
+        assert variables["maxDepth"] == 10
+        assert variables["focusedCommentContext"] == {
+            "commentId": "t1_def456",
+            "isFocusedThreadOnly": True,
         }
+        assert variables["numParents"] == 7
 
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://www.reddit.com/gallery/abc123?limit=2&depth=1&sort=new",
-            (
-                "https://www.reddit.com/r/Python/about/sticky/"
-                "?limit=2&depth=1&sort=new"
-            ),
-        ],
-    )
-    def test_thread_like_routes_preserve_lower_caller_scope(self, url):
-        route = route_reddit_url(url)
+    def test_thread_like_routes_preserve_lower_caller_scope(self):
+        route = route_reddit_url(
+            "https://www.reddit.com/gallery/abc123?limit=2&depth=1&sort=new"
+        )
 
         assert route is not None
-        params = parse_qs(urlparse(route.requests[0]).query)
-        assert params["limit"] == ["2"]
-        assert params["depth"] == ["1"]
-        assert params["sort"] == ["new"]
+        variables = _comments_variables(route)
+        assert variables["count"] == 2
+        assert variables["maxDepth"] == 1
+        assert variables["sortType"] == "NEW"
+
+    def test_sticky_route_resolves_the_pin_before_reading_the_thread(self):
+        route = route_reddit_url(
+            "https://www.reddit.com/r/Python/about/sticky/"
+            "?limit=2&depth=1&sort=new&num=2"
+        )
+
+        assert route is not None
+        assert route.kind == "thread"
+        assert route.label == "sticky"
+        # Only the redirect is read here; the caller's scope is applied to the
+        # thread it names (see the fetch test).
+        assert route.requests == (
+            "https://www.reddit.com/r/Python/about/sticky.json?num=2&raw_json=1",
+        )
+
+    def test_thread_after_cursor_reads_only_the_next_comment_page(self):
+        cursor = "commenttree:6d35350d,::0:ex:,Wcv:u\\:$%]d3r|$q"
+        route = route_reddit_url(
+            "https://www.reddit.com/comments/abc123/?"
+            + urlencode({"after": cursor, "sort": "top"})
+        )
+        bad = route_reddit_url(
+            "https://www.reddit.com/comments/abc123/?after=%0Abad"
+        )
+
+        assert route is not None and bad is not None
+        assert len(route.requests) == 1
+        variables = _comments_variables(route)
+        assert variables["after"] == cursor
+        assert variables["sortType"] == "TOP"
+        assert "after" not in _comments_variables(bad)
+        assert len(bad.requests) == 2
 
     def test_profile_sorts_and_vote_histories_match_public_routes(self):
         for sort in ("hot", "new", "top", "controversial"):
@@ -496,8 +691,16 @@ class TestRedditRouting:
 
         assert valid is not None
         assert valid.kind == "listing"
-        assert urlparse(valid.requests[0]).path == "/api/info.json"
-        assert parse_qs(urlparse(valid.requests[0]).query)["id"] == ["t3_ab,t1_cd,t3_ef"]
+        # /api/info is refused to logged-out clients: comments are one
+        # GraphQL batch, posts one /by_id read.
+        assert valid.requests == (
+            RedditGraphQLRequest(
+                "LiveCommentsByIds",
+                '{"ids":["t1_cd"],"includePremiumAvatarTreatment":false}',
+            ),
+            # /by_id refuses a list of posts to logged-out clients.
+            RedditGraphQLRequest("PostsByIds", '{"ids":["t3_ab","t3_ef"]}'),
+        )
         assert valid.label == "items by ID"
         assert invalid is not None and invalid.kind == "html_fallback"
 
@@ -511,18 +714,15 @@ class TestRedditRouting:
 
         assert route is not None
         assert route.kind == "morechildren"
-        parsed = urlparse(route.requests[0])
-        assert parsed.path == "/api/morechildren.json"
-        assert parse_qs(parsed.query) == {
-            "link_id": ["t3_abc123"],
-            "children": ["def456,ghi789"],
-            "sort": ["top"],
-            "depth": ["2"],
-            "id": ["more123"],
-            "limit_children": ["false"],
-            "api_type": ["json"],
-            "raw_json": ["1"],
-        }
+        # /api/morechildren is refused to logged-out clients; the named
+        # comments are read as one GraphQL batch.
+        assert route.requests == (
+            RedditGraphQLRequest(
+                "LiveCommentsByIds",
+                '{"ids":["t1_def456","t1_ghi789"],'
+                '"includePremiumAvatarTreatment":false}',
+            ),
+        )
 
     def test_explicit_json_and_unmapped_routes_stay_distinct(self):
         explicit = route_reddit_url("https://www.reddit.com/r/Python/hot.json?limit=1")
@@ -534,7 +734,7 @@ class TestRedditRouting:
     @pytest.mark.parametrize(
         ("url", "kind", "path"),
         [
-            ("https://www.reddit.com/gallery/abc123", "thread", "/comments/abc123.json"),
+            ("https://www.reddit.com/gallery/abc123", "thread", "/by_id/t3_abc123.json"),
             (
                 "https://www.reddit.com/subreddits/popular/",
                 "subreddit_directory",
@@ -568,11 +768,12 @@ class TestRedditRouting:
                 "duplicates",
                 "/duplicates/abc123.json",
             ),
-            ("https://www.reddit.com/related/abc123/", "related", "/api/info.json"),
+            ("https://www.reddit.com/related/abc123/", "related", "/by_id/t3_abc123.json"),
             (
-                "https://www.reddit.com/by_id/t3_ab,t3_cd/",
+                # One post stays on /by_id; a list is PostsByIds (see below).
+                "https://www.reddit.com/by_id/t3_ab/",
                 "listing",
-                "/by_id/t3_ab,t3_cd.json",
+                "/by_id/t3_ab.json",
             ),
             (
                 "https://www.reddit.com/r/Python/wiki/pages/",
@@ -631,7 +832,9 @@ class TestRedditRouting:
         assert route.requests
         assert urlparse(route.requests[0]).path == path
         for request in route.requests:
-            if kind == "wiki_pages":
+            if isinstance(request, RedditGraphQLRequest):
+                assert kind == "thread" and request.operation == "PostComments"
+            elif kind == "wiki_pages":
                 assert request == (
                     "https://www.reddit.com/r/Python/wiki/pages/"
                 )
@@ -877,7 +1080,7 @@ class TestRedditRouting:
         )
 
         assert route is not None
-        assert parse_qs(urlparse(route.requests[0]).query)["sort"] == [sort]
+        assert _comments_variables(route)["sortType"] == sort.upper()
 
     @pytest.mark.parametrize(
         "name",
@@ -2476,7 +2679,16 @@ class TestOtherRedditRenderers:
         assert _payload_schema_error(route, 0, payload) == (
             "Reddit returned an invalid morechildren response."
         )
-        session = _JsonSession([_JsonResponse(payload)])
+        session = _JsonSession(
+            [
+                _GqlResponse(
+                    {
+                        "errors": [{"message": "PersistedQueryNotFound"}],
+                        "data": None,
+                    }
+                )
+            ]
+        )
         with (
             patch(
                 "fetchaller.tools.reddit_fetch._get_session",
@@ -2494,7 +2706,9 @@ class TestOtherRedditRenderers:
             )
 
         assert result == {
-            "error": "Reddit reported that comment expansion failed."
+            "error": (
+                "Reddit's LiveCommentsByIds read failed: PersistedQueryNotFound."
+            )
         }
         assert "content" not in result
 
@@ -2799,6 +3013,19 @@ class _JsonResponse:
 
     def json(self):
         return self.payload
+
+
+class _GqlResponse(_JsonResponse):
+    """A GraphQL answer as wafer's Reddit app route returns it."""
+
+    emulation = "reddit_app"
+
+    def __init__(self, payload: object, status_code: int = 200, headers=None):
+        super().__init__(
+            payload,
+            status_code,
+            headers or {"content-type": "application/graphql-response+json"},
+        )
 
 
 class _NonJsonResponse(_JsonResponse):
@@ -3754,17 +3981,13 @@ class TestRedditTransportAndTools:
                 }],
             },
         }
-        about = {
-            "kind": "t2",
-            "data": {
-                "id": "epphs8c",
-                "name": "thisisinsider",
-                "link_karma": 16_483,
-                "comment_karma": 10_271,
-                "created_utc": 1_506_103_969,
-            },
-        }
-        session = _JsonSession([_JsonResponse(directory), _JsonResponse(about)])
+        about = _gql_profile(
+            "thisisinsider",
+            posts=16_483,
+            comments=10_271.0,
+            created="2017-09-22T18:12:49.000000+0000",
+        )
+        session = _JsonSession([_JsonResponse(directory), _GqlResponse(about)])
         route = route_reddit_url(
             "https://www.reddit.com/users/popular/?limit=100",
             max_tokens=25_000,
@@ -3796,13 +4019,11 @@ class TestRedditTransportAndTools:
             "https://www.reddit.com/user/thisisinsider/overview/"
         ) in result["content"]
         assert "[Next page:" in result["content"]
-        assert session.calls == [
-            _transport_url(route.requests[0]),
-            _transport_url(
-                "https://www.reddit.com/user/thisisinsider/"
-                "about.json?raw_json=1"
-            ),
-        ]
+        assert session.calls == [_transport_url(route.requests[0]), _GQL_URL]
+        assert session.request_details[1][2]["json"]["variables"] == {
+            "name": "thisisinsider",
+            "includePremiumAvatarTreatment": False,
+        }
 
     async def test_user_search_hydrates_t2_name_identity(self):
         directory = {
@@ -3814,16 +4035,7 @@ class TestRedditTransportAndTools:
                 }],
             },
         }
-        about = {
-            "kind": "t2",
-            "data": {
-                "name": "python",
-                "link_karma": 1,
-                "comment_karma": 2,
-                "created_utc": 1_700_000_000,
-            },
-        }
-        session = _JsonSession([_JsonResponse(about)])
+        session = _JsonSession([_GqlResponse(_gql_profile("python"))])
         with patch(
             "fetchaller.tools.browse_reddit.reddit_limiter.wait",
             AsyncMock(),
@@ -3842,32 +4054,35 @@ class TestRedditTransportAndTools:
         assert card["comment_karma"] == 2
 
     @pytest.mark.parametrize(
-        "about",
+        ("answers", "expected"),
         [
-            {},
-            {"kind": "t2", "data": {"name": "substituted"}},
-            {
-                "kind": "t2",
-                "data": {
-                    "name": "alice",
-                    "comment_karma": 1,
-                    "created_utc": 1_700_000_000,
-                },
-            },
-            {
-                "kind": "t2",
-                "data": {
-                    "name": "alice",
-                    "link_karma": 1,
-                    "comment_karma": 2,
-                    "created_utc": 0,
-                },
-            },
+            (
+                [{"data": {"somethingElse": None}}],
+                "Reddit user directory profile hydration failed (Reddit's "
+                "UserProfile read failed.)",
+            ),
+            (
+                [_gql_profile("substituted")],
+                "Reddit user directory profile hydration failed (Reddit's "
+                "UserProfile read substituted another account.)",
+            ),
+            (
+                [_gql_profile("alice", karma={"fromComments": 1, "total": 1})],
+                "Reddit user directory profile hydration returned a "
+                "substituted or incomplete account.",
+            ),
+            (
+                # No profile date, and the account-level cake day is missing.
+                [_gql_profile("alice", created=None), {"data": {"redditorsInfoByIds": []}}],
+                "Reddit user directory profile hydration returned a "
+                "substituted or incomplete account.",
+            ),
         ],
     )
     async def test_user_directory_rejects_substituted_or_incomplete_hydration(
         self,
-        about,
+        answers,
+        expected,
     ):
         directory = {
             "kind": "Listing",
@@ -3881,7 +4096,7 @@ class TestRedditTransportAndTools:
                 }],
             },
         }
-        session = _JsonSession([_JsonResponse(about)])
+        session = _JsonSession([_GqlResponse(answer) for answer in answers])
 
         with patch(
             "fetchaller.tools.browse_reddit.reddit_limiter.wait",
@@ -3894,12 +4109,7 @@ class TestRedditTransportAndTools:
                 deadline=time.monotonic() + 10,
             )
 
-        assert result == {
-            "error": (
-                "Reddit user directory profile hydration returned a "
-                "substituted or incomplete account."
-            )
-        }
+        assert result == {"error": expected}
 
     async def test_user_directory_rejects_missing_identity_and_timeout(self):
         missing_identity = {
@@ -5005,23 +5215,17 @@ class TestRedditTransportAndTools:
         assert route is not None
         session = _JsonSession(
             [
-                _JsonResponse(
+                _GqlResponse(
                     {
-                        "kind": "Listing",
                         "data": {
-                            "children": [
-                                _comment(
+                            "commentsByIds": [
+                                _gql_comment(
                                     "comment1",
                                     "FETCHED BY-ID COMMENT",
-                                    subreddit="Python",
-                                    subreddit_name_prefixed="r/Python",
-                                    link_title="Fetched parent",
-                                    permalink=(
-                                        "/r/Python/comments/post1/title/comment1/"
-                                    ),
+                                    post_id="post1",
                                 )
                             ]
-                        },
+                        }
                     }
                 )
             ]
@@ -5034,8 +5238,63 @@ class TestRedditTransportAndTools:
             result = await fetch_mapped_reddit(route, max_tokens=1000, timeout=10)
 
         assert "FETCHED BY-ID COMMENT" in result["content"]
+        assert "r/Python · u/bob" in result["content"]
+        assert (
+            "Permalink: https://www.reddit.com/r/Python/comments/post1/title/comment1/"
+        ) in result["content"]
         assert result["url"] == "https://www.reddit.com/by_id/t1_comment1/"
-        assert session.calls == [_transport_url(route.requests[0])]
+        assert session.calls == [_GQL_URL]
+        assert session.request_details[0][2]["json"]["operationName"] == (
+            "LiveCommentsByIds"
+        )
+        assert "headers" not in session.request_details[0][2]
+
+    async def test_fetch_mapped_by_id_mixed_keeps_order_and_names_missing(self):
+        route = route_reddit_url(
+            "https://www.reddit.com/by_id/t3_post1,t1_gone1,t1_comment1/"
+        )
+        assert route is not None
+        session = _JsonSession(
+            [
+                _GqlResponse(
+                    {
+                        "data": {
+                            "commentsByIds": [
+                                None,
+                                _gql_comment("comment1", "THE COMMENT", post_id="post1"),
+                            ]
+                        }
+                    }
+                ),
+                _JsonResponse(
+                    {
+                        "kind": "Listing",
+                        "data": {"children": [_post(id="post1", title="THE POST")]},
+                    }
+                ),
+            ]
+        )
+
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=2000, timeout=10)
+
+        content = result["content"]
+        assert content.index("THE POST") < content.index("THE COMMENT")
+        assert "2 items returned" in content
+        assert (
+            "Reddit returned nothing for 1 requested item (deleted, removed or "
+            "never existed): t1_gone1."
+        ) in content
+        assert session.calls == [
+            _GQL_URL,
+            "https://api.reddit.com/by_id/t3_post1.json?raw_json=1",
+        ]
 
     async def test_fetch_mapped_related_uses_new_reddit_partial_and_lower_limit(self):
         route = route_reddit_url(
@@ -5094,20 +5353,15 @@ class TestRedditTransportAndTools:
                         )
                     },
                 ),
-                _JsonResponse(
+                _GqlResponse(
                     {
                         "data": {
-                            "children": [
-                                _post(
-                                    id="related1",
-                                    title="First related",
+                            "postsInfoByIds": [
+                                _gql_post(
+                                    "related1",
+                                    "First related",
                                     author="real_author",
                                     subreddit="learnpython",
-                                    subreddit_name_prefixed="r/learnpython",
-                                    permalink=(
-                                        "/r/learnpython/comments/"
-                                        "related1/title/"
-                                    ),
                                 )
                             ]
                         }
@@ -5142,12 +5396,13 @@ class TestRedditTransportAndTools:
             "https://www.reddit.com/svc/shreddit/"
             "pdp-right-rail/related/Python/t3_post1?"
         )
-        assert session.calls[2].startswith(
-            "https://api.reddit.com/api/info.json?"
-        )
-        assert parse_qs(urlparse(session.calls[2]).query)["id"] == [
-            "t3_related1"
-        ]
+        # /by_id refuses a list of posts to logged-out clients, so the
+        # details are one PostsByIds read.
+        assert session.calls[2] == _GQL_URL
+        assert session.request_details[2][2]["json"]["operationName"] == "PostsByIds"
+        assert session.request_details[2][2]["json"]["variables"] == {
+            "ids": ["t3_related1"]
+        }
         assert "old.reddit.com" not in result["content"]
         assert queue.enqueue.await_count == 3
 
@@ -5262,7 +5517,7 @@ class TestRedditTransportAndTools:
                     f'<reddit-pdp-right-rail-post event-data="{event}">'
                     "</reddit-pdp-right-rail-post></aside>"
                 ),
-                _JsonResponse({}, status_code=500),
+                _GqlResponse({}, status_code=500),
             ]
         )
 
@@ -5285,7 +5540,7 @@ class TestRedditTransportAndTools:
         assert "Still visible" in result["content"]
         assert "u/[unknown]" in result["content"]
         assert "1 related post detail unavailable" in result["content"]
-        assert "Reddit returned HTTP 500" in result["content"]
+        assert "Reddit's PostsByIds read returned HTTP 500" in result["content"]
         assert len(session.calls) == 3
 
     async def test_fetch_mapped_related_names_malformed_partial_cards(self):
@@ -5671,16 +5926,15 @@ class TestRedditTransportAndTools:
         ids = [f"t3_p{index}" for index in range(205)]
         first_batch = {
             "data": {
-                "children": [
-                    _post(id=f"p{index}", title=f"Post {index}")
-                    for index in range(100)
+                "postsInfoByIds": [
+                    _gql_post(f"p{index}", f"Post {index}") for index in range(100)
                 ]
             }
         }
         third_batch = {
             "data": {
-                "children": [
-                    _post(id=f"p{index}", title=f"Post {index}")
+                "postsInfoByIds": [
+                    _gql_post(f"p{index}", f"Post {index}")
                     for index in range(200, 205)
                 ]
             }
@@ -5693,9 +5947,9 @@ class TestRedditTransportAndTools:
                         "link_ids": ids,
                     }
                 ),
-                _JsonResponse(first_batch),
-                _JsonResponse({}, status_code=500),
-                _JsonResponse(third_batch),
+                _GqlResponse(first_batch),
+                _GqlResponse({}, status_code=500),
+                _GqlResponse(third_batch),
             ]
         )
         route = route_reddit_url(
@@ -5721,10 +5975,11 @@ class TestRedditTransportAndTools:
             )
 
         batch_sizes = [
-            len(parse_qs(urlparse(url).query)["id"][0].split(","))
-            for url in session.calls[1:]
+            len(details[2]["json"]["variables"]["ids"])
+            for details in session.request_details[1:]
         ]
         assert batch_sizes == [100, 100]
+        assert session.calls[1:] == [_GQL_URL, _GQL_URL]
         assert result["error"].startswith(
             "Reddit collection is unavailable: current post hydration failed "
         )
@@ -5812,17 +6067,17 @@ class TestRedditTransportAndTools:
         assert result == {"error": "Request timed out (3s limit)"}
 
     async def test_direct_mapped_fetch_uses_process_wide_limiter_for_every_leg(self):
-        profile = {
-            "kind": "t2",
-            "data": {"name": "spez", "link_karma": 1, "comment_karma": 2},
-        }
         overview = {"kind": "Listing", "data": {"children": []}}
-        session = _JsonSession([_JsonResponse(profile), _JsonResponse(overview)])
+        session = _JsonSession(
+            [_GqlResponse(_gql_profile("spez")), _JsonResponse(overview)]
+        )
+        full = route_reddit_url("https://www.reddit.com/user/spez/")
+        assert full is not None
         route = RedditRoute(
             "https://www.reddit.com/user/spez/",
             "user_profile",
             (
-                "https://www.reddit.com/user/spez/about.json",
+                full.requests[0],
                 "https://www.reddit.com/user/spez/overview.json?limit=5",
             ),
             username="spez",
@@ -6453,7 +6708,7 @@ class TestRedditTransportAndTools:
     async def test_multi_source_profile_names_only_the_malformed_leg(self):
         session = _JsonSession(
             [
-                _JsonResponse({}),
+                _GqlResponse({"data": {"somethingElse": None}}),
                 _JsonResponse({"data": {"children": []}}),
                 _JsonResponse({"data": {"trophies": []}}),
                 _JsonResponse([]),
@@ -6481,13 +6736,13 @@ class TestRedditTransportAndTools:
 
         assert "error" not in result
         assert "Profile details unavailable" in result["content"]
-        assert "invalid user profile details response" in result["content"]
+        assert "Reddit's UserProfile read failed." in result["content"]
         assert "Recent activity" in result["content"]
 
     async def test_user_profile_accepts_real_moderated_list_shape(self):
         session = _JsonSession(
             [
-                _JsonResponse({"data": {"name": "spez"}}),
+                _GqlResponse(_gql_profile("spez")),
                 _JsonResponse({"data": {"children": []}}),
                 _JsonResponse({"data": {"trophies": []}}),
                 _JsonResponse([]),

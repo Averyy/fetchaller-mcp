@@ -9,6 +9,13 @@ import wafer
 
 from ..config import get_wafer_cache_dir
 from ..content.reddit import format_reddit_post
+from ..content.reddit_graphql import (
+    GRAPHQL_URL as REDDIT_GRAPHQL_URL,
+)
+from ..content.reddit_graphql import (
+    RedditGraphQLRequest,
+    graphql_errors,
+)
 from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..ratelimit import reddit_limiter
 
@@ -122,6 +129,48 @@ _JSON_HEADERS = {
     "Referer": "https://www.reddit.com/",
 }
 _JSON_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+# Since about 2026-10-20 Reddit answers a thread and its comments, the comment
+# streams, /api/info, /api/morechildren and /user/<name>/about with its
+# network-security 403 for every logged-out client -- the app's anonymous
+# token, an established web session and a real Chrome alike -- and wafer
+# raises RequestBlocked for it at once. It is Reddit's answer about the read,
+# not a session problem, so it is never retried and never backs off other
+# reads.
+REDDIT_REFUSED_MESSAGE = (
+    "Reddit refuses this read to logged-out clients: it answers with its "
+    "network-security block page (HTTP 403) for every anonymous client, and "
+    "retrying, a new session or a browser does not change that."
+)
+
+
+def _rate_limited(
+    queue: RedditRequestQueue | None,
+    retry_after: float | None,
+) -> dict:
+    """Back off the shared Reddit budget and say when to retry."""
+
+    applied_delay = 60.0 if retry_after is None else retry_after
+    if queue:
+        queue.set_backoff(429, retry_after=retry_after)
+    else:
+        reddit_limiter.defer(applied_delay)
+    return {
+        "error": (
+            "Rate limited. Reddit allows ~10 requests/min. "
+            f"Retry after {applied_delay:g}s."
+        )
+    }
+
+
+def _is_refused_response(resp: object) -> bool:
+    """The block wafer returns, rather than raises, under ``max_rotations=0``."""
+
+    return (
+        getattr(resp, "status_code", None) == 403
+        and getattr(resp, "challenge_type", None) == "reddit"
+        and getattr(resp, "emulation", None) == "reddit_app"
+    )
 _MAX_JSON_REDIRECTS = 5
 _REDDIT_JSON_TRANSPORT_HOST = "api.reddit.com"
 
@@ -383,6 +432,7 @@ async def fetch_reddit_json(
     auth_required_on_403: bool = False,
     account_private_on_403: bool = False,
     forbidden_is_answer: bool = False,
+    resolve_sticky: bool = False,
 ) -> dict:
     """
     Fetch Reddit JSON API with rate limiting.
@@ -401,9 +451,14 @@ async def fetch_reddit_json(
             (``{"message": "Forbidden", "error": 403}``) as its answer about
             this URL, without the transport backoff. For routes Reddit has
             retired and answers itself; any other 403 is unchanged.
+        resolve_sticky: Stop at Reddit's validated sticky-to-thread redirect
+            and return ``{"sticky_thread": url}`` instead of following it. The
+            thread JSON it names is refused to logged-out clients, so callers
+            read the thread over GraphQL instead.
 
     Returns:
-        Dict with either 'data' or 'error'
+        Dict with either 'data' or 'error'. A read Reddit refuses to every
+        logged-out client also carries ``reddit_refused: True``.
     """
 
     deadline = monotonic_time.monotonic() + timeout
@@ -427,6 +482,18 @@ async def fetch_reddit_json(
             return {"error": f"Request timed out ({timeout}s limit)"}
         except wafer.ResponseTooLarge:
             return {"error": "Reddit response too large (exceeds 50MB limit)."}
+        except wafer.RateLimited as exc:
+            # wafer raises this for a 429 it could not wait out, including the
+            # app route's non-JSON 429.
+            return {"rate_limited": True, "retry_after": exc.retry_after}
+        except wafer.RequestBlocked as exc:
+            # Must precede ChallengeDetected, which it subclasses. A block is
+            # Reddit's final answer for this read (wafer spent no retry or
+            # rotation on it), not the transient session gate below: no
+            # pause, no retry, no limiter deferral for other reads.
+            if exc.challenge_type == "reddit":
+                return {"error": REDDIT_REFUSED_MESSAGE, "reddit_refused": True}
+            return {"error": f"Fetch failed: {exc}"}
         except wafer.ChallengeDetected as exc:
             # In rotation mode wafer raises after exhausting its bounded
             # identities, but preserves the final tagged response. Feed that
@@ -469,6 +536,8 @@ async def fetch_reddit_json(
         seen_urls.add(current_url)
 
         fetched = await _budgeted_get(current_url)
+        if fetched.get("rate_limited"):
+            return _rate_limited(queue, fetched.get("retry_after"))
         if "error" in fetched:
             return fetched
         resp = fetched["response"]
@@ -492,6 +561,8 @@ async def fetch_reddit_json(
                 current_url,
                 target_url,
             )
+            if sticky_target is not None and resolve_sticky:
+                return {"sticky_thread": sticky_target}
             if sticky_target is not None:
                 target_url = sticky_target
             elif not _is_route_preserving_json_redirect(current_url, target_url):
@@ -512,19 +583,13 @@ async def fetch_reddit_json(
             pass
 
         if resp.status_code == 429:
-            retry_header = resp.headers.get("retry-after")
-            retry_after = parse_retry_after(retry_header)
-            applied_delay = 60.0 if retry_after is None else retry_after
-            if queue:
-                queue.set_backoff(429, retry_after=retry_after)
-            else:
-                reddit_limiter.defer(applied_delay)
-            return {
-                "error": (
-                    "Rate limited. Reddit allows ~10 requests/min. "
-                    f"Retry after {applied_delay:g}s."
-                )
-            }
+            return _rate_limited(
+                queue,
+                parse_retry_after(resp.headers.get("retry-after")),
+            )
+
+        if _is_refused_response(resp):
+            return {"error": REDDIT_REFUSED_MESSAGE, "reddit_refused": True}
 
         if resp.status_code >= 400:
             message, should_backoff = format_reddit_http_error(
@@ -620,6 +685,129 @@ async def fetch_reddit_json(
         return {"data": payload}
 
     return {"error": "Too many Reddit JSON redirects."}
+
+
+async def fetch_reddit_graphql(
+    request: RedditGraphQLRequest,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None = None,
+    timeout: float = 10.0,
+) -> dict:
+    """POST one persisted operation to Reddit's app GraphQL host.
+
+    wafer carries it on its Reddit app route (anonymous app token and device
+    headers) and returns Reddit's GraphQL JSON as is. It shares the Reddit
+    queue and limiter with every JSON read, as it shares wafer's app budget.
+    No headers are sent: wafer drops per-request headers on the app route, and
+    a ``Cookie`` or ``Authorization`` would mark the request as an account's.
+
+    Returns ``{"data": <GraphQL response>}`` or ``{"error": ...}``; a refused
+    read also carries ``reddit_refused: True``. ``errors`` with no ``data`` is
+    an error naming the operation; partial ``data`` is returned for the
+    caller's converter to judge.
+    """
+
+    operation = request.operation
+    deadline = monotonic_time.monotonic() + timeout
+    timed_out = {"error": f"Request timed out ({timeout:g}s limit)"}
+
+    async def _do_post() -> dict:
+        remaining = deadline - monotonic_time.monotonic()
+        if remaining <= 0:
+            return timed_out
+        try:
+            response = await session.post(
+                REDDIT_GRAPHQL_URL,
+                json=request.payload(),
+                timeout=remaining,
+            )
+        except wafer.WaferTimeout:
+            return timed_out
+        except wafer.ResponseTooLarge:
+            return {"error": "Reddit response too large (exceeds 50MB limit)."}
+        except wafer.RateLimited as exc:
+            return {"rate_limited": True, "retry_after": exc.retry_after}
+        except wafer.RequestBlocked as exc:
+            if exc.challenge_type == "reddit":
+                return {"error": REDDIT_REFUSED_MESSAGE, "reddit_refused": True}
+            return {"error": f"Fetch failed: {exc}"}
+        except wafer.TokenMintFailed as exc:
+            # The app route is held after Reddit refused wafer's anonymous
+            # token, and only that token can make this read.
+            status = (
+                f" (HTTP {exc.status_code})" if exc.status_code is not None else ""
+            )
+            return {
+                "error": (
+                    f"Reddit's {operation} read needs wafer's anonymous Reddit "
+                    f"app token, which Reddit did not grant{status}; retry later."
+                )
+            }
+        except wafer.ConnectionFailed:
+            return {
+                "error": (
+                    f"Reddit's {operation} read could not connect to Reddit's "
+                    "GraphQL host."
+                )
+            }
+        except Exception as exc:
+            return {"error": f"Fetch failed: {exc}"}
+        return {"response": response}
+
+    remaining = deadline - monotonic_time.monotonic()
+    if remaining <= 0:
+        return timed_out
+    if queue:
+        try:
+            fetched = await queue.enqueue(_do_post, _queue_timeout=remaining)
+        except TimeoutError:
+            return timed_out
+    else:
+        try:
+            await asyncio.wait_for(reddit_limiter.wait(), timeout=remaining)
+        except TimeoutError:
+            return timed_out
+        fetched = await _do_post()
+    if fetched.get("rate_limited"):
+        return _rate_limited(queue, fetched.get("retry_after"))
+    if "error" in fetched:
+        return fetched
+    resp = fetched["response"]
+
+    if resp.status_code == 429:
+        return _rate_limited(
+            queue,
+            parse_retry_after(resp.headers.get("retry-after")),
+        )
+    if _is_refused_response(resp):
+        return {"error": REDDIT_REFUSED_MESSAGE, "reddit_refused": True}
+    if getattr(resp, "emulation", None) != "reddit_app":
+        # Defense in depth: wafer up to 0.7.9 sent a GraphQL POST it could not
+        # route to the app on its web identity, and Reddit answered 401. Only
+        # the app's anonymous token can make this read.
+        return {
+            "error": (
+                f"Reddit's {operation} read needs wafer's Reddit app route, "
+                f"which did not carry it (HTTP {resp.status_code}). wafer holds "
+                "that route for a while after a failed token mint or read; "
+                "retry in a minute."
+            )
+        }
+    if resp.status_code != 200:
+        return {
+            "error": f"Reddit's {operation} read returned HTTP {resp.status_code}."
+        }
+    try:
+        payload = resp.json()
+    except Exception:
+        return {"error": f"Reddit's {operation} read returned a non-JSON response."}
+    if not isinstance(payload, dict):
+        return {"error": f"Reddit's {operation} read returned invalid JSON."}
+    if payload.get("data") is None:
+        errors = graphql_errors(payload)
+        detail = "; ".join(errors) if errors else "no data"
+        return {"error": f"Reddit's {operation} read failed: {detail}."}
+    return {"data": payload}
 
 
 def _validated_listing_data(payload: object) -> dict | None:

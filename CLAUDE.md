@@ -36,8 +36,9 @@ Do not bypass the provider gate for `all` or Google fallback. Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.6 requires published
-wafer 0.7.9 or later, with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.7 requires published
+wafer 0.7.10 or later (Reddit's refused reads and GraphQL on the app route; 0.7.9
+first carried the Brave handler), with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
 and start a provider cooldown. Never create an unrestricted search browser.
 Wafer 0.7.9 includes `d01c811`, fixing the accepted-reload deadlock and preserving gate
 evidence during fast spare-token recovery. Native headed/headless checks passed
@@ -74,10 +75,37 @@ Neither route may ever need the browser; the strict parity gate audits that
 (`REDDIT_SESSION_AUDIT`, `BROWSER_DISPATCH_SUMMARY`). Routes Reddit serves only to a
 logged-in account (exact moderator rosters, account-private vote activity)
 return an explicit account-gated error and are covered offline as
-`fixture_only`. The sitewide comment stream (`/comments/`, `r/all`, `r/popular`
-comments) now answers anonymous reads with no children and reddit.com's own
-`/comments/` page is "Page not found"; it renders with a statement that Reddit
-withdrew it, never as a bare "0 items returned". **Gilded listings** (`/gilded/`,
+`fixture_only`.
+
+**Threads, comments and profiles are GraphQL reads (since 2026-10-20).**
+Reddit refuses `/comments/<id>` (every thread), every comment stream
+(`/r/<sub>/comments` and the sitewide one), `/api/info`, `/api/morechildren`
+and `/user/<name>/about` to every logged-out client with its network-security
+403, and wafer raises `wafer.RequestBlocked`. That subclasses
+`ChallengeDetected`, so catch it first: it is Reddit's answer, never the
+retryable session gate, and it backs off nothing. The app reads the same data
+as persisted GraphQL POSTed to `gql-fed.reddit.com`, which wafer carries on its
+app route (same token, no headers of ours) and returns untouched;
+`content/reddit_graphql.py` picks the operation and converts the answer into
+the REST shapes the renderers already read. A thread is `/by_id/t3_<id>` (still
+served) for the post plus `PostComments` for the forest; "load more" links
+carry the forest's opaque cursor as `after` on the thread URL. Reddit returns
+at most 200 comments per read whatever `count` asks; `fetch`'s
+`redditComments: "more"` follows the cursors (top-level page first, up to 5
+extra reads, stopping before the caller's timeout so loaded comments are never
+lost), `"fast"` (default) is one read. `redditSort` (optional, default `best`,
+Reddit's "Best", which the API calls `confidence`; also `top`, `new`, `old`,
+`controversial`, `qa`) sets a thread's comment order, only ever on a thread
+route; a URL's own `?sort=` still accepts every Reddit sort. `/by_id` serves one post but refuses a
+list, so several posts are one `PostsByIds` read. A `DeletedComment` has no id:
+place the forest by depth, never invent an identity. Profiles are
+`UserProfile` (karma split included); an account with no profile is dated by
+`cakeDayOn`. Comments by ID are one `LiveCommentsByIds` batch. Never invent a
+field GraphQL lacks -- a comment's `controversiality`, an account's
+email-verified, Premium or suspended flag stay absent rather than defaulted.
+Comment streams have no logged-out equivalent: report Reddit's refusal, never
+an empty stream. See `docs/architecture.md` ("Reads Reddit serves logged-out
+clients only over GraphQL"). **Gilded listings** (`/gilded/`,
 `/comments/gilded/`, `/r/<sub>[/comments]/gilded/`, `/user/<name>/gilded/`)
 were retired by Reddit, which answers them with 400, a structured 403, 404, or
 a 301 to the profile; fetchaller reports exactly that answer. **Post

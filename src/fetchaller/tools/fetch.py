@@ -138,8 +138,9 @@ from ..content.lever import (
 from ..content.mouser import is_mouser as _is_mouser
 from ..content.pdf import extract_pdf
 from ..content.reddit import (
+    REDDIT_SORT_OPTIONS,
     canonicalize_reddit_links,
-    route_reddit_url,
+    route_reddit_url_with_sort,
     transform_reddit_url,
 )
 from ..content.soylent import is_soylent as _is_soylent
@@ -1195,6 +1196,8 @@ async def _fetch_url_impl(
     method: str = "GET",
     headers: dict[str, str] | None = None,
     body: str | None = None,
+    reddit_comments: str = "fast",
+    reddit_sort: str | None = None,
     _skip_aliexpress_intercept: bool = False,
     _skip_alibaba_intercept: bool = False,
     _skip_craigslist_intercept: bool = False,
@@ -2288,7 +2291,7 @@ async def _fetch_url_impl(
     fetch_url_str = reddit_result.url
     is_reddit = reddit_result.is_reddit
     reddit_route = (
-        route_reddit_url(url, max_tokens=max_tokens)
+        route_reddit_url_with_sort(url, max_tokens=max_tokens, sort=reddit_sort)
         if is_reddit
         else None
     )
@@ -2307,6 +2310,7 @@ async def _fetch_url_impl(
                 config=config,
                 queue=reddit_queue,
                 browser_solver=browser_solver,
+                reddit_comments=reddit_comments,
             )
             if "content" in result:
                 _log(
@@ -2684,9 +2688,10 @@ async def _fetch_url_impl(
                     return {"error": "Redirect to private/internal host is not allowed."}
                 is_reddit = next_reddit.is_reddit
                 if is_reddit and structured:
-                    redirected_route = route_reddit_url(
+                    redirected_route = route_reddit_url_with_sort(
                         next_url,
                         max_tokens=max_tokens,
+                        sort=reddit_sort,
                     )
                     if redirected_route and redirected_route.is_mapped and not redirected_route.is_explicit_json:
                         from .reddit_fetch import fetch_mapped_reddit
@@ -2707,6 +2712,7 @@ async def _fetch_url_impl(
                             config=config,
                             queue=reddit_queue,
                             browser_solver=browser_solver,
+                            reddit_comments=reddit_comments,
                         )
                 next_host = _canon_host(next_parsed.hostname or "")
                 origin_changed = _origin_of(next_parsed) != _origin_of(urlparse(current_url))
@@ -2755,6 +2761,13 @@ async def _fetch_url_impl(
         else:
             return {"error": "Too many redirects (redirect loop detected)."}
     except wafer.ChallengeDetected as e:
+        if is_reddit and isinstance(e, wafer.RequestBlocked):
+            # Reddit refuses some JSON reads (a thread's .json among them) to
+            # every logged-out client; wafer reports that as a block, which a
+            # browser render cannot change. Reddit reads never use the browser.
+            from .browse_reddit import REDDIT_REFUSED_MESSAGE
+
+            return {"error": REDDIT_REFUSED_MESSAGE}
         # wafer solves WAF interstitials two different ways, and they do not
         # have the same reach. `get()` runs the inline/solver path; `render()`
         # navigates in the browser, solves the interstitial *in place* with the
@@ -3500,6 +3513,8 @@ async def fetch_url(
     method: str = "GET",
     headers: dict[str, str] | None = None,
     body: str | None = None,
+    reddit_comments: str = "fast",
+    reddit_sort: str | None = None,
     _skip_aliexpress_intercept: bool = False,
     _skip_alibaba_intercept: bool = False,
     _skip_craigslist_intercept: bool = False,
@@ -3508,6 +3523,10 @@ async def fetch_url(
     """Fetch a URL within the caller's end-to-end timeout budget."""
     if timeout <= 0:
         return {"error": "timeout must be greater than zero."}
+    if reddit_sort is not None and reddit_sort not in REDDIT_SORT_OPTIONS:
+        return {
+            "error": "redditSort must be one of: " + ", ".join(REDDIT_SORT_OPTIONS) + "."
+        }
     try:
         async with asyncio.timeout(float(timeout)):
             result = await _fetch_url_impl(
@@ -3522,6 +3541,8 @@ async def fetch_url(
                 method=method,
                 headers=headers,
                 body=body,
+                reddit_comments=reddit_comments,
+                reddit_sort=reddit_sort,
                 _skip_aliexpress_intercept=_skip_aliexpress_intercept,
                 _skip_alibaba_intercept=_skip_alibaba_intercept,
                 _skip_craigslist_intercept=_skip_craigslist_intercept,

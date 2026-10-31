@@ -87,11 +87,7 @@ or cached.
 Every mapped route is an anonymous read; fetchaller has no Reddit credential
 path of any kind. Routes Reddit serves only to a logged-in account -- exact
 moderator rosters and account-private upvoted/downvoted activity -- return an
-explicit account-gated error. The sitewide comment stream (`/comments/`,
-`r/all/comments`, `r/popular/comments`) answers anonymous reads with no
-children and reddit.com's own `/comments/` page is "Page not found"; an empty
-one renders with a statement that Reddit withdrew it rather than as an empty
-site. No roster, vote count, or wiki page is ever
+explicit account-gated error. No roster, vote count, or wiki page is ever
 inferred or reconstructed. Anonymous roster pages are merged until Reddit
 removes its cursor; invalid/repeated cursors or the bounded page cap are
 explicit errors, never silent truncation.
@@ -115,12 +111,78 @@ it, never reconstructed from an archive.
 
 For normal public URLs, fetchaller validates the path shape, builds a bounded
 `www.reddit.com/*.json` request, and renders only fields visible/useful to a
-public reader. Thread limits are derived from `maxTokens` (5–500 items, depth
-1–10), then the final character budget is enforced at whole-section
-boundaries. `more` nodes provide bounded continuation links, and anonymous
-`/api/morechildren` URLs are mapped into readable nested comments. Profile
-roots use five independent public sources under one deadline: metadata,
-overview, trophies, public multireddits, and moderated communities.
+public reader. Profile roots use five independent public sources under one
+deadline: profile, overview, trophies, public multireddits, and moderated
+communities.
+
+#### Reads Reddit serves logged-out clients only over GraphQL
+
+Since about 2026-10-20 Reddit answers a thread and its comments
+(`/comments/<id>`, `/r/<sub>/comments/<id>/...`), every comment stream
+(`/r/<sub>/comments`, and the sitewide one), `/api/info`, `/api/morechildren`
+and `/user/<name>/about` with its network-security 403 for every logged-out
+client -- the app's anonymous token, an established web session and a fresh
+Chrome alike. wafer 0.7.10 raises `wafer.RequestBlocked` for them at
+once. It subclasses `ChallengeDetected`, so `fetch_reddit_json` catches it
+first: a refusal is Reddit's answer about that read, never the transient
+session gate, and it is not retried and backs off nothing else. The Reddit
+app reads the same data as persisted GraphQL operations POSTed to
+`gql-fed.reddit.com`, which wafer carries on its app route and returns as is
+(`fetch_reddit_graphql`). Choosing the operation and translating its answer
+is content analysis, so it lives in `content/reddit_graphql.py`; every
+converter emits the REST shape the renderers already read, from fields
+GraphQL actually returned (`_fetchaller_reddit_provenance: "graphql"`).
+
+| Read | Source now |
+|---|---|
+| Thread post | `/by_id/t3_<id>` (REST, still served) |
+| Thread comments | `PostComments` forest, at most 200 comments per read whatever `count` asks; a permalink is `focusedCommentContext` with `context` as `numParents` |
+| "Load more" | the forest's opaque cursor as `after` on the thread URL; that page heads itself from the forest's title instead of re-reading the post |
+| Comment order (`fetch` `redditSort`, or `?sort=` on the URL) | `sortType`: `best` (default) is the API's `CONFIDENCE`; `top`, `new`, `old`, `controversial`, `qa` map one to one, and a URL may also say `random` or `live`; all were checked live and Reddit echoes the sort it applied |
+| More than one read's worth (`fetch` `redditComments: "more"`) | the same cursors followed automatically: the top-level page first (up to 200 a read), then nested reply stubs in reading order (about 25 a read), up to 5 extra reads, stopping when `maxTokens` is full or the caller's timeout is near |
+| Pinned post (`about/sticky`) | its REST redirect, then the thread it names |
+| `/by_id` with comments, `/api/morechildren` | `LiveCommentsByIds` (one batch), merged with the posts in the asked order; missing IDs are named |
+| `/by_id` with one post | `/by_id` (REST, every field) |
+| Several posts at once: `/by_id` lists, related-post details, collections | `PostsByIds` (one batch): `/by_id` refuses a list of posts, and `/api/info` refuses even one |
+| Profile details (`about`, profile root, user directory) | `UserProfile`; an account with no profile is dated by `GetMatrixChatUsersByIds`' `cakeDayOn` |
+| Comment streams | none: reported as Reddit's refusal, never as an empty stream |
+
+Thread limits are derived from `maxTokens` (`count` 5–500, `maxDepth` 1–10),
+then the final character budget is enforced at whole-section boundaries.
+Reddit returns at most 200 comments per `PostComments` read (measured at
+`count` 500, 1,000 and 2,000; `truncate` changes nothing) and fills them
+breadth-first, so a wide thread reaches fewer levels than its `maxDepth`; the
+cursors carry the rest, and `redditComments: "more"` follows them. A
+`DeletedComment` node carries no id (the app's fragment selects none), so the
+forest is placed by depth and a deleted comment's id is recovered from a
+reply's `parentId`; one with no replies renders without a permalink rather
+than with an invented one. What GraphQL
+does not expose is left out, never defaulted: a comment's
+`controversiality`, and an account's email-verified, Premium and suspended
+flags (`UnavailableProfileReason` has no suspension value). REST's thread
+display toggles (`threaded`, `showmore`, `showedits`, ...) have no
+`PostComments` variable and are not sent. An explicit `.json` thread URL is
+reported as refused and never reaches the browser. The persisted hashes are
+the 2026.44.0 app's; a retired one answers `PersistedQueryNotFound`, which
+surfaces as an error naming the operation.
+
+**When an operation stops working** (`PersistedQueryNotFound`, or a new field
+is needed), take the current hash and query document from the app itself.
+The 2026.44.0 app ships 382 query operations.
+
+1. Download the current `com.reddit.frontpage` bundle from APKMirror with
+   wafer (it handles APKMirror's Cloudflare), into its own empty directory.
+2. `unzip` it, then `jadx --no-res -d out base.apk`.
+3. Find each operation class with `grep -rl 'return "query '`. In that class,
+   `name()` returns the operation name, a 64-hex string is the persisted-query
+   hash, and the `query ...` string shows its variables and response shape.
+   Enums the answers use (`CommentSort`, `CommentCollapsedReason`,
+   `RemovedByCategory`, `DistinguishedAs`, `UnavailableProfileReason`) are in
+   `com/reddit/type/`.
+
+Send only the persisted operation (`extensions.persistedQuery`), never query
+text: the app never sends it. Older hashes have kept working for other
+clients, but re-check one as soon as it answers `PersistedQueryNotFound`.
 
 The wiki page index is the one structured HTML-first route:
 `/r/{subreddit}/wiki/pages.json` is no longer readable anonymously, while canonical
