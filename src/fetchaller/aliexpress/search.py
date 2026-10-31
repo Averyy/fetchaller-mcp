@@ -21,11 +21,13 @@ from ..config import get_wafer_cache_dir
 from ..content.aliexpress import (
     extract_init_data,
     format_search_results,
+    is_zero_result,
     search_product_snapshot,
     valid_search_products,
 )
 from ..ratelimit import aliexpress_limiter
 from ..security.xss import safe_log_text
+from ..shopping_locale import locale_cookies
 
 
 def _log(msg: str) -> None:
@@ -170,6 +172,8 @@ def _parse_search_html(html: str, query: str) -> dict | None:
         return None
 
     if not products:
+        if is_zero_result(page_info):
+            return {"content": format_search_results([], query, page, 0)}
         _log("embedded item list contained no substantive priced products")
         return None
 
@@ -232,6 +236,10 @@ async def search_aliexpress(
                 raise TimeoutError
             url = _build_search_url(query, page, sort, min_price, max_price)
             session = await _get_session(browser_solver)
+            # Re-pinned on every search: the site re-sets its own locale cookie
+            # from the egress IP, and that would otherwise win from then on.
+            for cookie in locale_cookies(url):
+                session.add_cookie(cookie, url)
             resp = await session.get(
                 url,
                 headers={"Referer": "https://www.aliexpress.com/"},

@@ -411,6 +411,11 @@ price, specifications, ratings, and recent reviews via AliExpress's MTop API.
 If MTop is unavailable after a live search, an exact matching validated search
 listing can supply a clearly labeled, narrower title/price/rating snapshot.
 The optional timeout is an end-to-end budget from 1 to 180 seconds (default 180).
+Prices are in USD for the US unless `SHOPPING_COUNTRY`/`SHOPPING_CURRENCY` are
+set (e.g. `GB`/`GBP`: pound prices with UK VAT included). Search results are in
+the same locale when it is set, and otherwise in whatever the site picks for the
+server's IP. A first-order "welcome deal" price is labelled
+`(new-shopper price, £X off)`.
 
 ### `search_aliexpress(query, page?, sort?, min_price?, max_price?, timeout?)` - Search Products
 
@@ -689,6 +694,7 @@ For Claude.ai web/mobile with cross-platform sync:
 | `DNS_DOH_FALLBACK` | `0` | Set to `1` to re-resolve against public DoH resolvers (1.1.1.1, 8.8.8.8) when the system resolver answers `0.0.0.0`/`::`. **Off by default:** that answer is usually a blocklist doing its job, and resolving past it overrides local DNS policy and discloses the hostname to a third party. Either way such hosts are reported as a DNS failure, not as a private-host block, so the resolver can be fixed instead. Fallback addresses still face the same private-range checks. |
 | `TRUSTED_PROXY_IPS` | — | Comma-separated addresses/CIDRs of reverse proxies whose rightmost `X-Forwarded-For` value is trusted |
 | `TZ` | `UTC` (container default) | Timezone of the challenge-solving browser. Set it to your server's public IP's zone (e.g. `America/Toronto`): some sites compare the browser's clock with the IP's location, and wafer logs a warning when the browser runs on UTC. |
+| `SHOPPING_COUNTRY`, `SHOPPING_CURRENCY` | — (each site picks from the egress IP) | Pin AliExpress (search and product) and Alibaba to a ship-to country (ISO 3166-1 alpha-2, e.g. `GB`) and currency (ISO 4217, e.g. `GBP`). Set both or neither. Without them those sites price by the server's IP, so a VPN exit in another country changes the currency and the VAT in every price; AliExpress product details default to `USD`/`US`. The one read that solves a fresh bot challenge is rendered in the browser and can still come back in the IP's currency. Amazon pages are always read in the marketplace's own currency (amazon.co.uk in GBP). |
 | `MOUSER_API_KEY` | — | Mouser Search API key ([free registration](https://www.mouser.com/MyMouser/MouserSearchApplication.aspx)) |
 | `DIGIKEY_CLIENT_ID` | — | DigiKey API client ID ([free registration](https://developer.digikey.com)) |
 | `DIGIKEY_CLIENT_SECRET` | — | DigiKey API client secret |
