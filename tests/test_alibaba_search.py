@@ -9,16 +9,17 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from fetchaller.alibaba.search import (
-    _build_search_url,
     _format_offer,
     _format_search_results,
     _has_usable_offer,
     _offer_product_url,
     _offer_title,
     _parse_search_html,
+    _products_url,
+    _trade_search_url,
     search_alibaba,
 )
-from fetchaller.content.alibaba import extract_search_data, is_zero_result_page
+from fetchaller.content.alibaba import extract_search_data, is_pro_search_shell, is_zero_result_page
 
 # ---------------------------------------------------------------------------
 # JSON extraction from SSR HTML
@@ -312,50 +313,57 @@ class TestFormatSearchResults:
 # ---------------------------------------------------------------------------
 
 
-class TestBuildSearchUrl:
-    """Search URL construction."""
+class TestSearchUrls:
+    """Search URL construction: the keyword listing page first, /trade/search as fallback."""
 
-    def test_basic_query(self):
-        url = _build_search_url("waterproof switch")
-        assert "SearchText=waterproof%20switch" in url
-        assert "alibaba.com/trade/search" in url
+    def test_listing_page_is_the_slug(self):
+        assert _products_url("usb c cable") == "https://www.alibaba.com/products/usb_c_cable.html"
 
-    def test_special_chars_encoded(self):
-        url = _build_search_url("wireless & power")
-        assert "SearchText=wireless%20%26%20power" in url
-        # No bare & that would split the parameter
-        assert "SearchText=" in url
+    def test_listing_page_encodes_what_the_slug_can_carry(self):
+        url = _products_url("wireless & power")
+        assert url == "https://www.alibaba.com/products/wireless_%26_power.html"
+        assert _products_url("c++ book") == "https://www.alibaba.com/products/c%2B%2B_book.html"
 
-    def test_page_2(self):
-        url = _build_search_url("switch", page=2)
-        assert "page=2" in url
+    @pytest.mark.parametrize("query", ["50/50 mix", "usb_c", "   "])
+    def test_queries_the_slug_cannot_carry_have_no_listing_page(self, query):
+        # "50/50 mix" came back as the keyword "50" even percent-encoded, and an
+        # underscore reads as a space (2026-11-02).
+        assert _products_url(query) is None
 
-    def test_page_1_omitted(self):
-        url = _build_search_url("switch", page=1)
-        assert "page=" not in url
-
-    def test_sort_and_price_filters(self):
-        url = _build_search_url("switch", sort="price_asc", min_price=1, max_price=10)
-        assert "sortType=PRICE_ASC" in url
-        assert "minPrice=1" in url
-        assert "maxPrice=10" in url
-
-    def test_scientific_notation_price_filter_round_trips(self):
-        url = _build_search_url(
-            "switch",
-            min_price=1e20,
-            max_price=2e20,
-        )
-
+    def test_page_sort_and_price_band_use_the_sites_names(self):
+        url = _products_url("switch", page=2, sort="orders", min_price=1, max_price=10)
         query = parse_qs(urlparse(url).query)
 
-        assert query["minPrice"] == ["1e+20"]
-        assert query["maxPrice"] == ["2e+20"]
-        assert "1e%2B20" in url
+        assert query == {"page": ["2"], "sortType": ["prodSold180"], "pricef": ["1"], "pricet": ["10"]}
 
-    def test_default_sort_omitted(self):
-        url = _build_search_url("switch", sort="default")
-        assert "sortType=" not in url
+    def test_page_1_and_relevance_sort_are_omitted(self):
+        assert _products_url("switch", page=1, sort="default") == "https://www.alibaba.com/products/switch.html"
+
+    @pytest.mark.parametrize("sort", ["price_asc", "price_desc"])
+    def test_price_sorts_send_no_sort_type(self, sort):
+        # sortType=PRICE_ASC and PRICE_DESC answered the same unsorted list.
+        assert "sortType" not in _products_url("switch", sort=sort)
+        assert "sortType" not in _trade_search_url("switch", sort=sort)
+
+    def test_price_bounds_never_use_exponent_notation(self):
+        url = _products_url("switch", min_price=1e20, max_price=2.5)
+        query = parse_qs(urlparse(url).query)
+
+        assert query["pricef"] == ["100000000000000000000"]
+        assert query["pricet"] == ["2.5"]
+
+    def test_trade_search_is_the_sites_own_form(self):
+        url = _trade_search_url("50/50  mix", page=3, min_price=2)
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+
+        assert parsed.path == "/trade/search"
+        assert query["keywords"] == ["50/50 mix"]
+        assert query["originKeywords"] == ["50/50 mix"]
+        assert query["IndexArea"] == ["product_en"]
+        assert query["page"] == ["3"]
+        assert query["pricef"] == ["2"]
+        assert "minPrice" not in query
 
 
 # ---------------------------------------------------------------------------
@@ -737,3 +745,157 @@ class TestSearchIntegration:
         assert 'no products match "led strip"' in result["error"]
         assert "retrying may return them" in result["error"]
         assert "Could not extract" not in result["error"]
+
+
+def _offer(title: str, price: str, product_id: str) -> dict:
+    return {"enPureTitle": title, "price": price, "productId": product_id}
+
+
+def _results_page(offers: list[dict], keyword: str | None = None, total: int = 100) -> str:
+    offer_list: dict = {"offerResultData": {"offers": offers, "totalCount": total}}
+    if keyword is not None:
+        offer_list["keyword"] = keyword
+    return _sse10_page(_offer_list=offer_list)
+
+
+# Trimmed from the live shell /trade/search redirected to (2026-11-02).
+_PRO_SEARCH_SHELL = (
+    '<!doctype html><script>window.__icbu_search_intention_id = "64edde3c79a6427faec5e09d369ea0c4";</script>'
+    "<html><head><title>Alibaba.com</title></head><body><div id=\"root\"></div>"
+    '<script src="//s.alicdn.com/@g/icbu-search-assets/pro-search/0.0.117/index.js"></script></body></html>'
+)
+
+
+class TestProSearchShell:
+    def test_live_shell_is_recognised(self):
+        assert is_pro_search_shell(_PRO_SEARCH_SHELL)
+
+    def test_results_page_is_not_the_shell(self):
+        page = _results_page([_offer("Widget cable", "US$1.00", "1600123456789")])
+        assert not is_pro_search_shell(page)
+        assert not is_pro_search_shell(page + "icbu-search-assets/pro-search/")
+
+
+class TestSearchRouting:
+    """Listing page first; /trade/search only when the slug cannot carry the query."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_rate_limit(self):
+        with patch("fetchaller.alibaba.search.alibaba_limiter.wait", new_callable=AsyncMock):
+            yield
+
+    @staticmethod
+    def _urls(mock_fetch) -> list[str]:
+        return [call.kwargs["url"] for call in mock_fetch.await_args_list]
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_listing_page_is_one_request(self, mock_fetch):
+        mock_fetch.return_value = {
+            "content": _results_page([_offer("USB C cable", "$2.40-3.39", "1601833304780")], keyword="usb c cable")
+        }
+
+        result = await search_alibaba("usb c cable", min_price=1, max_price=2)
+
+        assert "USB C cable" in result["content"]
+        assert self._urls(mock_fetch) == ["https://www.alibaba.com/products/usb_c_cable.html?pricef=1&pricet=2"]
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_listing_page_that_searched_another_keyword_falls_back(self, mock_fetch):
+        mock_fetch.side_effect = [
+            {"content": _results_page([_offer("Motor oil 50:1", "$1.00", "1601000000001")], keyword="50")},
+            {"content": _results_page([_offer("50/50 mix powder", "$3.00", "1601000000002")], keyword="50 50 mix")},
+        ]
+
+        # A query the slug can carry, but the page reports a different keyword.
+        result = await search_alibaba("50 mix")
+
+        urls = self._urls(mock_fetch)
+        assert urls[0].startswith("https://www.alibaba.com/products/")
+        assert urls[1].startswith("https://www.alibaba.com/trade/search?")
+        assert "50/50 mix powder" in result["content"]
+        assert "Motor oil" not in result["content"]
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_slash_query_goes_straight_to_trade_search(self, mock_fetch):
+        mock_fetch.return_value = {"content": _results_page([_offer("50/50 mix powder", "$3.00", "1601000000002")])}
+
+        await search_alibaba("50/50 mix")
+
+        urls = self._urls(mock_fetch)
+        assert len(urls) == 1
+        assert parse_qs(urlparse(urls[0]).query)["keywords"] == ["50/50 mix"]
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_listing_page_404_falls_back(self, mock_fetch):
+        mock_fetch.side_effect = [
+            {"error": "HTTP 404", "body": "Not found"},
+            {"content": _results_page([_offer("Widget cable", "$1.00", "1601000000003")])},
+        ]
+
+        result = await search_alibaba("widget")
+
+        assert "Widget cable" in result["content"]
+        assert self._urls(mock_fetch)[1].startswith("https://www.alibaba.com/trade/search?")
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_trade_search_retries_past_the_pro_search_shell(self, mock_fetch):
+        mock_fetch.side_effect = [
+            {"content": _PRO_SEARCH_SHELL},
+            {"content": _results_page([_offer("50/50 mix powder", "$3.00", "1601000000002")])},
+        ]
+
+        result = await search_alibaba("50/50 mix")
+
+        assert "50/50 mix powder" in result["content"]
+        assert mock_fetch.await_count == 2
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_pro_search_shell_every_time_is_named(self, mock_fetch):
+        mock_fetch.return_value = {"content": _PRO_SEARCH_SHELL}
+
+        result = await search_alibaba("50/50 mix")
+
+        assert mock_fetch.await_count == 3
+        assert "content" not in result
+        assert '"pro search" app page' in result["error"]
+        assert "Could not extract" not in result["error"]
+
+
+class TestLocalPriceOrder:
+    """Alibaba has no price sort; the price sorts order the returned page here."""
+
+    _OFFERS = [
+        _offer("Middle widget", "$2.40-3.39", "1601000000011"),
+        _offer("Cheap widget", "US$0.7904-3.74", "1601000000012"),
+        _offer("Dear widget", "$1,234.00", "1601000000013"),
+        _offer("Mid-cheap widget", "$1.22", "1601000000014"),
+    ]
+
+    def _titles(self, content: str) -> list[str]:
+        return [line.split(". ", 1)[1] for line in content.splitlines() if line[:1].isdigit() and ". " in line]
+
+    def test_price_asc_orders_the_page_and_says_so(self):
+        result = _parse_search_html(_results_page(self._OFFERS), "widget", 1, "price_asc")
+
+        assert self._titles(result["content"]) == ["Cheap widget", "Mid-cheap widget", "Middle widget", "Dear widget"]
+        assert "Alibaba.com has no price sort" in result["content"]
+        assert "lowest first" in result["content"]
+
+    def test_price_desc(self):
+        result = _parse_search_html(_results_page(self._OFFERS), "widget", 1, "price_desc")
+
+        assert self._titles(result["content"]) == ["Dear widget", "Middle widget", "Mid-cheap widget", "Cheap widget"]
+        assert "highest first" in result["content"]
+
+    @pytest.mark.parametrize("sort", ["default", "orders"])
+    def test_other_sorts_keep_alibabas_order_without_a_note(self, sort):
+        result = _parse_search_html(_results_page(self._OFFERS), "widget", 1, sort)
+
+        assert self._titles(result["content"])[0] == "Middle widget"
+        assert "no price sort" not in result["content"]

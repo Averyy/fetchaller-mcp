@@ -411,6 +411,8 @@ price, specifications, ratings, and recent reviews via AliExpress's MTop API.
 If MTop is unavailable after a live search, an exact matching validated search
 listing can supply a clearly labeled, narrower title/price/rating snapshot.
 The optional timeout is an end-to-end budget from 1 to 180 seconds (default 180).
+Prices are in USD for the US unless `SHOPPING_COUNTRY`/`SHOPPING_CURRENCY` are
+set (e.g. `GB`/`GBP`: pound prices with UK VAT included).
 
 ### `search_aliexpress(query, page?, sort?, min_price?, max_price?, timeout?)` - Search Products
 
@@ -419,14 +421,24 @@ The optional timeout is an end-to-end budget from 1 to 180 seconds (default 180)
 | query | string | required | Search query |
 | page | number | 1 | Page number (1-indexed) |
 | sort | string | "default" | default, orders, price_asc, price_desc |
-| min_price | number | — | Minimum price filter |
-| max_price | number | — | Maximum price filter |
+| min_price | number | — | Minimum price filter, in the currency the results are priced in |
+| max_price | number | — | Maximum price filter, in the currency the results are priced in |
 | timeout | integer | 180 | End-to-end budget in seconds (1–300) |
+
+Results are priced in the `SHOPPING_COUNTRY`/`SHOPPING_CURRENCY` locale when it
+is set, and otherwise in whatever the site picks for the server's IP. A
+first-order "welcome deal" price is labelled `(new-shopper price, £X off)`.
+AliExpress sometimes answers a price-sorted search with a price filter with "No
+search results" while still counting matches; that is reported as an error
+naming the count (sort `default` or `orders` lists them), never as an empty
+result.
 
 ### `get_alibaba_product(product_id, timeout?)` - B2B Product Details
 
 Accepts a numeric product ID or full URL. Returns tiered pricing, MOQ, lead times, supplier info, and specifications.
 The optional timeout is an end-to-end budget from 1 to 300 seconds (default 180).
+Prices follow `SHOPPING_COUNTRY`/`SHOPPING_CURRENCY` when they are set. Search
+results (`search_alibaba`) do not: they stay in the currency Alibaba picks.
 
 ### `search_alibaba(query, page?, sort?, min_price?, max_price?, timeout?)` - Search B2B Products
 
@@ -434,9 +446,9 @@ The optional timeout is an end-to-end budget from 1 to 300 seconds (default 180)
 |-----------|------|---------|-------------|
 | query | string | required | Search query |
 | page | number | 1 | Page number (1-indexed) |
-| sort | string | "default" | default, price_asc, price_desc |
-| min_price | number | — | Minimum price filter (USD) |
-| max_price | number | — | Maximum price filter (USD) |
+| sort | string | "default" | default (relevance), orders (most sold), price_asc, price_desc. Alibaba has no price sort: the price sorts re-order the returned page by lowest listed price, and the output says so |
+| min_price | number | — | Minimum price filter, in the currency results are priced in |
+| max_price | number | — | Maximum price filter, in the currency results are priced in |
 | timeout | integer | 180 | End-to-end budget in seconds (1–300) |
 
 ## Marketplace Search
@@ -689,6 +701,7 @@ For Claude.ai web/mobile with cross-platform sync:
 | `DNS_DOH_FALLBACK` | `0` | Set to `1` to re-resolve against public DoH resolvers (1.1.1.1, 8.8.8.8) when the system resolver answers `0.0.0.0`/`::`. **Off by default:** that answer is usually a blocklist doing its job, and resolving past it overrides local DNS policy and discloses the hostname to a third party. Either way such hosts are reported as a DNS failure, not as a private-host block, so the resolver can be fixed instead. Fallback addresses still face the same private-range checks. |
 | `TRUSTED_PROXY_IPS` | — | Comma-separated addresses/CIDRs of reverse proxies whose rightmost `X-Forwarded-For` value is trusted |
 | `TZ` | `UTC` (container default) | Timezone of the challenge-solving browser. Set it to your server's public IP's zone (e.g. `America/Toronto`): some sites compare the browser's clock with the IP's location, and wafer logs a warning when the browser runs on UTC. |
+| `SHOPPING_COUNTRY`, `SHOPPING_CURRENCY` | — (each site picks from the egress IP) | Pin AliExpress (search and product details) and Alibaba product pages to a ship-to country (ISO 3166-1 alpha-2, e.g. `GB`) and currency (ISO 4217, e.g. `GBP`). Set both or neither. Without them those sites price by the server's IP, so a VPN exit in another country changes the currency and the VAT in every price; AliExpress product details default to `USD`/`US`. Alibaba search results are not affected. Amazon pages are always read in the marketplace's own currency (amazon.com in USD, amazon.co.uk in GBP), whatever these are set to. |
 | `MOUSER_API_KEY` | — | Mouser Search API key ([free registration](https://www.mouser.com/MyMouser/MouserSearchApplication.aspx)) |
 | `DIGIKEY_CLIENT_ID` | — | DigiKey API client ID ([free registration](https://developer.digikey.com)) |
 | `DIGIKEY_CLIENT_SECRET` | — | DigiKey API client secret |

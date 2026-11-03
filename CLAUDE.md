@@ -36,9 +36,10 @@ Do not bypass the provider gate for `all` or Google fallback. Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.7 requires published
-wafer 0.7.10 or later (Reddit's refused reads and GraphQL on the app route; 0.7.9
-first carried the Brave handler), with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.8 requires published
+wafer 0.7.11 or later (`add_cookie()` cookies reach the browser; 0.7.10 added
+Reddit's refused reads and GraphQL on the app route; 0.7.9 first carried the
+Brave handler), with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
 and start a provider cooldown. Never create an unrestricted search browser.
 Wafer 0.7.9 includes `d01c811`, fixing the accepted-reload deadlock and preserving gate
 evidence during fast spare-token recovery. Native headed/headless checks passed
@@ -410,6 +411,37 @@ with it. Rebuilding it by hand put `/marketplace/vancouver/` in Washington
 (free-text geocode) and sent `minPrice=100` as one dollar — URL prices are whole
 units. A city browse page streams a feed of ~26 listings, which is all the
 logged-out feed serves; an empty-query search for the same city returns nothing.
+
+### Shop currencies (AliExpress, Alibaba, Amazon)
+
+A price is only an answer in the currency the shop charges. These three pick
+the display currency (and AliExpress/Alibaba the ship-to VAT) from the egress
+IP, so a VPN or a server abroad silently changes every figure.
+`shopping_locale.py` sends each site's own display-preference cookie: Amazon
+**always** gets its marketplace's currency (`i18n-prefs`, from
+`MARKETPLACE_CURRENCIES`, which the host pattern is built from), because the
+converted figure is Amazon's estimate, not the listing's price; AliExpress
+(`aep_usuc_f`, plus MTop's `_currency`/`country`) and Alibaba **product pages**
+(`sc_g_cfg_f`) only when `SHOPPING_COUNTRY`/`SHOPPING_CURRENCY` are set.
+Alibaba search ignores the cookie, so never describe it as pinned. wafer
+>= 0.7.11 carries `add_cookie()` cookies into renders and solves (up to 0.7.10
+the browser started without them and its cookie replaced the pin), but a
+fingerprint rotation or session retirement still empties the jar, so on a
+shared session re-add the cookie before every request.
+AliExpress formats GBP with the fullwidth `￡`, so prices pass through
+`_price.normalize_currency_signs`. AliExpress's `zero_result` is not "nothing
+matches": price-sorted searches with a price band answer it while counting
+matches, so only a count of 0 is an empty result and anything else is an error
+naming the count. Amazon's `a-price` can ship without its decimal (`$8249` for
+$82.49), so `normalize_prices` rebuilds it from the split parts before anything
+reads prices.
+
+**Alibaba search** reads `/products/<query>.html`, not `/trade/search`, which
+redirects about half its requests at random to a "pro search" app shell with
+no results. Its price band is `pricef`/`pricet` (`minPrice`/`maxPrice` were
+silently ignored) and it has no price sort (`PRICE_ASC` answered the unsorted
+list), so the price sorts order the returned page locally and say so. Never
+treat a parameter as honoured without checking that the offers changed.
 
 ### Job boards
 

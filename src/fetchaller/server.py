@@ -947,6 +947,7 @@ _TOOL_ENUMS = {
     },
     ("search_alibaba", "sort"): {
         "default",
+        "orders",
         "price_asc",
         "price_desc",
     },
@@ -1700,19 +1701,24 @@ def create_server(
                         },
                         "sort": {
                             "type": "string",
-                            "enum": ["default", "price_asc", "price_desc"],
+                            "enum": ["default", "orders", "price_asc", "price_desc"],
                             "default": "default",
-                            "description": "Sort order",
+                            "description": (
+                                "Sort order: default (relevance), orders (most sold "
+                                "in 180 days). Alibaba has no price sort, so "
+                                "price_asc/price_desc re-order the returned page by "
+                                "lowest listed price and say so"
+                            ),
                         },
                         "min_price": {
                             "type": "number",
                             "minimum": 0,
-                            "description": "Minimum price filter (USD)",
+                            "description": "Minimum price filter, in the currency results are priced in",
                         },
                         "max_price": {
                             "type": "number",
                             "minimum": 0,
-                            "description": "Maximum price filter (USD)",
+                            "description": "Maximum price filter, in the currency results are priced in",
                         },
                         "timeout": {
                             "type": "integer",

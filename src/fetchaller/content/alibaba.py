@@ -111,6 +111,20 @@ def extract_search_data(html: str) -> dict | None:
     return None
 
 
+def is_pro_search_shell(html: str) -> bool:
+    """Whether Alibaba answered a search with its "pro search" app shell.
+
+    ``/trade/search`` redirects about half of its requests, at random and per
+    request (one session: results, shell, shell, results; 2026-11-02), to
+    ``/search/page?SearchScene=proSearch&...``: a ~10 KB React shell loading
+    ``icbu-search-assets/pro-search/<ver>/index.js``, with no ``_offer_list``.
+    """
+
+    if "__page__data_sse10._offer_list" in html:
+        return False
+    return "icbu-search-assets/pro-search/" in html or "__icbu_search_intention_id" in html
+
+
 def is_zero_result_page(html: str) -> bool:
     """Whether Alibaba answered the search with its "did not match any products" page.
 

@@ -899,8 +899,10 @@ def clean_html(html: str, is_reddit: bool = False, url: str | None = None) -> tu
                 noscript.unwrap()
                 break
 
-    # Amazon: extract related products before CSS selectors remove sims-* sections
+    # Amazon: one readable amount per price, then related products before CSS
+    # selectors remove sims-* sections (they read the fixed prices).
     if site == "amazon":
+        _amazon.normalize_prices(soup)
         _amazon.extract_related_products(soup)
 
     # Ashby: extract posting + application form from window.__appData before

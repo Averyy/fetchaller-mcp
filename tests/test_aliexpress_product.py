@@ -134,6 +134,32 @@ class TestExtractProductData:
         assert data["sale_price"] == "USD 12.99"
         assert data["sku_prices"] == "  SKU sku-1: USD 12.99"
 
+    def test_raw_mtop_price_takes_the_requested_currency(self, monkeypatch):
+        monkeypatch.setenv("SHOPPING_COUNTRY", "GB")
+        monkeypatch.setenv("SHOPPING_CURRENCY", "GBP")
+        result = {"data": {"result": {"PRICE": {"targetSkuPriceInfo": {"salePrice": 0.84}}}}}
+
+        assert _extract_product_data(result)["sale_price"] == "GBP 0.84"
+
+    def test_gbp_sku_prices_use_the_standard_pound_sign(self):
+        # MTop asked for GBP (2026-10-31) formats every SKU price "￡0.84".
+        result = {
+            "data": {
+                "result": {
+                    "PRICE": {
+                        "targetSkuPriceInfo": {"salePriceString": "￡0.84", "originalPriceString": "￡4.73"},
+                        "skuPriceInfoMap": {"12000035851121216": {"salePriceString": "￡0.84"}},
+                    }
+                }
+            }
+        }
+
+        data = _extract_product_data(result)
+
+        assert data["sale_price"] == "£0.84"
+        assert data["original_price"] == "£4.73"
+        assert data["sku_prices"] == "  SKU 12000035851121216: £0.84"
+
     @pytest.mark.parametrize("raw_price", [0, "bad", 12.99])
     def test_valid_local_price_precedes_invalid_or_raw_price(self, raw_price):
         result = {
@@ -593,6 +619,51 @@ class TestFormatOutput:
         assert "★4.8" in result
         assert "Recent reviews:" in result
 
+    def test_fullwidth_pound_prices_render_with_standard_sign(self):
+        product_data = {
+            "title": "LD2450 radar module",
+            "sale_price": "￡0.99",
+            "original_price": "￡3.71",
+            "shipping": "￡1.50",
+        }
+
+        result = _format_output("1005006121923099", product_data, None)
+
+        assert "Price: £0.99 (was £3.71)" in result
+        assert "Shipping: £1.50" in result
+        assert "￡" not in result
+        assert "new-shopper" not in result
+
+    def test_search_snapshot_new_shopper_price_is_labelled(self):
+        product_data = {
+            "_source": "search_listing",
+            "product_id": "1005006121923099",
+            "title": "LD2450 radar module",
+            "sale_price": "£0.99",
+            "original_price": "",
+            "discount": "73",
+            "new_shopper_price": True,
+            "new_shopper_saving": "£1.24",
+        }
+
+        result = _format_output("1005006121923099", product_data, None)
+
+        assert "Price: £0.99 -73% (new-shopper price, £1.24 off)" in result
+
+    def test_search_snapshot_new_shopper_price_without_saving_keeps_bare_label(self):
+        product_data = {
+            "_source": "search_listing",
+            "product_id": "1005006121923099",
+            "title": "LD2450 radar module",
+            "sale_price": "£0.99",
+            "new_shopper_price": True,
+            "new_shopper_saving": "",
+        }
+
+        result = _format_output("1005006121923099", product_data, None)
+
+        assert "Price: £0.99 (new-shopper price)" in result
+
     def test_reviews_only_returns_reviews_section(self):
         """When no product data, format reviews standalone."""
         reviews_data = {
@@ -759,6 +830,25 @@ class TestFetchMtop:
         assert data["_currency"] == "USD"
         assert data["country"] == "US"
         assert data["clientType"] == "pc"
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.aliexpress.product._get_client")
+    async def test_shopping_locale_sets_mtop_currency_and_ship_to(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("SHOPPING_COUNTRY", "GB")
+        monkeypatch.setenv("SHOPPING_CURRENCY", "GBP")
+        mock_client = AsyncMock()
+        mock_client.request.return_value = {
+            "ret": ["SUCCESS::调用成功"],
+            "data": {"result": {"PRODUCT_TITLE": {"text": "Widget"}}},
+        }
+        mock_get_client.return_value = mock_client
+
+        from fetchaller.aliexpress.product import _fetch_mtop
+        await _fetch_mtop("1005006121923099")
+
+        data = mock_client.request.call_args[0][2]
+        assert data["_currency"] == "GBP"
+        assert data["country"] == "GB"
 
     @pytest.mark.asyncio
     @patch("fetchaller.aliexpress.product._get_client")

@@ -53,6 +53,14 @@ Imperva-specific. Constraints, each load-bearing:
 - **Falls through to the original challenge error** when render does not help,
   so a genuinely unsolvable site still reports the challenge rather than a
   second, less useful error.
+- **The rendered document carries the session's `add_cookie()` cookies**
+  (wafer >= 0.7.11), so a display preference the session sends
+  (`shopping_locale.py`: a shop's currency) holds in the rendered page. Up to
+  0.7.10 the browser started without them, the page came back priced by the
+  IP, and the browser's cookie replaced the session's. WAF clearance cookies
+  are never carried in. A fingerprint rotation or session retirement still
+  starts an empty jar, which is why shared sessions re-add the preference
+  before every request.
 
 **The converse rule**: escalate to wafer only when something is actively
 *blocked*. Working out an endpoint's shape — reading bundles, guessing a

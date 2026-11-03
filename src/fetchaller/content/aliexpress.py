@@ -8,13 +8,13 @@ strip_aliexpress_junk, postprocess_aliexpress) plus:
 
 import math
 import re
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from bs4 import BeautifulSoup
 
 from ._json_extract import extract_json_object
 from ._numeric import bounded_number_text
-from ._price import has_positive_price
+from ._price import has_positive_price, normalize_currency_signs
 
 # ---------------------------------------------------------------------------
 # URL detection
@@ -133,6 +133,68 @@ def _bounded_scalar(value: object, maximum: int) -> str:
     return text
 
 
+def _price_text(value: object) -> str:
+    """Return one bounded price string with standard currency signs."""
+
+    return normalize_currency_signs(_bounded_scalar(value, _MAX_PRICE_CHARS))
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]{0,500}>")
+_SAVED_RE = re.compile(r"(.{1,64}?)\s*saved", re.IGNORECASE)
+
+
+def _welcome_deal_saving(materials: object) -> str:
+    """Return the amount of a ``welcomedeal_save_atm`` tag ("￡5.01 saved")."""
+
+    if not isinstance(materials, list):
+        return ""
+    for material in materials[:8]:
+        if not isinstance(material, dict) or material.get("type") != "TEXT":
+            continue
+        value = material.get("value")
+        if not isinstance(value, str) or len(value) > 1_000:
+            continue
+        match = _SAVED_RE.fullmatch(" ".join(_HTML_TAG_RE.sub(" ", value).split()))
+        if match and has_positive_price(match.group(1), require_currency=True):
+            return normalize_currency_signs(match.group(1))
+    return ""
+
+
+def new_shopper_deal(product: dict) -> tuple[bool, str]:
+    """Whether the card's sale price is a first-order "welcome deal", and its saving.
+
+    The price fields carry no sign of it: the card says so only through
+    selling-point tags (``welcomedeal_test`` "New shoppers - ￡5.01",
+    ``welcomedeal_save_atm`` "￡5.01 saved", ``card_new_user_welcomedeal_atm``;
+    UK, 2026-10-31). The sale price already has the saving taken off, and the
+    saving can be as little as ￡0.01, so the label carries the amount.
+    """
+
+    points = product.get("sellingPoints")
+    if not isinstance(points, list):
+        return False, ""
+    found = False
+    saving = ""
+    for point in points[:32]:
+        if not isinstance(point, dict):
+            continue
+        tag = point.get("sellingPointTagId")
+        if not isinstance(tag, str) or len(tag) > 128 or "welcomedeal" not in tag.lower():
+            continue
+        found = True
+        if not saving and tag == "welcomedeal_save_atm":
+            saving = _welcome_deal_saving(point.get("materials"))
+    return found, saving
+
+
+def new_shopper_label(saving: object) -> str:
+    """Render the welcome-deal note for a price line."""
+
+    if isinstance(saving, str) and has_positive_price(saving, require_currency=True):
+        return f"(new-shopper price, {normalize_currency_signs(saving)} off)"
+    return "(new-shopper price)"
+
+
 def _search_product_title(product: dict) -> str:
     """Return a bounded plain title from current or legacy item-list fields."""
 
@@ -183,6 +245,63 @@ def valid_search_product(product: object) -> bool:
     )
 
 
+def is_zero_result(page_info: object) -> bool:
+    """Whether AliExpress answered the page with its "No search results" state.
+
+    That page carries ``searchResultType: "zero_result"`` and no ``itemList``
+    mod at all. It is an empty answer only when ``totalResults`` is also 0
+    (see ``zero_result_matches``).
+    """
+
+    return isinstance(page_info, dict) and page_info.get("searchResultType") == "zero_result"
+
+
+def zero_result_matches(page_info: object) -> int | None:
+    """The matches a ``zero_result`` page still counts, or None if unreadable.
+
+    AliExpress also answers ``zero_result`` while counting matches, so the
+    state alone does not mean nothing matches. "AS7343 spectral sensor
+    module" with a 3-15 price band (2026-11-02): sorted by price, ``zero_result``
+    with a ``totalResults`` of 30-43 and "No search results" on the page;
+    default or orders sort, ``few_result`` with 16-19 listings. A nonsense
+    query answers ``zero_result`` with 0. Only that 0 is an empty result; a
+    count with no listings is reported, never rendered as an empty shelf.
+    """
+
+    if not isinstance(page_info, dict):
+        return None
+    total = page_info.get("totalResults")
+    if isinstance(total, bool) or not isinstance(total, int) or not 0 <= total <= 1_000_000_000:
+        return None
+    return total
+
+
+#: ``sortType`` values whose price-banded searches can answer ``zero_result``
+#: while counting matches (``zero_result_matches``).
+PRICE_SORT_TYPES = frozenset({"price_asc", "price_desc"})
+
+
+def unlisted_matches_message(query: object, matches: int | None, *, price_sorted_band: bool) -> str:
+    """Explain a ``zero_result`` page that still counts matches."""
+
+    counted = (
+        f"counted {matches} matching products"
+        if matches is not None
+        else "gave no readable match count"
+    )
+    message = (
+        f'AliExpress answered "No search results" for "{_query_text(query)}" but {counted}, '
+        "so this is not reported as an empty result."
+    )
+    if price_sorted_band:
+        return (
+            f"{message} It answers this way to some price-sorted searches with a "
+            'price filter, while sort "default" or "orders" lists the same '
+            "matches; retry with one of those."
+        )
+    return f"{message} Retrying may return them."
+
+
 def valid_search_products(products: object) -> list[dict]:
     """Filter an embedded item list down to substantive bound offers."""
 
@@ -213,19 +332,16 @@ def search_product_snapshot(product: object) -> dict | None:
     trade = product.get("trade")
     trade = trade if isinstance(trade, dict) else {}
     trade_description = _trade_description(trade.get("tradeDesc"))
+    new_shopper, new_shopper_saving = new_shopper_deal(product)
     return {
         "_source": "search_listing",
         "product_id": product_id,
         "title": _search_product_title(product),
-        "sale_price": _bounded_scalar(
-            sale.get("formattedPrice") or sale.get("minPrice"),
-            _MAX_PRICE_CHARS,
-        ),
-        "original_price": _bounded_scalar(
-            original.get("formattedPrice"),
-            _MAX_PRICE_CHARS,
-        ),
+        "sale_price": _price_text(sale.get("formattedPrice") or sale.get("minPrice")),
+        "original_price": _price_text(original.get("formattedPrice")),
         "discount": _discount_percentage(sale.get("discount")),
+        "new_shopper_price": new_shopper,
+        "new_shopper_saving": new_shopper_saving,
         "rating": bounded_number_text(
             evaluation.get("starRating"),
             minimum=0,
@@ -251,14 +367,8 @@ def _format_search_product(idx: int, product: dict) -> str:
     sale = sale if isinstance(sale, dict) else {}
     original = prices.get("originalPrice")
     original = original if isinstance(original, dict) else {}
-    price_str = _bounded_scalar(
-        sale.get("formattedPrice") or sale.get("minPrice"),
-        _MAX_PRICE_CHARS,
-    )
-    orig_str = _bounded_scalar(
-        original.get("formattedPrice"),
-        _MAX_PRICE_CHARS,
-    )
+    price_str = _price_text(sale.get("formattedPrice") or sale.get("minPrice"))
+    orig_str = _price_text(original.get("formattedPrice"))
     if not has_positive_price(orig_str, require_currency=True):
         orig_str = ""
     discount = _discount_percentage(sale.get("discount"))
@@ -270,6 +380,9 @@ def _format_search_product(idx: int, product: dict) -> str:
         price_parts.append(f"(was {orig_str})")
     if discount:
         price_parts.append(f"-{discount}%")
+    new_shopper, new_shopper_saving = new_shopper_deal(product)
+    if price_str and new_shopper:
+        price_parts.append(new_shopper_label(new_shopper_saving))
     if price_parts:
         lines.append(f"   Price: {' '.join(price_parts)}")
 
@@ -308,20 +421,27 @@ def _trade_description(value: object) -> str:
     text = _bounded_scalar(value, _MAX_METADATA_CHARS)
     if not text:
         return ""
+    # Some sessions are served abbreviated counts ("8K+ sold") instead of the
+    # grouped form ("8,000+ sold") for the same item (UK, 2026-10-31).
     match = re.fullmatch(
-        r"(\d+(?:,\d{3})*)(?:\+)?\s+(?:sold|orders?)",
+        r"(?:(\d+(?:,\d{3})*)|(\d+(?:\.\d+)?)[KM])(?:\+)?\s+(?:sold|orders?)",
         text,
         re.IGNORECASE,
     )
     if match is None:
         return ""
-    if not bounded_number_text(
-        match.group(1),
-        minimum=0,
-        maximum=1_000_000_000,
-        integral=True,
-        allow_grouping=True,
-    ):
+    grouped, abbreviated = match.groups()
+    if grouped is not None:
+        valid = bounded_number_text(
+            grouped,
+            minimum=0,
+            maximum=1_000_000_000,
+            integral=True,
+            allow_grouping=True,
+        )
+    else:
+        valid = bounded_number_text(abbreviated, minimum=0, maximum=1_000_000)
+    if not valid:
         return ""
     return text
 
@@ -348,15 +468,23 @@ def _discount_percentage(value: object) -> str:
     return f"{number:g}"
 
 
+def _query_text(query: object) -> str:
+    """Bounded query text for a result header."""
+
+    return _bounded_scalar(query, _MAX_QUERY_CHARS) or "aliexpress"
+
+
+def _page_number(page: object) -> int:
+    """A page number from page info, or 1."""
+
+    return page if isinstance(page, int) and not isinstance(page, bool) and page >= 1 else 1
+
+
 def format_search_results(products: list[dict], query: str, page: int, total: int) -> str:
     """Format search results into numbered list."""
     products = valid_search_products(products)
-    query_text = _bounded_scalar(query, _MAX_QUERY_CHARS) or "aliexpress"
-    page_number = (
-        page
-        if isinstance(page, int) and not isinstance(page, bool) and page >= 1
-        else 1
-    )
+    query_text = _query_text(query)
+    page_number = _page_number(page)
     total_count = (
         min(total, 1_000_000_000)
         if isinstance(total, int) and not isinstance(total, bool) and total >= 0
@@ -411,20 +539,33 @@ def extract_search_products(html: str, url: str) -> str | None:
         page_info = root_fields.get("pageInfo", {})
         total = page_info.get("totalResults", len(products))
         page = page_info.get("page", 1)
-    except (KeyError, TypeError):
+    except (AttributeError, KeyError, TypeError):
         return None
 
     products = valid_search_products(products)
-    if not products:
+    if not products and not is_zero_result(page_info):
         return None
 
     # Extract query from URL path: /w/wholesale-{query}.html
     query = "aliexpress"
-    m = _SEARCH_PATH_RE.search(urlparse(url).path)
+    parsed = urlparse(url)
+    m = _SEARCH_PATH_RE.search(parsed.path)
     if m:
         query = unquote(m.group(1).replace("-", " "))
 
-    return format_search_results(products, query, page, total)
+    if not products and zero_result_matches(page_info) != 0:
+        params = parse_qs(parsed.query)
+        price_sorted_band = params.get("sortType", [""])[0] in PRICE_SORT_TYPES and (
+            "minPrice" in params or "maxPrice" in params
+        )
+        message = unlisted_matches_message(
+            query,
+            zero_result_matches(page_info),
+            price_sorted_band=price_sorted_band,
+        )
+        return f'Search: "{_query_text(query)}" | page {_page_number(page)}\n\n{message}'
+
+    return format_search_results(products, query, page, total if products else 0)
 
 
 # ---------------------------------------------------------------------------

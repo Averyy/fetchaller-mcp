@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from fetchaller.content._price import has_positive_price
+from fetchaller.content._price import has_positive_price, normalize_currency_signs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -61,6 +61,38 @@ class TestHasPositivePrice:
     )
     def test_rejects_prose_placeholders_and_nonpositive(self, value):
         assert has_positive_price(value, require_currency=True) is False
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "￡0.99",  # AliExpress search, UK session, 2026-10-31
+            "￡1,234.50",
+            "￥120",
+            "＄4.81",
+            "US ＄4.81",
+            "￦1,500",
+        ],
+    )
+    def test_accepts_fullwidth_currency_signs(self, value):
+        assert has_positive_price(value, require_currency=True) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "￡0",
+            "-￡5.00",
+            "￡-5.00",
+            "￡5.00 shipping not included",
+            "￠99",  # fullwidth cent sign is not a currency marker here
+        ],
+    )
+    def test_fullwidth_signs_keep_the_same_rejections(self, value):
+        assert has_positive_price(value, require_currency=True) is False
+
+    def test_normalize_currency_signs(self):
+        assert normalize_currency_signs("￡0.99 (was ￡3.71)") == "£0.99 (was £3.71)"
+        assert normalize_currency_signs("＄1 ￥2 ￦3") == "$1 ¥2 ₩3"
+        assert normalize_currency_signs("US $4.81") == "US $4.81"
 
     def test_rejects_oversized_input(self):
         assert has_positive_price("$1" + " " * 300, require_currency=True) is False

@@ -13,19 +13,25 @@ import sys
 import threading
 import time
 from datetime import UTC, datetime
+from functools import partial
 from urllib.parse import quote, urlencode
 
 import wafer
 
 from ..config import get_wafer_cache_dir
 from ..content.aliexpress import (
+    PRICE_SORT_TYPES,
     extract_init_data,
     format_search_results,
+    is_zero_result,
     search_product_snapshot,
+    unlisted_matches_message,
     valid_search_products,
+    zero_result_matches,
 )
 from ..ratelimit import aliexpress_limiter
 from ..security.xss import safe_log_text
+from ..shopping_locale import locale_cookies
 
 
 def _log(msg: str) -> None:
@@ -148,10 +154,13 @@ def _build_search_url(
     return url
 
 
-def _parse_search_html(html: str, query: str) -> dict | None:
+def _parse_search_html(html: str, query: str, *, price_sorted_band: bool = False) -> dict | None:
     """Extract search results from HTML containing _init_data_.
 
-    Returns formatted content dict or None if extraction fails.
+    Returns a formatted content dict, an error dict for a ``zero_result`` page
+    that still counts matches, or None if extraction fails.
+    ``price_sorted_band`` (sorted by price with a price filter) only selects
+    the advice in that error.
     """
     init_data = extract_init_data(html)
     if not init_data:
@@ -170,6 +179,18 @@ def _parse_search_html(html: str, query: str) -> dict | None:
         return None
 
     if not products:
+        if is_zero_result(page_info):
+            matches = zero_result_matches(page_info)
+            if matches == 0:
+                return {"content": format_search_results([], query, page, 0)}
+            _log(f"zero_result page still counting {matches} matches")
+            return {
+                "error": unlisted_matches_message(
+                    query,
+                    matches,
+                    price_sorted_band=price_sorted_band,
+                )
+            }
         _log("embedded item list contained no substantive priced products")
         return None
 
@@ -232,6 +253,11 @@ async def search_aliexpress(
                 raise TimeoutError
             url = _build_search_url(query, page, sort, min_price, max_price)
             session = await _get_session(browser_solver)
+            # Re-pinned on every search: wafer >= 0.7.11 carries the pin into
+            # browser solves and renders, but a fingerprint rotation or session
+            # retirement on this shared session starts an empty jar.
+            for cookie in locale_cookies(url):
+                session.add_cookie(cookie, url)
             resp = await session.get(
                 url,
                 headers={"Referer": "https://www.aliexpress.com/"},
@@ -243,7 +269,15 @@ async def search_aliexpress(
                 return {"error": f"AliExpress search returned HTTP {resp.status_code}"}
 
             html = await asyncio.to_thread(lambda: resp.text)
-            result = await asyncio.to_thread(_parse_search_html, html, query)
+            result = await asyncio.to_thread(
+                partial(
+                    _parse_search_html,
+                    html,
+                    query,
+                    price_sorted_band=_SORT_MAP.get(sort) in PRICE_SORT_TYPES
+                    and (min_price is not None or max_price is not None),
+                )
+            )
             if result:
                 return result
 

@@ -2865,3 +2865,64 @@ class TestFccidContinueGate:
         assert "content" not in result
         assert "Security check" in result["error"]
         assert "no filing content" in result["error"]
+
+
+class _CookieRecordingSession(MockWaferSession):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cookies: list[tuple[str, str]] = []
+
+    def add_cookie(self, raw_set_cookie: str, url: str) -> None:
+        self.cookies.append((raw_set_cookie, url))
+
+
+class TestShopLocaleCookies:
+    """The generic fetch session carries each shop's own display-locale cookie
+    (``shopping_locale.py``), so a page is priced in the marketplace's currency
+    rather than the egress IP's (amazon.com answered a Canadian IP in CAD)."""
+
+    @_PATCH_SSRF
+    async def test_amazon_page_is_read_in_its_marketplace_currency(self, _mock_ssrf):
+        from fetchaller.tools.fetch import fetch_url
+
+        url = "https://www.amazon.co.uk/dp/B0D9LTCDRR"
+        page = "<html><body><h1>Widget</h1><p>Real product text.</p></body></html>"
+        session = _CookieRecordingSession(default=_html_response(page, url))
+
+        with _patch_wafer(session):
+            result = await fetch_url(url)
+
+        assert "error" not in result
+        assert session.cookies == [("i18n-prefs=GBP; Domain=amazon.co.uk; Path=/", url)]
+
+    @_PATCH_SSRF
+    async def test_pinned_aliexpress_read_carries_the_shopping_locale(self, _mock_ssrf, monkeypatch):
+        from fetchaller.tools.fetch import fetch_url
+
+        monkeypatch.setenv("SHOPPING_COUNTRY", "GB")
+        monkeypatch.setenv("SHOPPING_CURRENCY", "GBP")
+        url = "https://www.aliexpress.com/p/calp-plus/index.html"
+        page = "<html><body><h1>Deals</h1><p>Real page text.</p></body></html>"
+        session = _CookieRecordingSession(default=_html_response(page, url))
+
+        with _patch_wafer(session):
+            await fetch_url(url)
+
+        assert session.cookies == [
+            ("aep_usuc_f=site=glo&c_tp=GBP&region=GB&b_locale=en_US; Domain=.aliexpress.com; Path=/", url)
+        ]
+
+    @_PATCH_SSRF
+    async def test_other_sites_get_no_locale_cookie(self, _mock_ssrf, monkeypatch):
+        from fetchaller.tools.fetch import fetch_url
+
+        monkeypatch.setenv("SHOPPING_COUNTRY", "GB")
+        monkeypatch.setenv("SHOPPING_CURRENCY", "GBP")
+        url = "https://example.com/"
+        page = "<html><body><h1>Example Domain</h1><p>Real text.</p></body></html>"
+        session = _CookieRecordingSession(default=_html_response(page, url))
+
+        with _patch_wafer(session):
+            await fetch_url(url)
+
+        assert session.cookies == []

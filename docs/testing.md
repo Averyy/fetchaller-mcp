@@ -152,7 +152,7 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 ## Test Organization
 
 - `test_site_detection.py` — Tests `_detect_site()` directly (URL-based, HTML-based, priority rules)
-- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors; an unvalidated final host is refused and named; fccid.io's Continue cookie gate is an error, not a page; Reddit's 2xx "Server error" page is an error, a page that merely mentions one is content); a failed homedepot.com browser solve holds homedepot.com pages (the next read sends nothing) while a challenge with no browser attached holds nothing
+- `test_fetch_integration.py` — Integration tests for `fetch_url()` with mocked wafer sessions (forum hijack, feed discovery, URL transforms, content types, errors; an unvalidated final host is refused and named; fccid.io's Continue cookie gate is an error, not a page; Reddit's 2xx "Server error" page is an error, a page that merely mentions one is content); a failed homedepot.com browser solve holds homedepot.com pages (the next read sends nothing) while a challenge with no browser attached holds nothing; the fetch session carries each shop's display-locale cookie (Amazon's marketplace currency always, AliExpress/Alibaba only when `SHOPPING_*` is set) and no other site gets one
 - `test_timeouts.py` — A single request exceeding its wafer session limit (`WaferTimeout`, a `TimeoutError` subclass) is reported as that request, not as the tool's whole budget running out; the budget itself still says so (end to end through `search_oracle_jobs`)
 - `test_dispatch_verification.py` — Verifies CSS selectors and postprocessors are dispatched for correct sites through the pipeline
 - `test_<site>_postprocessor.py` — Per-site regex postprocessor unit tests
@@ -207,13 +207,14 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
 - `test_reddit_legacy_contract.py` — Independent versioned Old Reddit surface
   inventory; detects omissions from both corpus and production routing; missing
   route/schema/renderer/MCP fixture coverage
-- `test_amazon_postprocessor.py` — Amazon URL detection and regex postprocessor unit tests
+- `test_amazon_postprocessor.py` — Amazon URL detection and regex postprocessor unit tests; `a-price` normalisation (one amount per price, and the decimal point rebuilt from the split parts when Amazon ships `$8249` for $82.49)
 - `test_alibaba_postprocessor.py` — Alibaba.com URL detection and regex postprocessor unit tests
 - `test_alibaba_product.py` — Alibaba product JSON extraction (detailData, SSE data, tiered pricing, supplier info)
-- `test_alibaba_search.py` — Alibaba search extraction (embedded JSON, product listing formatting, Alibaba's own zero-result page — `_zero`, or an empty `_offer_list` with `totalCount` 0 — reported as its answer rather than as a failed read)
+- `test_alibaba_search.py` — Alibaba search extraction (embedded JSON, product listing formatting, Alibaba's own zero-result page — `_zero`, or an empty `_offer_list` with `totalCount` 0 — reported as its answer rather than as a failed read); the keyword listing page as the one-request read, with `/trade/search` only for queries its slug cannot carry, a page that searched a different keyword, or a 404, retried past the "pro search" shell and named when every try gets it; `pricef`/`pricet` and `prodSold180` as the site names them; price sorts ordering the returned page locally with a note
 - `test_aliexpress_postprocessor.py` — AliExpress URL detection and regex postprocessor unit tests
 - `test_aliexpress_product.py` — AliExpress MTop product API extraction (pricing, specs, reviews)
-- `test_aliexpress_search.py` — AliExpress search extraction (HTML parsing, Chrome fallback)
+- `test_aliexpress_search.py` — AliExpress search extraction (HTML parsing, Chrome fallback; a UK session's fullwidth `￡` prices, abbreviated `8K+ sold` counts, welcome-deal prices labelled new-shopper, `zero_result` rendered empty only when it counts 0 matches and otherwise reported with the count, the shopping-locale cookie re-added before every search)
+- `test_shopping_locale.py` — `SHOPPING_COUNTRY`/`SHOPPING_CURRENCY` parsing, each Amazon marketplace's own currency (`i18n-prefs`, every recognised marketplace has one), AliExpress `aep_usuc_f` and Alibaba `sc_g_cfg_f` sent only when pinned and only to their own hosts
 - `test_aliexpress_mtop.py` — MTop client unit tests (token lifecycle, MD5 signing, JSONP stripping, issued TMD solves, and a solve that leaves the jar without the signing token re-bootstrapping before the retry)
 - `test_soylent_postprocessor.py` — Soylent URL detection, inventory extraction, regex postprocessor tests
 - `test_vacuumwars.py` — Vacuum Wars URL/compare-path detection, `window.vwProducts` extraction, tested-vs-untested reporting, colour-variant collapsing (including the untested-listing case where measurements alone cannot tell two robots apart), app-shell vs ordinary-article detection, card de-duplication, regex postprocessor tests
@@ -400,7 +401,7 @@ copied into the docs as a constant, only as a dated measurement.
 
 ## Brave search with local wafer
 
-Fetchaller 3.8.7 requires published wafer 0.7.10; its lockfile pins the PyPI
+Fetchaller 3.8.8 requires published wafer 0.7.11; its lockfile pins the PyPI
 artifact. Test the released package with normal environment synchronization:
 
 ```bash

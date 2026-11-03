@@ -19,9 +19,10 @@ async def search_alibaba_tool(
     Args:
         query: Search query string.
         page: Page number (1-indexed).
-        sort: Sort order (default, price_asc, price_desc).
-        min_price: Minimum price filter (USD).
-        max_price: Maximum price filter (USD).
+        sort: Sort order (default, orders, price_asc, price_desc). The price
+            sorts order the returned page here; Alibaba has none.
+        min_price: Minimum price filter, in the results' currency.
+        max_price: Maximum price filter, in the results' currency.
         timeout: End-to-end timeout in seconds.
         cache: ResponseCache instance.
         config: Config instance.

@@ -1,38 +1,47 @@
 # Changelog
 
-## 3.8.7 (2026-10-31)
+## 3.8.8 (2026-11-02)
 
-Requires wafer 0.7.10.
+Requires wafer 0.7.11. Started from Ribetzer's PR #2.
 
-Since about 2026-10-20 Reddit refuses a thread's JSON, comment streams,
-`/api/info`, `/api/morechildren`, `/user/<name>/about`, `/r/all` and
-multi-post `/by_id` to every logged-out client. fetchaller now reads them the
-way the Reddit app does, over its anonymous GraphQL.
-
-- **Threads:** post from `/by_id`, comments from `PostComments`. Permalinks
-  keep the selected comment and its parents; "load more" links carry Reddit's
-  own continuation cursor.
-- **Profiles:** `UserProfile` (post/comment/total karma, created date, employee,
-  avatar, title, description, post and comment counts).
-- **Several posts or comments at once** (`/by_id` lists, related-post details,
-  `morechildren`): one `PostsByIds` / `LiveCommentsByIds` batch, with missing
-  IDs named.
-- **New `fetch` options:** `redditComments` (`fast` default: one read of up to
-  200 comments; `more` follows the continuations, up to 5 extra reads within
-  `maxTokens` and the timeout) and `redditSort` (`best` default, `top`, `new`,
-  `old`, `controversial`, `qa`).
-- **Refused reads are final:** reported as Reddit's answer at once, with no
-  retry, no backoff, and never the browser. Comment streams and `/r/all` say
-  Reddit refuses them; global random-rising reads `/rising`.
-- No longer available from Reddit to logged-out clients: a comment's
-  "controversial" marker, and an account's email-verified, Premium and
-  suspended flags.
-- **Fixes:** deleted comments (which Reddit sends without an ID) no longer
-  reject a page; the parity gate's multireddit discovery passes the required
-  search `provider`.
+- **AliExpress search works for UK sessions.** A UK session prices every item
+  with the fullwidth pound sign (`￡0.99`, U+FFE1), which the price check did
+  not recognise, so every search answered "Could not extract product data".
+  Fullwidth `＄￡￥￦` are now read and shown as `$£¥₩`. A GBP product read also
+  stops labelling its raw amount "USD".
+- **New optional `SHOPPING_COUNTRY` / `SHOPPING_CURRENCY`** (e.g. `GB`/`GBP`)
+  pin AliExpress search and product prices (and their VAT) and Alibaba product
+  pages to a ship-to country and currency, instead of whatever the server's IP
+  suggests. Unset, nothing changes. Alibaba search is not affected. With
+  wafer 0.7.11 the setting also holds on pages read through the
+  challenge-solving browser, which had come back in the IP's currency.
+- **Amazon is read in each marketplace's own currency.** amazon.com now
+  quotes USD wherever the server is (it had quoted a Canadian IP in converted
+  CAD), amazon.co.uk GBP, and so on.
+- **Amazon prices missing their decimal point are fixed.** Carousel cards
+  shipped $82.49 as `$8249`, which rendered as `$8249$8249`, 100 times too high.
+  Every Amazon price now renders once, with its decimal.
+- **AliExpress first-order "welcome deal" prices are labelled**
+  `(new-shopper price, £X off)`, and abbreviated sold counts (`8K+ sold`) are
+  kept.
+- **Alibaba search works reliably.** About half its searches failed with
+  "Could not extract product data": Alibaba sends `/trade/search` requests at
+  random to an app shell with no results. Search now reads Alibaba's keyword
+  listing page, one request with no redirects (8 of 8 live), and falls back
+  to `/trade/search` with retries only for queries the listing page cannot
+  carry.
+- **Alibaba `min_price`/`max_price` now filter.** They were sent under names
+  Alibaba ignores. **Alibaba has no price sort**, so `price_asc`/`price_desc`
+  now order the returned page by lowest price and say so, and the new
+  `orders` sort uses Alibaba's own "most sold".
+- **An AliExpress "No search results" page is an empty result only when it
+  counts no matches.** Price-sorted searches with a price filter can answer it
+  while counting dozens of matches; that is now an error naming the count and
+  the sorts that list them, not "No products found".
 
 ## Earlier releases
 
+- **3.8.7** (2026-10-31): Reddit threads, comments and profiles over the app's GraphQL; wafer 0.7.10.
 - **3.8.6** (2026-10-25): unified `search` tool; wafer 0.7.9.
 - **3.8.5** (2026-10-09): wafer 0.7.7.
 - **3.8.4** (2026-10-08): wafer 0.7.6; Home Depot pages in the Linux image; Home Depot gateway refusals fixed.

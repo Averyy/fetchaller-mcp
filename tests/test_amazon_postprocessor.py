@@ -345,3 +345,78 @@ class TestPostprocessAmazon:
         assert "Sold by" in result
         assert "Amazon" in result
         assert "bseenled" in result
+
+
+def _price(offscreen: str, symbol: str, whole: str, decimal: str, fraction: str) -> str:
+    """One ``a-price`` as Amazon ships it: screen-reader text, then a hidden split copy."""
+
+    return (
+        '<span class="a-price" data-a-size="medium_plus" data-a-color="base">'
+        f'<span class="a-offscreen">{offscreen}</span>'
+        '<span aria-hidden="true">'
+        f'<span class="a-price-symbol">{symbol}</span>'
+        f'<span class="a-price-whole">{whole}<span class="a-price-decimal">{decimal}</span></span>'
+        f'<span class="a-price-fraction">{fraction}</span>'
+        "</span></span>"
+    )
+
+
+def _render(body: str) -> str:
+    from fetchaller.content.html import _html_to_markdown_sync
+
+    html = f"<html><body><div id='dp'><h1>Echo Spot</h1><p>3 offers from {body}</p></div></body></html>"
+    markdown, _ = _html_to_markdown_sync(html, url="https://www.amazon.com/dp/B09B8V1LZ3")
+    return markdown
+
+
+class TestNormalizePrices:
+    """Every ``a-price`` renders its amount once, decimal point included."""
+
+    def test_price_missing_its_decimal_is_rebuilt_from_the_split_parts(self):
+        # amazon.com carousel card, 2026-11-02: $82.49 shipped as "$8249".
+        markdown = _render(_price("$8249", "$", "82", "", "49"))
+
+        assert "$82.49" in markdown
+        assert "8249" not in markdown
+
+    def test_converted_currency_missing_its_decimal(self):
+        markdown = _render(_price("CAD11532", "CAD", "115", "", "32"))
+
+        assert "CAD115.32" in markdown
+        assert "11532" not in markdown
+
+    def test_grouped_whole_part(self):
+        markdown = _render(_price("$1,23456", "$", "1,234", "", "56"))
+
+        assert "$1,234.56" in markdown
+        assert "23456" not in markdown
+
+    def test_well_formed_price_is_kept_once(self):
+        markdown = _render(_price("$14.99", "$", "14", ".", "99"))
+
+        assert "$14.99" in markdown
+        assert "$14.99$14.99" not in markdown
+        assert markdown.count("14.99") == 1
+
+    def test_non_dollar_pair_is_kept_once(self):
+        markdown = _render(_price("€6.71", "€", "6", ".", "71"))
+
+        assert markdown.count("6.71") == 1
+
+    def test_comma_decimal_is_left_as_written(self):
+        markdown = _render(_price("6,71 €", "€", "6", ",", "71"))
+
+        assert "6,71 €" in markdown
+        assert markdown.count("71") == 1
+
+    def test_price_without_a_fraction_is_left_as_written(self):
+        html = (
+            '<span class="a-price"><span class="a-offscreen">￥1,234</span>'
+            '<span aria-hidden="true"><span class="a-price-symbol">￥</span>'
+            '<span class="a-price-whole">1,234</span></span></span>'
+        )
+
+        markdown = _render(html)
+
+        assert "￥1,234" in markdown
+        assert markdown.count("1,234") == 1

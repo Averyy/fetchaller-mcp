@@ -179,6 +179,7 @@ from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..realtor.api import is_realtor as _is_realtor
 from ..security.ssrf import check_host
 from ..security.xss import redact_secrets_for_log
+from ..shopping_locale import locale_cookies
 from ..ubiquiti.api import is_ubiquiti as _is_ubiquiti
 from ..wellfound.api import is_wellfound as _is_wellfound
 
@@ -2505,7 +2506,12 @@ async def _fetch_url_impl(
             from .browse_reddit import _get_session
 
             return await _get_session(browser_solver)
-        return _make_session(target_url)
+        session = _make_session(target_url)
+        # A shop's own currency/region preference (amazon.co.uk in pounds, not
+        # the egress IP's euros); see shopping_locale.py.
+        for cookie in locale_cookies(target_url):
+            session.add_cookie(cookie, target_url)
+        return session
 
     async def _safe_feed_get(feed_url: str):
         """SSRF-guarded GET for an autodiscovered feed URL. Its host comes from the

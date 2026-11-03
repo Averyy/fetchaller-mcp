@@ -15,9 +15,11 @@ import wafer
 
 from ..config import get_wafer_cache_dir
 from ..content._numeric import bounded_number_text
-from ..content._price import has_positive_price
+from ..content._price import has_positive_price, normalize_currency_signs
+from ..content.aliexpress import new_shopper_label
 from ..ratelimit import aliexpress_limiter
 from ..security.xss import safe_log_text
+from ..shopping_locale import shopping_locale
 from .mtop import MTopClient
 from .reviews import fetch_reviews
 
@@ -104,18 +106,29 @@ def _bounded_percent(value: object) -> str:
     )
 
 
+def _mtop_locale() -> tuple[str, str]:
+    """The ``(country, currency)`` MTop is asked to price in; USD/US by default."""
+
+    return shopping_locale() or ("US", "USD")
+
+
 def _normalized_mtop_price(
     *formatted_values: object,
     raw_value: object = None,
 ) -> str:
-    """Normalize a formatted or USD-bound raw MTop price for display."""
+    """Normalize a formatted or currency-bound raw MTop price for display.
+
+    MTop answers in the ``_currency`` it was asked for (``_mtop_locale``), so a
+    bare amount is labelled with that currency. GBP comes back with the
+    fullwidth ``￡``, which is mapped to ``£``.
+    """
 
     for value in formatted_values:
         if isinstance(value, dict):
             value = value.get("formatedAmount") or value.get("formattedAmount")
         text = _bounded_scalar(value, _MAX_FIELD_CHARS)
         if has_positive_price(text, require_currency=True):
-            return text
+            return normalize_currency_signs(text)
 
     if isinstance(raw_value, dict):
         formatted = (
@@ -124,13 +137,13 @@ def _normalized_mtop_price(
         )
         formatted_text = _bounded_scalar(formatted, _MAX_FIELD_CHARS)
         if has_positive_price(formatted_text, require_currency=True):
-            return formatted_text
+            return normalize_currency_signs(formatted_text)
         raw_value = raw_value.get("value")
     raw_text = _bounded_scalar(raw_value, _MAX_FIELD_CHARS)
     if has_positive_price(raw_text, require_currency=True):
-        return raw_text
+        return normalize_currency_signs(raw_text)
     if has_positive_price(raw_value, require_currency=False):
-        return f"USD {raw_text}"
+        return f"{_mtop_locale()[1]} {raw_text}"
     return ""
 
 
@@ -791,8 +804,8 @@ def _format_output(
 
         # Price line
         price_parts = []
-        sale_price = _bounded_scalar(product_data.get("sale_price"))
-        original_price = _bounded_scalar(product_data.get("original_price"))
+        sale_price = normalize_currency_signs(_bounded_scalar(product_data.get("sale_price")))
+        original_price = normalize_currency_signs(_bounded_scalar(product_data.get("original_price")))
         discount = _bounded_percent(product_data.get("discount"))
         if has_positive_price(sale_price, require_currency=True):
             price_parts.append(sale_price)
@@ -800,6 +813,8 @@ def _format_output(
             price_parts.append(f"(was {original_price})")
         if discount:
             price_parts.append(f"-{discount}%")
+        if product_data.get("new_shopper_price") is True and has_positive_price(sale_price, require_currency=True):
+            price_parts.append(new_shopper_label(product_data.get("new_shopper_saving")))
         if price_parts:
             lines.append(f"Price: {' '.join(price_parts)}")
 
@@ -838,7 +853,7 @@ def _format_output(
             lines.append(store)
 
         # Shipping
-        shipping = _bounded_scalar(product_data.get("shipping"))
+        shipping = normalize_currency_signs(_bounded_scalar(product_data.get("shipping")))
         delivery_days = bounded_number_text(
             product_data.get("delivery_days"),
             minimum=0,
@@ -966,12 +981,14 @@ async def _fetch_mtop(
     client = await _get_client(browser_solver)
 
     # Include locale params that the browser sends — the API may return
-    # empty data without them.
+    # empty data without them. ``country`` is the ship-to country, so it also
+    # decides the VAT in the price (GB: 20% included).
+    country, currency = _mtop_locale()
     data = {
         "productId": product_id,
         "_lang": "en_US",
-        "_currency": "USD",
-        "country": "US",
+        "_currency": currency,
+        "country": country,
         "clientType": "pc",
     }
 

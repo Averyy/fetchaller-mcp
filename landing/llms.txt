@@ -309,7 +309,7 @@ Search Canadian homes for sale or rent on realtor.ca with full filters. Returns 
 
 ### get_aliexpress_product(product_id, timeout?)
 
-Get AliExpress product details: price, specifications, ratings, and recent reviews.
+Get AliExpress product details: price, specifications, ratings, and recent reviews. Priced in SHOPPING_CURRENCY for SHOPPING_COUNTRY when set, otherwise USD for the US.
 
 | Param | Type | Description |
 |-------|------|-------------|
@@ -318,20 +318,20 @@ Get AliExpress product details: price, specifications, ratings, and recent revie
 
 ### search_aliexpress(query, page?, sort?, min_price?, max_price?, timeout?)
 
-Search AliExpress products. Returns listings with prices, ratings, and links.
+Search AliExpress products. Returns listings with prices, ratings, and links. Priced in SHOPPING_CURRENCY when set, otherwise in the currency the site picks for the server's IP; a first-order "welcome deal" price is labelled as a new-shopper price. A "No search results" page that still counts matches (AliExpress does this to some price-sorted searches with a price filter) is reported as an error naming the count, not as an empty result.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | query | string | required | Search query |
 | page | integer | 1 | Page number (1-indexed) |
 | sort | string | default | default, orders, price_asc, price_desc |
-| min_price | number | — | Minimum price filter |
-| max_price | number | — | Maximum price filter |
+| min_price | number | — | Minimum price filter, in the results' currency |
+| max_price | number | — | Maximum price filter, in the results' currency |
 | timeout | integer | 180 | End-to-end budget in seconds (1–300) |
 
 ### get_alibaba_product(product_id, timeout?)
 
-Get Alibaba.com B2B product details: tiered pricing, MOQ, lead times, supplier info, specifications.
+Get Alibaba.com B2B product details: tiered pricing, MOQ, lead times, supplier info, specifications. Priced in SHOPPING_CURRENCY when set (search_alibaba results are not).
 
 | Param | Type | Description |
 |-------|------|-------------|
@@ -346,9 +346,9 @@ Search Alibaba.com B2B products. Returns supplier listings with tiered pricing, 
 |-------|------|---------|-------------|
 | query | string | required | Search query |
 | page | integer | 1 | Page number (1-indexed) |
-| sort | string | default | default, price_asc, price_desc |
-| min_price | number | — | Minimum price filter (USD) |
-| max_price | number | — | Maximum price filter (USD) |
+| sort | string | default | default (relevance), orders (most sold), price_asc, price_desc (Alibaba has no price sort: these re-order the returned page by lowest listed price, and say so) |
+| min_price | number | — | Minimum price filter, in the results' currency |
+| max_price | number | — | Maximum price filter, in the results' currency |
 | timeout | integer | 180 | End-to-end budget in seconds (1–300) |
 
 ## Installation
@@ -410,6 +410,7 @@ Add to `~/.claude/settings.json` (or `.claude/settings.local.json` for per-proje
 
 | Variable | Description |
 |----------|-------------|
+| SHOPPING_COUNTRY, SHOPPING_CURRENCY | Ship-to country and currency (e.g. GB, GBP) for AliExpress search and product prices and Alibaba product pages; set both. Unset, those sites price by the server's IP (AliExpress product details: USD). Alibaba search results are not affected. Amazon is always read in the marketplace's own currency (amazon.com USD, amazon.co.uk GBP). |
 | MOUSER_API_KEY | Mouser Search API key (enables structured API responses for mouser.com) |
 | DIGIKEY_CLIENT_ID | DigiKey API client ID (enables structured API responses for digikey.com) |
 | DIGIKEY_CLIENT_SECRET | DigiKey API client secret |

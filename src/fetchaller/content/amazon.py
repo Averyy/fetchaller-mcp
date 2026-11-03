@@ -12,24 +12,53 @@ import re
 from html import escape
 from urllib.parse import urlparse
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 # ---------------------------------------------------------------------------
 # URL detection
 # ---------------------------------------------------------------------------
 
+# Every marketplace this module handles, with the currency it prices in. The
+# host pattern is built from it, so a marketplace cannot be recognised without
+# a currency (``shopping_locale.locale_cookies`` reads it).
+MARKETPLACE_CURRENCIES = {
+    "com": "USD",
+    "ca": "CAD",
+    "co.uk": "GBP",
+    "de": "EUR",
+    "fr": "EUR",
+    "it": "EUR",
+    "es": "EUR",
+    "co.jp": "JPY",
+    "com.au": "AUD",
+    "in": "INR",
+    "com.br": "BRL",
+    "com.mx": "MXN",
+    "nl": "EUR",
+    "sg": "SGD",
+    "ae": "AED",
+    "sa": "SAR",
+    "pl": "PLN",
+    "se": "SEK",
+    "com.be": "EUR",
+    "com.tr": "TRY",
+    "eg": "EGP",
+}
+
 _AMAZON_HOSTS = re.compile(
-    r"(?:^|\.)"
-    r"amazon\."
-    r"(?:com|ca|co\.uk|de|fr|it|es|co\.jp|com\.au|in|com\.br|com\.mx"
-    r"|nl|sg|ae|sa|pl|se|com\.be|com\.tr|eg)$"
+    r"(?:^|\.)amazon\.(" + "|".join(map(re.escape, MARKETPLACE_CURRENCIES)) + r")$"
 )
+
+
+def amazon_marketplace(url: str) -> str | None:
+    """The marketplace suffix of an Amazon URL (``co.uk``), or None."""
+    match = _AMAZON_HOSTS.search(urlparse(url).hostname or "")
+    return match.group(1) if match else None
 
 
 def is_amazon(url: str) -> bool:
     """Check if URL is an Amazon page."""
-    hostname = urlparse(url).hostname or ""
-    return bool(_AMAZON_HOSTS.search(hostname))
+    return amazon_marketplace(url) is not None
 
 
 def is_amazon_store(url: str) -> bool:
@@ -214,6 +243,63 @@ SELECTORS_LIST = [
 # ---------------------------------------------------------------------------
 # Pre-CSS-selector extraction (runs BEFORE [id^="sims-"] nukes everything)
 # ---------------------------------------------------------------------------
+
+
+_PRICE_PART_CLASSES = ("a-price-symbol", "a-price-whole", "a-price-fraction")
+
+
+def _split_price_text(visible: Tag) -> str:
+    """Rebuild an amount from an ``a-price``'s split parts, decimal point included.
+
+    Returns "" unless the parts hold a whole part and a digit fraction.
+    """
+    whole = visible.find("span", class_="a-price-whole")
+    fraction = visible.find("span", class_="a-price-fraction")
+    if whole is None or fraction is None or not fraction.get_text(strip=True).isdigit():
+        return ""
+    pieces = []
+    for part in visible.find_all("span", class_=list(_PRICE_PART_CLASSES)):
+        if part is whole:
+            # The decimal span sits inside the whole part; leave it out and
+            # put the point back explicitly, since that is what went missing.
+            pieces.append("".join(part.find_all(string=True, recursive=False)).strip())
+            pieces.append(".")
+        else:
+            pieces.append(part.get_text(strip=True))
+    text = "".join(pieces)
+    return text if re.search(r"\d\.\d", text) else ""
+
+
+def normalize_prices(soup: BeautifulSoup) -> None:
+    """Leave every ``a-price`` holding its amount once, with its decimal point.
+
+    An ``a-price`` carries the amount twice: screen-reader text
+    (``a-offscreen``) and an ``aria-hidden`` copy split into symbol, whole,
+    decimal and fraction. Both survived markdownify ("$14.99$14.99"), and
+    ``postprocess_amazon`` only collapsed dollar-sign pairs. On carousel cards
+    Amazon also leaves the decimal out of both copies: amazon.com, 2026-11-02,
+    "3 offers from" $82.49 shipped ``a-offscreen`` "$8249" and an empty
+    ``a-price-decimal``, which rendered as "$8249$8249", a price 100 times too
+    high (and "CAD11532" for CAD 115.32 in the converted view). So the
+    screen-reader text is rebuilt from the split parts when it does not end in
+    a separator and the fraction, and the hidden copy is dropped.
+    """
+
+    for price in soup.select("span.a-price"):
+        offscreen = price.find("span", class_="a-offscreen")
+        visible = price.find("span", attrs={"aria-hidden": "true"})
+        if offscreen is None or visible is None:
+            continue
+        text = offscreen.get_text(strip=True)
+        if not re.search(r"\d", text):
+            continue
+        fraction = visible.find("span", class_="a-price-fraction")
+        fraction_text = fraction.get_text(strip=True) if fraction is not None else ""
+        if fraction_text and not re.search(r"[.,]" + re.escape(fraction_text) + r"\D*$", text):
+            rebuilt = _split_price_text(visible)
+            if rebuilt:
+                offscreen.string = rebuilt
+        visible.decompose()
 
 
 def extract_related_products(soup: BeautifulSoup) -> None:

@@ -46,6 +46,13 @@ def _zero_rate_limiters():
         limiter._last_time = last
 
 
+@pytest.fixture(autouse=True)
+def _no_shopping_locale(monkeypatch):
+    """Tests see each shop's own locale unless they pin one themselves."""
+    monkeypatch.delenv("SHOPPING_COUNTRY", raising=False)
+    monkeypatch.delenv("SHOPPING_CURRENCY", raising=False)
+
+
 @pytest.fixture
 def sample_html():
     """Sample HTML for testing."""
