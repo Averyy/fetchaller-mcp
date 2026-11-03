@@ -24,14 +24,16 @@ session, so it is the parameter, not reputation or rate.
 carries the salary band as numbers (``extractedSalary: {min, max, type}``), so a
 search does not need to open 25 postings to report pay.
 
-**A posting** carries ``schema.org/JobPosting`` JSON-LD: the full description,
-the band again, and ``validThrough`` — an expiry date no other board here
-publishes, which is the direct answer to indexes that list filled requisitions
-as open.
-
-Parse the JSON-LD rather than the markup. It is a published schema, so it
-survives the redesigns that break CSS selectors, and a posting page renders to
-0.7% readable text — the visible HTML is mostly chrome.
+**A posting** used to carry ``schema.org/JobPosting`` JSON-LD: the full
+description, the band again, and ``validThrough``, an expiry date no other
+board here publishes. By 2026-11-02 ``/viewjob`` shipped no JSON-LD at all and
+sat behind a Cloudflare challenge (wafer's browser solver clears it). The same
+posting is in the page's own ``window._rootProps.preloadedVJData``: title,
+company, location, pay band, job type, description, an expired flag and a
+relative age, but **no posting date and no expiry**. So the JSON-LD is still
+read first, and the page data otherwise, and the expiry is reported only when
+the page publishes one. Never parse the visible markup: a posting page renders
+to 0.7% readable text, the rest is chrome.
 """
 
 from __future__ import annotations
@@ -148,6 +150,17 @@ def search_url(
     return f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
 
 
+def _pay_amount(value):
+    """A finite positive pay figure, or None.
+
+    Indeed uses -1 as a missing range endpoint. Treat only finite positive
+    numbers as pay; otherwise a one-sided band rendered as "$35 - $-1".
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
 def _salary(card: dict) -> str:
     """Human-readable band from the numeric fields, not the display string.
 
@@ -156,16 +169,7 @@ def _salary(card: dict) -> str:
     Preferring the numbers keeps a reported band traceable to the posting.
     """
     extracted = card.get("extractedSalary") or {}
-    low, high = extracted.get("min"), extracted.get("max")
-
-    def amount(value):
-        # Indeed uses -1 as a missing range endpoint. Treat only finite positive
-        # numbers as pay; otherwise a one-sided band rendered as "$35 - $-1".
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        return value if math.isfinite(value) and value > 0 else None
-
-    low, high = amount(low), amount(high)
+    low, high = _pay_amount(extracted.get("min")), _pay_amount(extracted.get("max"))
     unit = str(extracted.get("type") or "").lower()
     suffix = {"hourly": "hourly", "yearly": "annually", "monthly": "monthly"}.get(unit, unit)
     if low and high and low != high:
@@ -322,8 +326,84 @@ def _plain(fragment: str) -> str:
     return _WS_RE.sub(" ", html.unescape(strip_markup(fragment or ""))).strip()
 
 
+# The posting page's own data (``window._rootProps.preloadedVJData``), read
+# when the page carries no JobPosting JSON-LD. Indeed stopped shipping the
+# JSON-LD on ``/viewjob`` by 2026-11-02 (0 ld+json blocks on three fresh keys,
+# each page a real posting); the same posting is in this blob. It has no
+# posting date and no expiry, only a relative age ("19 days ago") and an
+# expired flag, so neither date is reported from it.
+_ROOT_PROPS_RE = re.compile(r"window\._rootProps\s*=\s*(?=\{)")
+_MAX_ROOT_PROPS_CHARS = 4_000_000
+_PAY_UNITS = {"YEARLY": "YEAR", "HOURLY": "HOUR", "MONTHLY": "MONTH", "WEEKLY": "WEEK", "DAILY": "DAY"}
+
+
+def _as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _short_text(value, limit: int = 500) -> str:
+    if not isinstance(value, str) or len(value) > limit:
+        return ""
+    return _plain(value)
+
+
+def _parse_page_data(body: str) -> dict | None:
+    """The posting from ``window._rootProps.preloadedVJData``. None if absent."""
+    match = _ROOT_PROPS_RE.search(body)
+    if match is None:
+        return None
+    data = _as_dict(_as_dict(extract_json_object(body, match.end(), _MAX_ROOT_PROPS_CHARS)).get("preloadedVJData"))
+    info = _as_dict(_as_dict(data.get("jobInfoWrapperModel")).get("jobInfoModel"))
+    header = _as_dict(info.get("jobInfoHeaderModel"))
+    title = _short_text(header.get("jobTitle"))
+    if not title:
+        return None
+
+    salary = _as_dict(data.get("salaryInfoModel"))
+    low = _pay_amount(salary.get("salaryMin"))
+    high = _pay_amount(salary.get("salaryMax"))
+    unit = salary.get("salaryType")
+    currency = salary.get("salaryCurrency")
+    if low is None and high is None:
+        low, high = _pay_amount(header.get("salaryMin")), _pay_amount(header.get("salaryMax"))
+        unit, currency = header.get("salaryType"), header.get("salaryCurrency")
+    unit = _short_text(unit, 32).upper()
+    currency = _short_text(currency, 8).upper()
+
+    employment = _as_dict(info.get("jobMetadataHeaderModel")).get("jobType")
+    if not isinstance(employment, str):
+        types = _as_dict(_as_dict(info.get("structuredDataJobSummaryModel")).get("jobTypeAndShiftSectionApp")).get("jobType")
+        employment = ", ".join(t for t in types if isinstance(t, str)) if isinstance(types, list) else ""
+    age = _as_dict(data.get("hiringInsightsModel")).get("age") or _as_dict(data.get("jobMetadataFooterModel")).get("age")
+    details = _as_dict(_as_dict(info.get("jobDescriptionSectionModel")).get("jobDetailsSection"))
+    expired = (
+        details.get("isJobExpired") is True
+        or info.get("showExpiredHeader") is True
+        or bool(_as_dict(info.get("expiredJobMetadataModel")))
+    )
+    description = info.get("sanitizedJobDescription")
+    return {
+        "title": title,
+        "employer": _short_text(header.get("companyName")),
+        "location": _short_text(header.get("formattedLocation")),
+        "salary_min": low,
+        "salary_max": high,
+        "salary_unit": _PAY_UNITS.get(unit, unit),
+        "currency": currency if re.fullmatch(r"[A-Z]{3}", currency or "") else "",
+        "employment_type": _short_text(employment),
+        "posted": _short_text(age, 64),
+        "valid_through": "",
+        "expired": expired,
+        "description": _plain(description if isinstance(description, str) else "")[:_MAX_DESCRIPTION_CHARS],
+    }
+
+
 def parse_job(body: str) -> dict | None:
-    """The JobPosting JSON-LD, flattened. None when the page is not a posting."""
+    """The posting, flattened. None when the page is not a posting.
+
+    JobPosting JSON-LD when the page carries it (with ``datePosted`` and
+    ``validThrough``), otherwise the page's own data (``_parse_page_data``).
+    """
     for block in _iter_ld_blocks(body):
         try:
             data = json.loads(block)
@@ -366,11 +446,11 @@ def parse_job(body: str) -> dict | None:
                     :_MAX_DESCRIPTION_CHARS
                 ],
             }
-    return None
+    return _parse_page_data(body)
 
 
 async def fetch_job(job_key: str, *, session) -> dict | None:
-    """One posting, from its JSON-LD.
+    """One posting, from its JSON-LD or, failing that, the page's own data.
 
     This is the mirror the whole client exists for: UKG and PeopleSoft serve a
     list fine and gate the posting body, and the same body is here in plain

@@ -892,3 +892,29 @@ async def test_the_first_service_call_loads_a_page_even_just_after_boot(monkeypa
     monkeypatch.setattr(ca, "_get", fake_get)
     assert await ca._service("https://www.homedepot.ca/api/x", page_url="https://www.homedepot.ca/product/x/1", timeout=5) == "ok"
     assert calls[0] == ("page", "https://www.homedepot.ca/product/x/1")
+
+
+class TestReviewsExperience:
+    """Reviews are read under the experience the site's own reviews page names."""
+
+    async def test_reviews_ask_the_paginated_reviews_experience(self, monkeypatch):
+        from fetchaller.homedepot.urls import ComTarget
+
+        seen = {}
+
+        async def fake_post(operation, query, variables, *, experience, timeout):
+            seen.update(operation=operation, experience=experience, variables=variables)
+            return {"reviews": {"TotalResults": 17411, "Results": []}, "product": {"itemId": "204279858"}}
+
+        monkeypatch.setattr(com, "_post", fake_post)
+        product, reviews = await com.fetch_reviews(
+            ComTarget(kind="reviews", item_id="204279858", review_page=2), timeout=5
+        )
+
+        # general-merchandise answered "Field 'reviews' in type 'Query' is
+        # undefined" on 2026-11-03.
+        assert seen["experience"] == "paginated-product-reviews"
+        assert seen["operation"] == "reviews"
+        assert seen["variables"]["startIndex"] == 11
+        assert reviews["TotalResults"] == 17411
+        assert product == {"itemId": "204279858"}

@@ -36,7 +36,7 @@ Do not bypass the provider gate for `all` or Google fallback. Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.8 requires published
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.9 requires published
 wafer 0.7.11 or later (`add_cookie()` cookies reach the browser; 0.7.10 added
 Reddit's refused reads and GraphQL on the app route; 0.7.9 first carried the
 Brave handler), with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
@@ -171,9 +171,14 @@ request, so it is built here (`src/fetchaller/homedepot/`). Products, search
 `content/homedepot.py`; a landing page (`#root.landing-page`) is rendered from
 its `__APOLLO_STATE__` `UniversalLayout`, because its HTML draws only some of its
 sections (customer service drew none). With
-wafer >= 0.7.6 the browser solver clears that challenge on macOS (~6 s cold)
-and in the **Linux image** (~11 s cold), with plain reads after, and returns
-the server's own document. Up to 0.7.5 Akamai refused every solve in the image:
+wafer >= 0.7.6 the browser solver clears that challenge on macOS (~6 s cold;
+6-9 s on 0.7.11, 2026-11-03), with plain reads after, and returns the server's
+own document. It also cleared it in the **Linux image** (~11 s cold) on
+2026-10-08, but **no longer did on 2026-11-03**: the solve ran to its ~142 s
+budget and failed on wafer 0.7.10 and 0.7.11 alike, with and without `TZ`,
+in the amd64 image under emulation on Apple Silicon (native amd64 not yet
+checked; `../wafer/todo-akamai-homedepot-linux-image-timeout.md`). Gateway
+reads are unaffected. Up to 0.7.5 Akamai refused every solve in the image:
 with no GPU, Chrome drew WebGL on Mesa's llvmpipe, which Akamai rejects; 0.7.6
 renders on SwiftShader there. That was wafer's to fix and was fixed there. The
 solved document can carry one inline `<script>` the plain one lacks
@@ -394,7 +399,12 @@ Business Center) and its delivery centres; the output names the warehouse. A
 redirected keyword is followed from the catalogue's own `redirectUri`, with the
 caller's page and sort, and disclosed. `HIDE_OUT_OF_STOCK` is sent because the
 site sends it. Fusion survives only as a disclosed fallback for keyword
-searches; a category has no fallback and errors instead.
+searches; a category has no fallback and errors instead. **costco.com's
+catalogue is behind Kasada (2026-11-03):** its own page signs the search POST
+with per-request `x-kpsdk-ct/cd/h/v` headers, and ours draws an empty
+`text/plain` 429 carrying `x-kpsdk-*` (Fusion answers 403). That is active
+blocking, so it is wafer's (`../wafer/todo-kasada-api-post-costco.md`); the
+error names the Kasada refusal. costco.ca still answers.
 
 ### Facebook Marketplace
 
@@ -631,6 +641,6 @@ Do NOT test against the production version (Docker image from GHCR).
 ## Docs Reference
 
 - `docs/architecture.md` — System design: fetchaller vs wafer boundary, content modules, search, HTTP transport
-- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), The Home Depot (homedepot.com via its federation-gateway GraphQL: products, search/category listings, pooled variant reviews, stores; homedepot.ca via `hdca-state` page data, the search API with its keyword redirects, and the localized price service that must follow a page), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR, Teamtailor (JSON Feed + RSS joined on the posting UUID; filtered vs unfiltered paging). Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). emploisfp-psjobs.cfp-psc.gc.ca (GC Jobs: two-flag second-part listing, session-stored search and paging, criteria echo, external/legacy posting shapes). ca.indeed.com (embedded Mosaic job-card JSON and JobPosting JSON-LD, one stable anonymous result page).
+- `docs/site-apis.md` — Site-specific API clients: AliExpress MTop, Mouser/DigiKey, Kijiji GraphQL, Craigslist SAPI, Facebook Marketplace GraphQL, eBay search extraction, realtor.ca (api2 home search + SSR listings + `search_realtor` tool), aartech.ca (React listing API + embedded product blob; no prices in HTML), vacuumwars.com (robot-vacuum comparison tool: the full lab dataset inline as `window.vwProducts`, client-side pagination, tested vs listed-only, colour-variant collapsing), ui.com (UniFi store/techspecs `__NEXT_DATA__` spec tree, and installation guides rebuilt from their JS page assets), The Home Depot (homedepot.com via its federation-gateway GraphQL: products, search/category listings, pooled variant reviews, stores; homedepot.ca via `hdca-state` page data, the search API with its keyword redirects, and the localized price service that must follow a page), wellfound.com (Next.js/Apollo startup jobs). Job-board APIs and embed/white-label detection for Ashby, Greenhouse, Lever, Gem, Dayforce, Cornerstone, Workday, BambooHR, JazzHR, Teamtailor (JSON Feed + RSS joined on the posting UUID; filtered vs unfiltered paging). Big-tech career boards: Eightfold (Microsoft/Netflix/PayPal, two API generations), Workday search filtering, amazon.jobs (incl. inline pay bands), Apple SSR hydration, Meta persisted GraphQL, Uber. gojobs.gov.on.ca (Ontario Public Service: ASP.NET WebForms postback listing, JSON-array facets, no keyword search). jobbank.gc.ca (federal Job Bank: city_id-gated location, keyword silently dropped for some terms, radius search). emploisfp-psjobs.cfp-psc.gc.ca (GC Jobs: two-flag second-part listing, session-stored search and paging, criteria echo, external/legacy posting shapes). ca.indeed.com (embedded Mosaic job-card JSON; postings from `window._rootProps.preloadedVJData` since Indeed dropped their JSON-LD and expiry date; one stable anonymous result page).
 - `docs/spa-discovery.md` — SPA API discovery (`src/fetchaller/discovery/`): observing a page in a browser and replaying what it made, so an endpoint's shape never needs bundle archaeology again. Ranking (why coverage and record count are directly opposed), the oracle (why a 200 that means "malformed" is the core problem), minimization, mint steps, and the measured per-board results
 - `docs/testing.md` — Test organization, writing tests, live testing rules, test URLs

@@ -239,6 +239,24 @@ class TestSearchCostcoFlow:
         assert "older search service" in result["content"]
         assert "Laptop" in result["content"]
 
+    async def test_both_services_failing_names_the_catalogue_refusal(self, monkeypatch):
+        async def refused(*args, **kwargs):
+            raise grs.GrsError(
+                "Costco's catalogue search refused the request with its Kasada bot protection (HTTP 429); "
+                "the site's own page sends Kasada tokens with this request"
+            )
+
+        async def fusion(**kwargs):
+            return None
+
+        monkeypatch.setattr(grs, "search", refused)
+        monkeypatch.setattr(costco_search.api, "search", fusion)
+        result = await costco_search.search_costco("https://www.costco.ca/s?keyword=laptop")
+
+        assert "content" not in result
+        assert "Kasada bot protection (HTTP 429)" in result["error"]
+        assert "older search service did not answer either" in result["error"]
+
     async def test_a_category_has_no_silent_fallback(self, monkeypatch):
         async def failing(*args, **kwargs):
             raise grs.GrsError("HTTP 503")
@@ -304,3 +322,52 @@ async def test_a_failed_config_read_is_not_cached(monkeypatch):
     second = await grs.site_config("ca", "https://www.costco.ca/", timeout=5)
     assert not first.from_page and not second.from_page
     assert len(calls) == 2  # the page is tried again, not pinned to the dated fallback
+
+
+class _Response:
+    def __init__(self, status: int, headers: dict, payload=None):
+        self.status_code = status
+        self.headers = headers
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _Session:
+    def __init__(self, response):
+        self.response = response
+
+    async def post(self, *args, **kwargs):
+        return self.response
+
+
+class TestCatalogueRefusal:
+    """costco.com, 2026-11-03: an empty text/plain 429 with Kasada headers."""
+
+    async def _search(self, monkeypatch, response):
+        config = parse_site_config(PAGE, "ca")
+
+        async def session():
+            return _Session(response)
+
+        async def no_wait(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(grs, "_get_session", session)
+        monkeypatch.setattr(grs.costco_limiter, "wait", no_wait)
+        return await grs.search(config, LOCATION, query="laptop", timeout=5)
+
+    async def test_kasada_refusal_is_named(self, monkeypatch):
+        response = _Response(429, {"content-type": "text/plain;charset=UTF-8", "x-kpsdk-ct": "0fh", "x-kpsdk-r": "1-AA"})
+
+        with pytest.raises(grs.GrsError, match="Kasada bot protection \\(HTTP 429\\)"):
+            await self._search(monkeypatch, response)
+
+    async def test_plain_rate_limit_is_not_called_kasada(self, monkeypatch):
+        response = _Response(429, {"content-type": "text/plain", "retry-after": "30"})
+
+        with pytest.raises(grs.GrsError) as caught:
+            await self._search(monkeypatch, response)
+
+        assert str(caught.value) == "Costco's catalogue search returned HTTP 429"

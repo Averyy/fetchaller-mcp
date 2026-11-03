@@ -424,7 +424,11 @@ async def fetch_reviews(target: ComTarget, *, timeout: float) -> tuple[dict | No
             "pagesize": str(REVIEWS_PAGE_SIZE),
             "recfirstpage": str(REVIEWS_PAGE_SIZE),
         },
-        experience="general-merchandise",
+        # The experience the site's own reviews page names. Under
+        # general-merchandise the gateway stopped exposing ``reviews`` (by
+        # 2026-11-03: "Field 'reviews' in type 'Query' is undefined"); the same
+        # query under this one answered 17,411 reviews, page by page.
+        experience="paginated-product-reviews",
         timeout=timeout,
     )
     reviews = data.get("reviews")

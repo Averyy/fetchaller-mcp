@@ -1,46 +1,28 @@
 # Changelog
 
-## 3.8.8 (2026-11-02)
+## 3.8.9 (2026-11-03)
 
-Requires wafer 0.7.11. Started from Ribetzer's PR #2.
+Requires wafer 0.7.11.
 
-- **AliExpress search works for UK sessions.** A UK session prices every item
-  with the fullwidth pound sign (`￡0.99`, U+FFE1), which the price check did
-  not recognise, so every search answered "Could not extract product data".
-  Fullwidth `＄￡￥￦` are now read and shown as `$£¥₩`. A GBP product read also
-  stops labelling its raw amount "USD".
-- **New optional `SHOPPING_COUNTRY` / `SHOPPING_CURRENCY`** (e.g. `GB`/`GBP`)
-  pin AliExpress search and product prices (and their VAT) and Alibaba product
-  pages to a ship-to country and currency, instead of whatever the server's IP
-  suggests. Unset, nothing changes. Alibaba search is not affected. With
-  wafer 0.7.11 the setting also holds on pages read through the
-  challenge-solving browser, which had come back in the IP's currency.
-- **Amazon is read in each marketplace's own currency.** amazon.com now
-  quotes USD wherever the server is (it had quoted a Canadian IP in converted
-  CAD), amazon.co.uk GBP, and so on.
-- **Amazon prices missing their decimal point are fixed.** Carousel cards
-  shipped $82.49 as `$8249`, which rendered as `$8249$8249`, 100 times too high.
-  Every Amazon price now renders once, with its decimal.
-- **AliExpress first-order "welcome deal" prices are labelled**
-  `(new-shopper price, £X off)`, and abbreviated sold counts (`8K+ sold`) are
-  kept.
-- **Alibaba search works reliably.** About half its searches failed with
-  "Could not extract product data": Alibaba sends `/trade/search` requests at
-  random to an app shell with no results. Search now reads Alibaba's keyword
-  listing page, one request with no redirects (8 of 8 live), and falls back
-  to `/trade/search` with retries only for queries the listing page cannot
-  carry.
-- **Alibaba `min_price`/`max_price` now filter.** They were sent under names
-  Alibaba ignores. **Alibaba has no price sort**, so `price_asc`/`price_desc`
-  now order the returned page by lowest price and say so, and the new
-  `orders` sort uses Alibaba's own "most sold".
-- **An AliExpress "No search results" page is an empty result only when it
-  counts no matches.** Price-sorted searches with a price filter can answer it
-  while counting dozens of matches; that is now an error naming the count and
-  the sorts that list them, not "No products found".
+- **`get_indeed_job` works again.** Indeed stopped putting the posting's
+  JSON-LD on its job pages, so every posting answered "carried no JobPosting
+  data". Postings are now read from the page's own data: title, employer,
+  location, employment type, pay band, description and posting age.
+- **Indeed no longer publishes an expiry date** on posting pages, so none is
+  shown unless a page carries one; a posting Indeed marks expired now says so.
+- **Home Depot review pages work again.** The gateway stopped answering the
+  reviews query for the experience fetchaller named; it now asks as the site's
+  own reviews page does.
+- **Alibaba searches containing `/` or `_`** fall back, as a last resort, to
+  Alibaba's listing page with those characters read as spaces, and say so.
+- **costco.com search names its refusal.** costco.com's catalogue now sits
+  behind Kasada bot protection and refuses requests without its per-request
+  tokens. The error says so instead of "neither service answered". costco.ca
+  is unaffected; the costco.com fix is wafer's.
 
 ## Earlier releases
 
+- **3.8.8** (2026-11-02): shop currencies (`SHOPPING_COUNTRY`/`SHOPPING_CURRENCY`), UK AliExpress search, Amazon marketplace currency and decimals, reliable Alibaba search; wafer 0.7.11.
 - **3.8.7** (2026-10-31): Reddit threads, comments and profiles over the app's GraphQL; wafer 0.7.10.
 - **3.8.6** (2026-10-25): unified `search` tool; wafer 0.7.9.
 - **3.8.5** (2026-10-09): wafer 0.7.7.

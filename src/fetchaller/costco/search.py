@@ -489,6 +489,7 @@ async def search_costco(
         return {"content": content}
     except (grs.GrsError, wafer.WaferError, OSError, TimeoutError) as exc:
         _log(f"catalogue search failed: {type(exc).__name__}: {exc}")
+        catalogue_error = str(exc) or type(exc).__name__
         if category_params:
             return {"error": f"Costco's catalogue search did not answer for this category: {exc}"}
 
@@ -497,7 +498,12 @@ async def search_costco(
     start = search_params.get("start", 0)
     data = await api.search(query=query, domain=domain, start=start)
     if not data:
-        return {"error": "Costco search failed: neither the catalogue search nor the older search service answered."}
+        return {
+            "error": (
+                f"Costco search failed. {catalogue_error.rstrip('.')}, and the older "
+                "search service did not answer either."
+            )
+        }
     items = api.parse_search_items(data, domain=domain)
     total = api.get_total_count(data)
     content = format_search_results(items, query, total, domain)

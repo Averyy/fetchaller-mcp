@@ -366,6 +366,16 @@ async def search(
         timeout=timeout,
     )
     if response.status_code != 200:
+        if any(str(key).lower().startswith("x-kpsdk") for key in response.headers):
+            # costco.com, 2026-11-03: an empty text/plain 429 carrying
+            # x-kpsdk-ct/x-kpsdk-r, where the site's own page sends per-request
+            # Kasada tokens (x-kpsdk-ct/cd/h/v) with this POST. That is bot
+            # protection refusing the request, which is wafer's to clear.
+            raise GrsError(
+                f"Costco's catalogue search refused the request with its Kasada bot "
+                f"protection (HTTP {response.status_code}); the site's own page sends "
+                "Kasada tokens with this request"
+            )
         raise GrsError(f"Costco's catalogue search returned HTTP {response.status_code}")
     try:
         data = response.json()

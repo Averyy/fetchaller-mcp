@@ -861,10 +861,48 @@ class TestSearchRouting:
 
         result = await search_alibaba("50/50 mix")
 
-        assert mock_fetch.await_count == 3
+        # Three /trade/search tries, then the spaced listing page, which is a
+        # shell too (no keyword), so it is not used.
+        assert mock_fetch.await_count == 4
         assert "content" not in result
         assert '"pro search" app page' in result["error"]
         assert "Could not extract" not in result["error"]
+
+
+class TestSlashQueryLastResort:
+    """A / query whose /trade/search tries all get the shell reads the spaced listing page, disclosed."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_rate_limit(self):
+        with patch("fetchaller.alibaba.search.alibaba_limiter.wait", new_callable=AsyncMock):
+            yield
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_spaced_listing_page_is_used_and_disclosed(self, mock_fetch):
+        mock_fetch.side_effect = [{"content": _PRO_SEARCH_SHELL}] * 3 + [
+            {"content": _results_page([_offer("50/50 mix powder", "$3.00", "1601000000002")], keyword="50 50 mix")}
+        ]
+
+        result = await search_alibaba("50/50 mix")
+
+        urls = [call.kwargs["url"] for call in mock_fetch.await_args_list]
+        assert urls[-1] == "https://www.alibaba.com/products/50_50_mix.html"
+        assert "50/50 mix powder" in result["content"]
+        assert 'its listing page for "50 50 mix"' in result["content"]
+        assert result["content"].startswith('Search: "50/50 mix"')
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.alibaba.search.fetch_url", new_callable=AsyncMock)
+    async def test_spaced_page_that_searched_something_else_is_not_used(self, mock_fetch):
+        mock_fetch.side_effect = [{"content": _PRO_SEARCH_SHELL}] * 3 + [
+            {"content": _results_page([_offer("Motor oil 50:1", "$1.00", "1601000000001")], keyword="50")}
+        ]
+
+        result = await search_alibaba("50/50 mix")
+
+        assert "content" not in result
+        assert '"pro search" app page' in result["error"]
 
 
 class TestLocalPriceOrder:

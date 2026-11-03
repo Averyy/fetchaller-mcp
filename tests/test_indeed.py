@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+
 import pytest
 
 from fetchaller import server
@@ -170,9 +173,7 @@ class TestHostileInput:
     )
     def test_a_hostile_jobkey_never_becomes_a_url(self, key):
         # jobkey is remote JSON and is interpolated into a markdown link.
-        import json as _json
-
-        card = _json.dumps({"jobkey": key, "title": "T", "company": "C"})
+        card = json.dumps({"jobkey": key, "title": "T", "company": "C"})
         body = (
             "mosaic-provider-jobcards\n"
             'window.mosaic.providerData["mosaic-provider-jobcards"] = '
@@ -193,3 +194,130 @@ class TestHostileInput:
 
         assert "[here](javascript:" not in out
         assert r"\[here\]\(javascript:alert\(1\)\)" in out
+
+
+def _viewjob_page(preloaded: dict, *, ld: dict | None = None) -> str:
+    """A /viewjob page as Indeed shipped it on 2026-11-02: no JSON-LD, the posting in _rootProps."""
+    parts = ["<html><head><title>Posting - Indeed.com</title></head><body>"]
+    if ld is not None:
+        parts.append(f'<script type="application/ld+json">{json.dumps(ld)}</script>')
+    parts.append(
+        "<script>window._rootProps = "
+        + json.dumps({"url": "https://ca.indeed.com/viewjob?jk=d1fedee2cc5aaf65", "locale": "en", "preloadedVJData": preloaded})
+        + ";</script>"
+        "<script>window._initialData = {ssr: true, viewJobClientSideModel: window._rootProps.preloadedVJData};</script>"
+        "</body></html>"
+    )
+    return "".join(parts)
+
+
+# Trimmed from the live page for jk=d1fedee2cc5aaf65 (2026-11-02).
+_LIVE_PRELOADED = {
+    "jobInfoWrapperModel": {
+        "jobInfoModel": {
+            "jobInfoHeaderModel": {
+                "jobTitle": "Software Engineer I (entry level)",
+                "companyName": "Identity Digital",
+                "formattedLocation": "Toronto, ON M2N 6L4",
+                "salaryMin": None,
+                "salaryMax": None,
+                "salaryCurrency": None,
+                "salaryType": None,
+            },
+            "jobMetadataHeaderModel": {"jobType": "Full-time"},
+            "jobDescriptionSectionModel": {"jobDetailsSection": {"isJobExpired": False}},
+            "expiredJobMetadataModel": None,
+            "showExpiredHeader": False,
+            "sanitizedJobDescription": "<div><h2><b>About</b></h2><p>Build <i>registry</i> systems.</p></div>",
+        }
+    },
+    "salaryInfoModel": {
+        "salaryCurrency": "CAD",
+        "salaryMax": 95000,
+        "salaryMin": 74000,
+        "salaryText": "$74,000–$95,000 a year",
+        "salaryType": "YEARLY",
+    },
+    "hiringInsightsModel": {"age": "19 days ago"},
+}
+
+
+class TestPostingPageData:
+    """/viewjob without JSON-LD: the posting comes from window._rootProps.preloadedVJData."""
+
+    def test_live_shape_parses(self):
+        job = api.parse_job(_viewjob_page(_LIVE_PRELOADED))
+
+        assert job["title"] == "Software Engineer I (entry level)"
+        assert job["employer"] == "Identity Digital"
+        assert job["location"] == "Toronto, ON M2N 6L4"
+        assert job["employment_type"] == "Full-time"
+        assert job["posted"] == "19 days ago"
+        assert (job["salary_min"], job["salary_max"], job["salary_unit"], job["currency"]) == (74000, 95000, "YEAR", "CAD")
+        assert job["description"] == "About Build registry systems."
+        assert job["valid_through"] == ""
+        assert job["expired"] is False
+
+    def test_rendered_without_inventing_an_expiry(self):
+        job = api.parse_job(_viewjob_page(_LIVE_PRELOADED))
+        job["url"] = "https://ca.indeed.com/viewjob?jk=d1fedee2cc5aaf65"
+
+        rendered = render.render_job(job)
+
+        assert "- **Salary:** $74,000 - $95,000 annually CAD" in rendered
+        assert "- **Posted:** 19 days ago" in rendered
+        assert "valid through" not in rendered.lower()
+        assert "expired" not in rendered.lower()
+
+    def test_expired_posting_says_so(self):
+        preloaded = json.loads(json.dumps(_LIVE_PRELOADED))
+        preloaded["jobInfoWrapperModel"]["jobInfoModel"]["jobDescriptionSectionModel"]["jobDetailsSection"]["isJobExpired"] = True
+        job = api.parse_job(_viewjob_page(preloaded))
+        job["url"] = "https://ca.indeed.com/viewjob?jk=x"
+
+        assert "- **Status:** Indeed marks this posting expired" in render.render_job(job)
+
+    def test_header_salary_is_the_fallback(self):
+        preloaded = json.loads(json.dumps(_LIVE_PRELOADED))
+        preloaded["salaryInfoModel"] = None
+        header = preloaded["jobInfoWrapperModel"]["jobInfoModel"]["jobInfoHeaderModel"]
+        header.update(salaryMin=21, salaryMax=24, salaryCurrency="CAD", salaryType="HOURLY")
+
+        job = api.parse_job(_viewjob_page(preloaded))
+
+        assert (job["salary_min"], job["salary_max"], job["salary_unit"]) == (21, 24, "HOUR")
+
+    @pytest.mark.parametrize("value", [-1, 0, True, "74000", None])
+    def test_missing_or_malformed_pay_is_not_pay(self, value):
+        preloaded = json.loads(json.dumps(_LIVE_PRELOADED))
+        preloaded["salaryInfoModel"]["salaryMin"] = value
+        preloaded["salaryInfoModel"]["salaryMax"] = value
+
+        job = api.parse_job(_viewjob_page(preloaded))
+
+        assert job["salary_min"] is None and job["salary_max"] is None
+
+    def test_json_ld_is_still_preferred(self):
+        ld = {
+            "@type": "JobPosting",
+            "title": "From JSON-LD",
+            "hiringOrganization": {"name": "Acme"},
+            "datePosted": "2026-10-01T00:00:00Z",
+            "validThrough": "2026-12-01T00:00:00Z",
+        }
+
+        job = api.parse_job(_viewjob_page(_LIVE_PRELOADED, ld=ld))
+
+        assert job["title"] == "From JSON-LD"
+        assert job["valid_through"] == "2026-12-01"
+
+    def test_page_without_a_posting_is_none(self):
+        assert api.parse_job(_viewjob_page({"jobInfoWrapperModel": {"jobInfoModel": {}}})) is None
+        assert api.parse_job("<html><body>Sign in</body></html>") is None
+
+    def test_unterminated_root_props_does_not_stall(self):
+        body = "<script>window._rootProps = {" + '"a":"' * 200_000
+
+        started = time.monotonic()
+        assert api.parse_job(body) is None
+        assert time.monotonic() - started < 2

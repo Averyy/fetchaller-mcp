@@ -126,8 +126,8 @@ async def search_indeed(
                     f"Indeed answers one page per query ({examined} postings) and "
                     "every deeper offset returns its sign-in wall, so narrowing the "
                     "query changes which postings appear rather than how many. Use "
-                    "get_indeed_job on any result for its full description, salary "
-                    "band and expiry date."
+                    "get_indeed_job on any result for its full description and "
+                    "salary band."
                 )
 
             return {
@@ -176,7 +176,7 @@ async def get_indeed_job(
     timeout: float = 120.0,
     browser_solver=None,
 ) -> dict:
-    """One posting in full, including the description and its expiry date.
+    """One posting in full, including the description, and its expiry when the page publishes one.
 
     This is the mirror: several ATS platforms serve a list fine and gate the
     posting body behind a session or an "unsupported browser" check. Indeed

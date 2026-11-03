@@ -60,7 +60,7 @@ def render_search_results(
 
 def _band(job: dict) -> str:
     low, high, unit = job.get("salary_min"), job.get("salary_max"), job.get("salary_unit")
-    suffix = {"HOUR": "hourly", "YEAR": "annually", "MONTH": "monthly"}.get(
+    suffix = {"HOUR": "hourly", "DAY": "daily", "WEEK": "weekly", "YEAR": "annually", "MONTH": "monthly"}.get(
         str(unit or "").upper(), str(unit or "").lower()
     )
     currency = job.get("currency") or ""
@@ -88,6 +88,8 @@ def render_job(job: dict) -> str:
     band = _band(job)
     if band:
         lines.append(f"- **Salary:** {band}")
+    if job.get("expired") is True:
+        lines.append("- **Status:** Indeed marks this posting expired")
     # Stated plainly: an expiry is the one thing that distinguishes a live
     # posting from an index entry, and stale indexes are why this board is here.
     if job.get("valid_through"):

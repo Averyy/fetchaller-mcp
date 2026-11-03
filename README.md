@@ -16,7 +16,7 @@ Claude Code's built-in `WebFetch` asks permission for every new domain and block
 - **`search_realtor`**: Search Canadian homes on realtor.ca for sale or rent with full filters (location, price, beds, baths, property/building type, ownership)
 - **`search_linkedin_jobs`** / **`get_linkedin_job`**: Search LinkedIn's public logged-out job board (keywords, location, date posted, remote/hybrid/on-site, experience, job type, salary) and read full postings — no account needed
 - **`search_gojobs`** / **`get_gojobs_job`**: Search Ontario Public Service jobs and read full posting and competition status details
-- **`search_indeed`** / **`get_indeed_job`**: Search Indeed Canada and read full public posting data, including salary bands and expiry dates
+- **`search_indeed`** / **`get_indeed_job`**: Search Indeed Canada and read full public posting data, including salary bands and whether a posting has expired
 - **`search_jobbank`**: Search Canada's federal Job Bank by title, city, and radius with local result rechecking
 - **`search_gcjobs`** / **`get_gcjobs_job`**: Search GC Jobs, the federal public service board, and read full postings with the "Who can apply" eligibility line first
 - **`get_unifi_manual`**: Download a Ubiquiti UniFi installation guide as a PDF or per-page PNGs. Ubiquiti publishes no PDF and draws these guides as vector artwork, so they carry no readable text — this rebuilds the pages into a real document
@@ -96,7 +96,7 @@ Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to inst
 - `mcp__fetchaller__search_gojobs(title?, location?, job_category?, career_level?, min_salary?, strict_title?, limit?)` — Search Ontario Public Service jobs
 - `mcp__fetchaller__get_gojobs_job(job_id)` — Full OPS posting and competition status
 - `mcp__fetchaller__search_indeed(title?, location?, radius_km?, strict_title?, strict_location?, limit?)` — Search Indeed Canada
-- `mcp__fetchaller__get_indeed_job(job_key)` — Full Indeed posting, salary band, and expiry
+- `mcp__fetchaller__get_indeed_job(job_key)` — Full Indeed posting, salary band, and expired status
 - `mcp__fetchaller__search_jobbank(title?, location?, radius_km?, strict_title?, strict_location?, limit?)` — Search Canada's federal Job Bank
 - `mcp__fetchaller__search_gcjobs(title?, location?, organization?, min_salary?, language?, exclude_various_locations?, strict_title?, limit?)` — Search GC Jobs, the federal public service board
 - `mcp__fetchaller__get_gcjobs_job(job_id)` — Full GC Jobs posting: eligibility, closing date, salary, classification

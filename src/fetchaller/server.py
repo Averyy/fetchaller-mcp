@@ -2499,10 +2499,10 @@ def create_server(
                 name="get_indeed_job",
                 description=(
                     "Full detail for one Indeed posting: description, salary band, "
-                    "and the listing's expiry date — the only expiry any indexed "
-                    "board publishes, which distinguishes a live posting from a "
-                    "stale index entry. Use this to read a body that a UKG or "
-                    "PeopleSoft careers site gates behind a session."
+                    "employment type, posting age, and whether Indeed marks it "
+                    "expired (an expiry date only when the page publishes one; "
+                    "Indeed stopped in November 2026). Use this to read a body that "
+                    "a UKG or PeopleSoft careers site gates behind a session."
                 ),
                 inputSchema={
                     "type": "object",

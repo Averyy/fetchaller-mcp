@@ -211,7 +211,7 @@ Full detail for one Ontario Public Service posting. Reports the competition stat
 
 ### search_indeed(title?, location?, radius_km?, strict_title?, strict_location?, limit?)
 
-Search ca.indeed.com. Returns the one anonymous result page Indeed reliably serves, including title, employer, location, salary and posting date. Its deeper offsets return a sign-in wall, so narrow the query to change which postings appear. At least one of title or location is required. Use `get_indeed_job` for the full description, structured salary band and listing expiry date.
+Search ca.indeed.com. Returns the one anonymous result page Indeed reliably serves, including title, employer, location, salary and posting date. Its deeper offsets return a sign-in wall, so narrow the query to change which postings appear. At least one of title or location is required. Use `get_indeed_job` for the full description and structured salary band.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -224,7 +224,7 @@ Search ca.indeed.com. Returns the one anonymous result page Indeed reliably serv
 
 ### get_indeed_job(job_key)
 
-Read one Indeed posting in full from its public JobPosting data, including employer, location, employment type, description, salary band, posted date and `validThrough` expiry.
+Read one Indeed posting in full from the posting page's own data, including employer, location, employment type, description, salary band, posting age, and whether Indeed marks it expired. Indeed stopped publishing an expiry date (`validThrough`) on posting pages in November 2026; one is shown only when the page carries it.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|

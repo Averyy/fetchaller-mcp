@@ -381,7 +381,13 @@ def _format_search_results(
     return prefix + "\n\n".join(formatted)
 
 
-def _parse_search_html(html: str, query: str, page: int, sort: str = "default") -> dict | None:
+def _parse_search_html(
+    html: str,
+    query: str,
+    page: int,
+    sort: str = "default",
+    searched_as: str = "",
+) -> dict | None:
     """Extract search results from HTML containing __page__data_sse10.
 
     Returns formatted content dict or None if extraction fails. A price sort
@@ -419,18 +425,24 @@ def _parse_search_html(html: str, query: str, page: int, sort: str = "default") 
         total_count = len(offers)
     total_count = min(total_count, 1_000_000_000)
 
-    note = ""
+    notes = []
+    if searched_as:
+        notes.append(
+            f'Alibaba.com answered "{query}" with its "pro search" app page on every '
+            f'try, so this is its listing page for "{searched_as}", which cannot carry '
+            "a / or _."
+        )
     if sort in _LOCAL_PRICE_SORTS:
         descending = sort == "price_desc"
         offers = _order_by_price(offers, descending=descending)
-        note = (
+        notes.append(
             f"Alibaba.com has no price sort: these are its page {page} offers in "
             f"relevance order, re-ordered here by lowest listed price "
             f"({'highest' if descending else 'lowest'} first). Other pages can hold "
             "cheaper or dearer offers; min_price/max_price filter on Alibaba's side."
         )
 
-    content = _format_search_results(offers, query, page, total_count, note)
+    content = _format_search_results(offers, query, page, total_count, "\n".join(notes))
     return {"content": content}
 
 
@@ -515,6 +527,7 @@ async def search_alibaba(
                         _log("listing page searched a different keyword; using /trade/search")
                         html = None
 
+            searched_as = ""
             if html is None:
                 trade_url = _trade_search_url(query, page, sort, min_price, max_price)
                 for attempt in range(_TRADE_SEARCH_ATTEMPTS):
@@ -526,6 +539,17 @@ async def search_alibaba(
                         break
                     _log(f"/trade/search answered with the pro-search shell ({attempt + 1}/{_TRADE_SEARCH_ATTEMPTS})")
                 else:
+                    # Last resort, disclosed: the listing page with / and _
+                    # read as spaces, kept only if it says it searched that.
+                    spaced = _normalized_query(re.sub(r"[/_]", " ", query))
+                    spaced_url = _products_url(spaced, page, sort, min_price, max_price)
+                    if spaced_url is not None and spaced.casefold() != _normalized_query(query).casefold():
+                        result = await read(spaced_url)
+                        candidate = result.get("content", "") if "error" not in result else ""
+                        keyword = await asyncio.to_thread(_searched_keyword, candidate) if candidate else None
+                        if keyword is not None and _normalized_query(keyword).casefold() == spaced.casefold():
+                            html, searched_as = candidate, spaced
+                if html is None or is_pro_search_shell(html):
                     return {
                         "error": (
                             f'Alibaba.com answered "{query}" with its "pro search" app page, '
@@ -541,6 +565,7 @@ async def search_alibaba(
                 query,
                 page,
                 sort,
+                searched_as,
             )
             zero_result = parsed is None and await asyncio.to_thread(
                 is_zero_result_page,
