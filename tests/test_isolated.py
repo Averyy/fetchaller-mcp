@@ -198,3 +198,111 @@ class TestSlotHandleOwnership:
         handle.transfer()
         loop.close()
         handle.release_from_thread()  # must not raise
+
+
+class TestForkserverPreload:
+    """Workers must start with the parser stack already imported.
+
+    Without a forkserver preload every worker imported BeautifulSoup,
+    markdownify, PyMuPDF and wafer for itself before doing any work: ~1.8 s
+    per worker in the Linux image, three workers per HTML page, which took a
+    1.8 MB amazon.com product page to ~10 s against fetch's 10 s default.
+    """
+
+    # Every function handed to run_isolated, by the name it is called with.
+    # A new one must be imported by _FORKSERVER_PRELOAD (add its module to
+    # _WORKER_TARGETS below) or each of its workers pays that import again.
+    _RUN_ISOLATED_CALLS = {
+        "_parse_response",
+        "parse_response",
+        "json.loads",
+        "parse_and_format_feed",
+        "inspect_html_preflight",
+        "js_render.collect_shell_evidence",
+        "_truncate_json_worker",
+        "parse_teamtailor_rss",
+    }
+    _WORKER_TARGETS = (
+        ("fetchaller.content.html", "_html_worker_from_pipe"),
+        ("fetchaller.content._isolated", "_worker_from_pipe"),
+        ("fetchaller.content.pdf", "_pdf_worker_from_pipe"),
+        ("fetchaller.content.html_preflight", "inspect_html_preflight"),
+        ("fetchaller.content.js_render", "collect_shell_evidence"),
+        ("fetchaller.content.forums", "parse_and_format_feed"),
+        ("fetchaller.content.teamtailor", "parse_teamtailor_rss"),
+        ("fetchaller.search.google", "parse_response"),
+        ("fetchaller.search.ddg", "_parse_response"),
+        ("fetchaller.search.brave", "_parse_response"),
+        ("fetchaller.tools.fetch", "_truncate_json_worker"),
+    )
+
+    def test_every_run_isolated_target_is_known(self):
+        import pathlib
+        import re
+
+        source_root = pathlib.Path(__file__).resolve().parents[1] / "src" / "fetchaller"
+        called = set()
+        for path in source_root.rglob("*.py"):
+            called.update(re.findall(r"\brun_isolated\(\s*([\w.]+)\s*,", path.read_text(encoding="utf-8")))
+        assert called == self._RUN_ISOLATED_CALLS
+
+    def test_preload_imports_every_worker_target_and_starts_no_threads(self):
+        import importlib
+        import json
+        import subprocess
+        import sys
+
+        from fetchaller.content.html import _FORKSERVER_PRELOAD
+
+        for module, name in self._WORKER_TARGETS:
+            assert callable(getattr(importlib.import_module(module), name))
+        script = (
+            "import json, sys, threading\n"
+            f"for module in {list(_FORKSERVER_PRELOAD)!r}:\n"
+            "    __import__(module)\n"
+            "print(json.dumps({'modules': sorted(sys.modules), 'threads': threading.active_count()}))\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=120, check=True
+        )
+        state = json.loads(completed.stdout.strip().splitlines()[-1])
+        loaded = set(state["modules"])
+        missing = [module for module, _name in self._WORKER_TARGETS if module not in loaded]
+        assert missing == []
+        # Forking a process that has other threads can deadlock its children.
+        assert state["threads"] == 1
+        # The preload is the parser layer, not the MCP server.
+        assert "fetchaller.server" not in loaded
+
+    def test_linux_forkserver_context_sets_the_preload(self, monkeypatch):
+        import multiprocessing.forkserver
+        import sys
+
+        from fetchaller.content import html
+
+        if "forkserver" not in multiprocessing.get_all_start_methods():
+            pytest.skip("no forkserver start method on this platform")
+        recorded = []
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(multiprocessing.forkserver, "set_forkserver_preload", recorded.append)
+        context = html._process_context()
+        assert context.get_start_method() == "forkserver"
+        assert recorded == [list(html._FORKSERVER_PRELOAD)]
+
+    def test_pdf_workers_share_the_preloaded_context(self):
+        from fetchaller.content import html, pdf
+
+        assert pdf._process_context is html._process_context
+
+    @pytest.mark.asyncio
+    async def test_forkserver_worker_starts_with_the_preload_imported(self):
+        import sys
+
+        from fetchaller.content.html import _FORKSERVER_PRELOAD, _process_context
+
+        if not sys.platform.startswith("linux") or _process_context().get_start_method() != "forkserver":
+            pytest.skip("workers start from a forkserver only on Linux")
+        # eval is a builtin, so unpickling it imports nothing in the worker:
+        # the module can only be there because the forkserver preloaded it.
+        expression = f"{_FORKSERVER_PRELOAD[0]!r} in __import__('sys').modules"
+        assert await run_isolated(eval, expression, timeout=30) is True

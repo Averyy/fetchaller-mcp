@@ -168,7 +168,10 @@ async def _run_engine(
     if provider == "brave":
         timeout = _BRAVE_TIMEOUT
     if provider == "ddg":
-        timeout += (page - 1) * _DDG_WALK_BUDGET
+        # One walk step per earlier page, and one for page 1's second ask when
+        # DuckDuckGo first says it found nothing (see ddg._fetch_first_page):
+        # each ask waits out the limiter's 6 s spacing and jitter.
+        timeout += page * _DDG_WALK_BUDGET
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout)
     except asyncio.CancelledError:

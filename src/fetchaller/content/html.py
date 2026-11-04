@@ -72,6 +72,15 @@ _PROCESS_POLL_INTERVAL = 0.01
 _HTML_SLOT_ATTRIBUTE = "_fetchaller_html_process_slots"
 _PROCESS_RUNTIME_WARM = False
 _PROCESS_RUNTIME_LOCK = threading.Lock()
+# Imported once by the forkserver, so every worker it forks starts with them.
+# Without this each worker imported the parser stack (BeautifulSoup,
+# markdownify, PyMuPDF, wafer) for itself before doing any work: ~1.8 s per
+# worker in the Linux image, three workers per HTML page, which put a 1.8 MB
+# amazon.com product page at ~10 s against fetch's 10 s default (2026-11-03).
+# This one module imports every function a worker is handed (the content
+# package, html_preflight, js_render, the feed and Teamtailor parsers, the
+# search providers' parsers) and not the MCP server. Imports start no threads.
+_FORKSERVER_PRELOAD = ("fetchaller.tools.fetch",)
 
 
 def _html_slots() -> asyncio.Semaphore:
@@ -97,7 +106,9 @@ def _process_context() -> multiprocessing.context.BaseContext:
         # Forkserver keeps worker creation isolated from the MCP server's
         # threads without paying Rosetta's synchronous spawn/import penalty
         # on every conversion.
-        return multiprocessing.get_context("forkserver")
+        context = multiprocessing.get_context("forkserver")
+        context.set_forkserver_preload(list(_FORKSERVER_PRELOAD))
+        return context
     return multiprocessing.get_context("spawn")
 
 

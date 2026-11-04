@@ -235,6 +235,28 @@ async def _fetch_page(
     return results, next_form, None
 
 
+async def _fetch_first_page(
+    session,
+    query: str,
+    pace: Pace | None,
+) -> tuple[list[SearchResult], dict[str, str] | None, str | None]:
+    """Page 1, asked a second time when DuckDuckGo says it found nothing.
+
+    DuckDuckGo's HTML endpoint sometimes answers an ordinary query with its own
+    "No results found for ..." block: "python asyncio tutorial" drew it 2 times
+    in about 25 searches on 2026-11-03 (on two wafer versions), with 10 results
+    on the very next ask. A query that really has no results gets the same
+    block, so the only way to tell them apart is to ask again. The second ask
+    goes through the same lock, pace and limiter (six-second spacing), and its
+    answer is the one returned, empty or not.
+    """
+    results, next_form, error = await _fetch_page(session, query, None, pace)
+    if error is None and not results:
+        _log("ddg explicit zero results on page 1; asking once more")
+        results, next_form, error = await _fetch_page(session, query, None, pace)
+    return results, next_form, error
+
+
 def _remember(state: _QueryPages, page: int, results: list[SearchResult], next_form: dict[str, str] | None) -> None:
     state.urls[page] = [r.url for r in results]
     if next_form is not None:
@@ -283,7 +305,7 @@ async def search_ddg(
         return [], f"DuckDuckGo paging is limited to {MAX_DDG_PAGE} pages"
 
     if page == 1:
-        results, next_form, error = await _fetch_page(session, query, None, pace)
+        results, next_form, error = await _fetch_first_page(session, query, pace)
         if error is None:
             state = _QueryPages()
             _remember(state, 1, results, next_form)
@@ -293,7 +315,7 @@ async def search_ddg(
     async with _pages_lock:
         state = _live_state(query)
         if state is None or 1 not in state.urls:
-            results, next_form, error = await _fetch_page(session, query, None, pace)
+            results, next_form, error = await _fetch_first_page(session, query, pace)
             if error is not None:
                 return [], error
             state = _QueryPages()

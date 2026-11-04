@@ -19,7 +19,7 @@ from ..content._price import has_positive_price, normalize_currency_signs
 from ..content.aliexpress import new_shopper_label
 from ..ratelimit import aliexpress_limiter
 from ..security.xss import safe_log_text
-from ..shopping_locale import shopping_locale
+from ..shopping_locale import locale_cookies, shopping_locale
 from .mtop import MTopClient
 from .reviews import fetch_reviews
 
@@ -756,6 +756,11 @@ async def _fetch_browser_product(
             cache_dir=get_wafer_cache_dir(),
             max_response_size=10 * 1024 * 1024,
         ) as session:
+            # The configured SHOPPING_* currency, as MTop is asked for it.
+            # wafer >= 0.7.11 seeds add_cookie() cookies into the render's
+            # browser; without this the page priced in the IP's currency.
+            for cookie in locale_cookies(product_url):
+                session.add_cookie(cookie, product_url)
             response = await session.render(
                 product_url,
                 timeout=remaining,

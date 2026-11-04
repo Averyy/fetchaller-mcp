@@ -103,10 +103,14 @@ def _log(msg: str) -> None:
 
 
 _session: wafer.AsyncSession | None = None
+_service_session: wafer.AsyncSession | None = None
+_search_session: wafer.AsyncSession | None = None
+_search_has_solver = False
 _session_lock = asyncio.Lock()
 
 
 async def _get_session() -> wafer.AsyncSession:
+    """Costco's pages and the older Fusion search service."""
     global _session
     if _session is None:
         async with _session_lock:
@@ -119,9 +123,59 @@ async def _get_session() -> wafer.AsyncSession:
     return _session
 
 
+# The site's page calls its catalogue (gdx-api) and location (ecom-api) services
+# cross-origin with fetch()'s default credentials, so neither request carries a
+# cookie (captured 2026-11-03). Ours used to share the page session, and once a
+# browser had signed a costco.com search, that session's jar, and the shared
+# cache_dir, held the page's consent cookie ``tcm`` (Domain=.costco.com, a JSON
+# value, expiring 2027). ecom-api answers any request carrying it with a bare
+# 403, so every later location read failed: costco.ca's at once, costco.com's
+# when its six-hour cache lapsed, in every session on that cache, across
+# restarts. So neither service session uses cache_dir, and the location reads
+# get a session no browser ever writes to.
+
+
+async def _get_service_session() -> wafer.AsyncSession:
+    """ecom-api's location services: no browser and no cache, so no page's cookies."""
+    global _service_session
+    if _service_session is None:
+        async with _session_lock:
+            if _service_session is None:
+                _service_session = wafer.AsyncSession(
+                    max_rotations=0,
+                    max_response_size=10 * 1024 * 1024,
+                )
+    return _service_session
+
+
+async def _get_search_session(browser_solver=None) -> wafer.AsyncSession:
+    """gdx-api's catalogue search, with the server's browser solver when given one.
+
+    costco.com's catalogue is behind Kasada, which refuses any call without the
+    per-request tokens the site's own script adds; cookies do not help. wafer
+    (>= 0.7.12) makes a refused call from inside the site's page in its
+    browser, so that script signs it, which needs a ``browser_solver`` here.
+    A session first built without one is rebuilt, once, when one is offered.
+    """
+    global _search_session, _search_has_solver
+    if _search_session is None or (browser_solver is not None and not _search_has_solver):
+        async with _session_lock:
+            if _search_session is None or (browser_solver is not None and not _search_has_solver):
+                _search_session = wafer.AsyncSession(
+                    browser_solver=browser_solver,
+                    max_rotations=0,
+                    max_response_size=10 * 1024 * 1024,
+                )
+                _search_has_solver = browser_solver is not None
+    return _search_session
+
+
 async def close_session() -> None:
-    global _session
+    global _session, _service_session, _search_session, _search_has_solver
     _session = None
+    _service_session = None
+    _search_session = None
+    _search_has_solver = False
 
 
 # ---------------------------------------------------------------------------

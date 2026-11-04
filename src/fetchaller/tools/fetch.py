@@ -386,6 +386,25 @@ def _canon_host(host: str) -> str:
     return h
 
 
+# Below this much of the budget a render fallback is not attempted, and a
+# challenge error says the budget, not the site, was the limit.
+_RENDER_MIN_SECONDS = 5
+
+
+def _pin_shop_locale(session, url: str) -> None:
+    """Add the shop's display-locale cookie (see shopping_locale.py) for ``url``.
+
+    Called before every request rather than once per session. wafer >= 0.7.11
+    carries ``add_cookie()`` cookies into renders and browser solves, but a
+    fingerprint rotation or a session retirement starts an empty jar, and a
+    challenged ``get()`` does both before it raises. Pinning once at session
+    creation therefore sent the render fallback, and any same-host hop after a
+    rotation, out in the IP's currency. A no-op for every other site.
+    """
+    for cookie in locale_cookies(url):
+        session.add_cookie(cookie, url)
+
+
 async def _render_after_challenge(
     session,
     url: str,
@@ -414,8 +433,9 @@ async def _render_after_challenge(
     if method != "GET" or browser_solver is None:
         return None
     remaining = deadline - time.monotonic()
-    if remaining <= 5:
+    if remaining <= _RENDER_MIN_SECONDS:
         return None
+    _pin_shop_locale(session, url)
     try:
         resp = await session.render(url, timeout=remaining)
     except Exception as exc:  # noqa: BLE001 - fall back to the original error
@@ -2506,12 +2526,9 @@ async def _fetch_url_impl(
             from .browse_reddit import _get_session
 
             return await _get_session(browser_solver)
-        session = _make_session(target_url)
-        # A shop's own currency/region preference (amazon.co.uk in pounds, not
-        # the egress IP's euros); see shopping_locale.py.
-        for cookie in locale_cookies(target_url):
-            session.add_cookie(cookie, target_url)
-        return session
+        # A shop's currency pin goes on before each request (_fetch_hop and the
+        # render fallback), not here; see _pin_shop_locale.
+        return _make_session(target_url)
 
     async def _safe_feed_get(feed_url: str):
         """SSRF-guarded GET for an autodiscovered feed URL. Its host comes from the
@@ -2599,6 +2616,10 @@ async def _fetch_url_impl(
                 hop_headers["Referer"] = "https://www.reddit.com/"
             if hop_headers:
                 kwargs["headers"] = hop_headers
+            if not is_reddit_request:
+                # A shop's currency pin (amazon.co.uk in pounds, not the egress
+                # IP's euros). Never on Reddit: no cookie of ours goes there.
+                _pin_shop_locale(session, request_url)
             if current_method == "GET":
                 return await session.get(request_url, **kwargs)
             if current_body is not None:
@@ -2793,6 +2814,16 @@ async def _fetch_url_impl(
             deadline=fetch_deadline,
         )
         if rendered is None:
+            message = describe_challenge(e.challenge_type)
+            if browser_solver is not None and fetch_deadline - time.monotonic() <= _RENDER_MIN_SECONDS:
+                # wafer clamps a browser solve to the caller's budget, so a
+                # challenge raised with the budget spent may only have run out
+                # of time. "Try again" then fails the same way: say what helps.
+                message += (
+                    f" It used up the {timeout}s timeout, and a browser solve can take"
+                    " 20-45 s (longer under emulation); retry with a larger timeout,"
+                    " e.g. timeout=60."
+                )
             challenged_host = (urlparse(current_url).hostname or "").lower()
             if (
                 browser_solver is not None
@@ -2804,8 +2835,8 @@ async def _fetch_url_impl(
                 from ..homedepot import com as _homedepot_com
 
                 note = _homedepot_com.page_hold_message(_homedepot_com.hold_pages())
-                return {"error": f"{describe_challenge(e.challenge_type)} {note[0].upper()}{note[1:]}."}
-            return {"error": describe_challenge(e.challenge_type)}
+                return {"error": f"{message} {note[0].upper()}{note[1:]}."}
+            return {"error": message}
         result = rendered
     except wafer.RateLimited as e:
         if is_reddit:

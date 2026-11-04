@@ -24,7 +24,7 @@ with redirect_stdout(StringIO()):
 
 from ..config import Config
 from ._slots import SlotHandle
-from .html import _worker_address_space_limit
+from .html import _process_context, _worker_address_space_limit
 
 
 @dataclass
@@ -60,20 +60,6 @@ def _pdf_slots() -> asyncio.Semaphore:
         slots = asyncio.Semaphore(_MAX_CONCURRENT_PDF_PROCESSES)
         setattr(loop, _PDF_SLOT_ATTRIBUTE, slots)
     return slots
-
-
-def _process_context() -> multiprocessing.context.BaseContext:
-    """Choose a safe context while keeping documented ``python -c`` use working."""
-    methods = multiprocessing.get_all_start_methods()
-    main_file = getattr(sys.modules.get("__main__"), "__file__", None)
-    if (not main_file or str(main_file).startswith("<")) and "fork" in methods:
-        # spawn/forkserver cannot re-import a ``-c`` or stdin main module.
-        # This fallback is limited to those interactive development entrypoints;
-        # the MCP server and normal scripts use an isolated clean-start method.
-        return multiprocessing.get_context("fork")
-    if sys.platform.startswith("linux") and "forkserver" in methods:
-        return multiprocessing.get_context("forkserver")
-    return multiprocessing.get_context("spawn")
 
 
 def _apply_worker_limits(timeout: float) -> None:

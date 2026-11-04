@@ -550,10 +550,10 @@ local Compose file requests amd64 automatically on Apple Silicon, and the
 
 **Local (stdio)**: Browser support is included by default, but protected-site
 solves require installed branded Google Chrome. Set `BROWSER_EXECUTABLE_PATH`
-to that executable. Matching wafer's current emulation is recommended so the
-browser and TLS identities stay aligned; the current Linux reference version
-and archive checksum are the `CHROME_VERSION` and `CHROME_SHA256` arguments in
-`Dockerfile`.
+to that executable. Matching the Chrome version wafer claims is recommended, so
+the browser and the plain client name the same Chrome; the current Linux
+reference version and archive checksum are the `CHROME_VERSION` and
+`CHROME_SHA256` arguments in `Dockerfile`.
 
 ## Architecture
 
@@ -605,7 +605,7 @@ CSR sites where HTML scraping produces garbage are intercepted in `fetch_url()` 
 - **Mouser** (`src/fetchaller/mouser/`) — Search API client. Requires `MOUSER_API_KEY`.
 - **DigiKey** (`src/fetchaller/digikey/`) — OAuth2 client_credentials API. Requires `DIGIKEY_CLIENT_ID` + `DIGIKEY_CLIENT_SECRET`.
 - **Ubiquiti / UniFi** (`src/fetchaller/ubiquiti/`) — `*.store.ui.com`, `techspecs.ui.com`, and `ui.com/qig/<slug>` installation guides. Store pages carry the price in their HTML but none of the technical specifications, which render client-side from `__NEXT_DATA__`; dispatch is by Next.js route, not URL shape. Guides are JS page assets of outlined vector art with no readable text, rebuilt into a PDF/PNG by `get_unifi_manual`.
-- **Costco** (`src/fetchaller/costco/`) — costco.com and costco.ca search and category pages from the catalogue search the sites themselves use (Google Retail Search behind `gdx-api.costco.com`), configured from each page's own published service config: prices, sale prices, promotions, delivery and warehouse stock for the site's default warehouse (named), ratings, item numbers, paging, sort, brand refinement, and the site's own keyword redirects ("tv" → TVs) followed and disclosed.
+- **Costco** (`src/fetchaller/costco/`) — costco.com and costco.ca search and category pages from the catalogue search the sites themselves use (Google Retail Search behind `gdx-api.costco.com`), configured from each page's own published service config: prices, sale prices, promotions, delivery and warehouse stock for the site's default warehouse (named), ratings, item numbers, paging, sort, brand refinement, and the site's own keyword redirects ("tv" → TVs) followed and disclosed. costco.com's catalogue is behind Kasada, so its searches go through the browser solver, where the site's own page signs them: 3-9 s on macOS and 15-25 s in the Linux image, so pass `timeout=60` there (and don't set `TZ=UTC`; see `TZ`).
 - **The Home Depot** (`src/fetchaller/homedepot/`) — homedepot.com and homedepot.ca, neither needing a browser. homedepot.com's pages sit behind Akamai's sensor challenge, but their data comes from the site's own federation-gateway GraphQL, which answers plainly: products (specs, per-store price and pickup stock, shipping), search and category listings (paging, sort, price range, refinements, keyword redirects followed and disclosed), reviews (pooled across variants, each sibling's review marked) and store pages. homedepot.ca is read from its Angular page state, its search API and its price service (sale was-prices live only there), in English and French.
 - **Marketplace Search** (`src/fetchaller/marketplace/`) — Unified orchestrator searching Kijiji, Craigslist, and Facebook Marketplace concurrently. Human-readable params mapped to platform-specific values. Auto-skips Kijiji for non-Canadian locations.
 - **Dayforce HCM** (`src/fetchaller/content/dayforce.py`) — Posting detail from SSR'd `__NEXT_DATA__`. Board listing via CSRF-protected POST to `/api/geo/{namespace}/jobposting/search` (NextAuth `/api/auth/csrf` round-trip required). White-label deployments on company domains are detected via `__NEXT_DATA__.runtimeConfig.BASE_URL` and rewritten to the canonical `jobs.dayforcehcm.com` board URL.
@@ -700,7 +700,7 @@ For Claude.ai web/mobile with cross-platform sync:
 | `RATE_LIMIT_REQUESTS` | 100 | Requests/minute per IP |
 | `DNS_DOH_FALLBACK` | `0` | Set to `1` to re-resolve against public DoH resolvers (1.1.1.1, 8.8.8.8) when the system resolver answers `0.0.0.0`/`::`. **Off by default:** that answer is usually a blocklist doing its job, and resolving past it overrides local DNS policy and discloses the hostname to a third party. Either way such hosts are reported as a DNS failure, not as a private-host block, so the resolver can be fixed instead. Fallback addresses still face the same private-range checks. |
 | `TRUSTED_PROXY_IPS` | — | Comma-separated addresses/CIDRs of reverse proxies whose rightmost `X-Forwarded-For` value is trusted |
-| `TZ` | `UTC` (container default) | Timezone of the challenge-solving browser. Set it to your server's public IP's zone (e.g. `America/Toronto`): some sites compare the browser's clock with the IP's location, and wafer logs a warning when the browser runs on UTC. |
+| `TZ` | `UTC` (container default) | Timezone of the challenge-solving browser. Set it to your server's public IP's zone (e.g. `America/Toronto`): some sites compare the browser's clock with the IP's location. With `TZ` unset on a UTC clock, wafer runs the browser on `Europe/London`, since a person's browser seldom reports UTC. A `TZ` naming UTC is kept, with a warning in the log; don't set one: costco.com's Kasada protection refused the site's own signed request from a browser on UTC, on a Canadian IP, and accepted it on `America/Toronto` and on `Europe/London`. |
 | `SHOPPING_COUNTRY`, `SHOPPING_CURRENCY` | — (each site picks from the egress IP) | Pin AliExpress (search and product details) and Alibaba product pages to a ship-to country (ISO 3166-1 alpha-2, e.g. `GB`) and currency (ISO 4217, e.g. `GBP`). Set both or neither. Without them those sites price by the server's IP, so a VPN exit in another country changes the currency and the VAT in every price; AliExpress product details default to `USD`/`US`. Alibaba search results are not affected. Amazon pages are always read in the marketplace's own currency (amazon.com in USD, amazon.co.uk in GBP), whatever these are set to. |
 | `MOUSER_API_KEY` | — | Mouser Search API key ([free registration](https://www.mouser.com/MyMouser/MouserSearchApplication.aspx)) |
 | `DIGIKEY_CLIENT_ID` | — | DigiKey API client ID ([free registration](https://developer.digikey.com)) |

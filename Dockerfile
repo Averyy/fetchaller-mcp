@@ -1,8 +1,8 @@
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
 
 ARG TARGETARCH
-ARG CHROME_VERSION=154.0.8037.92
-ARG CHROME_SHA256=ff43322f335e436b2f4dcdfeeec5db032299e335a7e8c1c618b326e100ce8732
+ARG CHROME_VERSION=157.0.8103.38
+ARG CHROME_SHA256=8cdeb344e9b2cefe59f4aea8d1d93d5d93054c03cde217665c16fc1f62e72a66
 
 WORKDIR /app
 
@@ -35,11 +35,21 @@ COPY src/ ./src/
 ENV HF_HOME=/app/model-cache
 
 # Install from the lockfile, browser runtime libraries, and the exact official
-# Chrome-for-Testing build whose major matches wafer/wreq's TLS emulation.
+# Chrome-for-Testing build of the Chrome version wafer's plain client claims.
+#
+# A session that solves anything in the browser takes on the browser's own
+# version, so the browser and the plain client must name the same Chrome.
+# wreq's newest TLS profile is 154; wafer claims current stable (157) over it,
+# because eBay's Akamai refused Linux clients claiming 154 where it served ones
+# claiming 157 with identical TLS and HTTP/2 (alternating runs, 2026-11-03).
+# With this image's browser on 154, every cold eBay search failed fetch's 10 s
+# default (0 of 6); on 157, 5 of 6 passed in 5-8 s. Later that day eBay's
+# verdict moved for both versions, so the version is one input to it, not all
+# of it. Move this pin with the version wafer claims.
 #
 # Using Patchright's moving ``chrome`` channel would silently upgrade the
-# browser ahead of wreq and split one protected session across different
-# browser/TLS identities. Chrome-for-Testing is an official Google build with
+# browser past that version and split one protected session across different
+# browser identities. Chrome-for-Testing is an official Google build with
 # immutable versioned archives. This build verifies the exact four-part version;
 # BrowserSolver validates branded Chrome and warns on a version mismatch. Google
 # publishes no Linux arm64 build, so fail that architecture explicitly;

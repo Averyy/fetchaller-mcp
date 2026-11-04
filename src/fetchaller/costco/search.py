@@ -11,8 +11,10 @@ Flow:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import sys
+import time
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
@@ -420,6 +422,15 @@ def _page_params(url: str) -> tuple[int, str | None, str | None]:
     return page, sort_by, (qs.get("refine") or [None])[0]
 
 
+# The older search service's read waits its turn behind Costco's request
+# spacing (2-3 s, ratelimit.costco_limiter) and then asks; with less left it
+# cannot answer, and trying only delays the catalogue's reason.
+_FALLBACK_MIN_SECONDS = 4.0
+# Kept back from the caller's timeout so that this read's own error, not
+# fetch's bare "timed out", is what the caller gets.
+_DEADLINE_RESERVE_SECONDS = 0.5
+
+
 async def search_costco(
     url: str,
     cache=None,
@@ -458,12 +469,26 @@ async def search_costco(
         category = urlparse(url).path.strip("/").removesuffix(".html").lower()
 
     _log(f"Costco.{domain} catalogue read (query_chars={len(query)}, category={bool(category)}, page={page})")
+    # One deadline for every call here, not the whole timeout each: the calls
+    # together overran fetch's own deadline, which then cancelled wafer in the
+    # middle of a browser solve (the next solve, 3 s later, failed at once with
+    # TargetClosedError, 2026-11-04). Given what is left, wafer ends a solve at
+    # its own deadline and the error can say the timeout was the limit.
+    deadline = time.monotonic() + timeout
+
+    def left() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise grs.GrsError(grs._out_of_time(timeout, browser_solver is not None))
+        return remaining
+
     try:
-        site = await grs.site_config(domain, url, timeout=timeout)
-        location = await grs.default_location(site, timeout=timeout)
+        site = await grs.site_config(domain, url, timeout=left())
+        location = await grs.default_location(site, timeout=left())
         data = await grs.search(
             site, location, query=query, category=category, page=page,
-            order_by=order_by, filters=filters, timeout=timeout,
+            order_by=order_by, filters=filters, timeout=left(),
+            browser_solver=browser_solver, requested_timeout=timeout,
         )
         redirected_to = None
         redirect = str((data.get("searchResult") or {}).get("redirectUri") or "")
@@ -480,7 +505,8 @@ async def search_costco(
             redirected_to = target
             data = await grs.search(
                 site, location, query="", category=category, page=page,
-                order_by=order_by, filters=filters, timeout=timeout,
+                order_by=order_by, filters=filters, timeout=left(),
+                browser_solver=browser_solver, requested_timeout=timeout,
             )
         content = format_grs_results(
             data, domain=domain, url=url, query=query, category=category, page=page,
@@ -495,13 +521,33 @@ async def search_costco(
 
     # Keyword search only: the older Fusion service still answers, but it is
     # not what the site shows, and it cannot follow a redirect to a category.
+    # It shares the deadline too. Run past it, it was cut off by fetch's own
+    # timeout, whose bare "timed out" replaced the catalogue's reason (the
+    # catalogue gave up at 9.4 s of 10, and the fallback queued behind Costco's
+    # 2-3 s request spacing, 2026-11-04). So it is tried only with time to
+    # answer, and ends a little before the deadline so this error is the one
+    # returned. Its session has no browser, so ending it cuts off no solve.
     start = search_params.get("start", 0)
-    data = await api.search(query=query, domain=domain, start=start)
+    remaining = deadline - time.monotonic() - _DEADLINE_RESERVE_SECONDS
+    if remaining < _FALLBACK_MIN_SECONDS:
+        return {
+            "error": (
+                "Costco search failed, and no time was left to try its older search "
+                f"service. {catalogue_error.rstrip('.')}."
+            )
+        }
+    try:
+        data = await asyncio.wait_for(api.search(query=query, domain=domain, start=start), remaining)
+    except TimeoutError:
+        _log(f"older search service did not answer within {remaining:.1f}s")
+        data = None
     if not data:
         return {
             "error": (
-                f"Costco search failed. {catalogue_error.rstrip('.')}, and the older "
-                "search service did not answer either."
+                # The catalogue's reason goes last: it can run to several
+                # sentences and end with what to change (TZ for Kasada).
+                "Costco search failed, and its older search service did not answer "
+                f"either. {catalogue_error.rstrip('.')}."
             )
         }
     items = api.parse_search_items(data, domain=domain)

@@ -30,16 +30,19 @@ account cookies or browser. Do not rotate IDs after HTTP 429; honor Google-wide
 backoff and Retry-After. Search engines match Reddit's default ten-request-per-minute
 budget per provider with at least six-second spacing. DDG/Brave add jitter,
 serialize the full HTTP exchange, disable hidden wafer retries, and enable
-wafer's own six-second limiter. A 429 holds that provider for 60 seconds; a 403
+wafer's own six-second limiter. DDG's page 1 is asked once more, through the
+same gate, when it answers its "No results found" block: it sometimes sends that
+for an ordinary query. A 429 holds that provider for 60 seconds; a 403
 (or DDG's blocking 202) holds it for 300 seconds, extended by longer Retry-After.
 Do not bypass the provider gate for `all` or Google fallback. Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.9 requires published
-wafer 0.7.11 or later (`add_cookie()` cookies reach the browser; 0.7.10 added
-Reddit's refused reads and GraphQL on the app route; 0.7.9 first carried the
-Brave handler), with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.10 requires published
+wafer 0.7.12 or later (Kasada-signed calls for costco.com, Chrome 157; 0.7.11
+carried `add_cookie()` cookies into the browser; 0.7.10 added Reddit's refused
+reads and GraphQL on the app route; 0.7.9 first carried the Brave handler),
+with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
 and start a provider cooldown. Never create an unrestricted search browser.
 Wafer 0.7.9 includes `d01c811`, fixing the accepted-reload deadlock and preserving gate
 evidence during fast spare-token recovery. Native headed/headless checks passed
@@ -174,11 +177,17 @@ sections (customer service drew none). With
 wafer >= 0.7.6 the browser solver clears that challenge on macOS (~6 s cold;
 6-9 s on 0.7.11, 2026-11-03), with plain reads after, and returns the server's
 own document. It also cleared it in the **Linux image** (~11 s cold) on
-2026-10-08, but **no longer did on 2026-11-03**: the solve ran to its ~142 s
-budget and failed on wafer 0.7.10 and 0.7.11 alike, with and without `TZ`,
-in the amd64 image under emulation on Apple Silicon (native amd64 not yet
-checked; `../wafer/todo-akamai-homedepot-linux-image-timeout.md`). Gateway
-reads are unaffected. Up to 0.7.5 Akamai refused every solve in the image:
+2026-10-08, but on wafer 0.7.10 and 0.7.11 **no longer did** (2026-11-03): the
+solve ran to its ~142 s budget and failed, with and without `TZ`. The cause was
+wafer's: its user-agent override placed Accept-Language right after
+User-Agent, an order no stock Chrome sends, which homedepot.com's Akamai
+refuses from Linux and Windows. wafer 0.7.12 sets the languages with a
+Chrome flag instead; through fetchaller in the image a `/c/` page then read in
+17.4 s cold (2026-11-03, amd64 under emulation on Apple Silicon). The browser's
+version mattered too: after the image moved to Chrome 157 (2026-11-04), 0.7.11
+passed 3 of 4 there, a pre-release 0.7.12 4 of 4 (12.6-15.5 s) and the
+released 0.7.12 1 of 1 (18.8 s). Gateway
+reads were unaffected throughout. Up to 0.7.5 Akamai refused every solve in the image:
 with no GPU, Chrome drew WebGL on Mesa's llvmpipe, which Akamai rejects; 0.7.6
 renders on SwiftShader there. That was wafer's to fix and was fixed there. The
 solved document can carry one inline `<script>` the plain one lacks
@@ -403,8 +412,40 @@ searches; a category has no fallback and errors instead. **costco.com's
 catalogue is behind Kasada (2026-11-03):** its own page signs the search POST
 with per-request `x-kpsdk-ct/cd/h/v` headers, and ours draws an empty
 `text/plain` 429 carrying `x-kpsdk-*` (Fusion answers 403). That is active
-blocking, so it is wafer's (`../wafer/todo-kasada-api-post-costco.md`); the
-error names the Kasada refusal. costco.ca still answers.
+blocking and wafer's: wafer 0.7.12 has the site's own page sign a
+refused call in its browser, so the search session must carry the server's
+`browser_solver`. Every refused call goes through the browser (3-9 s on macOS,
+15-25 s in the image). **Kasada scores the signing browser's clock:** from
+the image on a Canadian IP, with the browser on UTC, the page's own signed call
+was refused 0 of 4, and on `America/Toronto` it passed. wafer 0.7.12
+runs a browser that would inherit a UTC system clock on Europe/London, which
+passed from the same image and IP with no `TZ` set (6 of 6), and keeps a
+`TZ` that names UTC, so a refusal says to change `TZ` only when `TZ` names UTC
+(README). Kasada's verdict on the image's browser moves with no change on our
+side: on 2026-11-04 it passed 7 of 7 cold searches there through 09:43 and
+refused the signed call 2 of 2 at 11:24-11:30 on the same wafer code, with
+macOS passing between them (`../wafer/todo-kasada-costco-linux-image-refused.md`).
+Never loop costco.com to measure it. costco.ca still answers plain.
+**The service calls carry no cookies, because the site's do not:** its page
+calls gdx-api and ecom-api cross-origin with `fetch()`'s default credentials.
+On the shared page session, one signed search put the page's consent cookie
+`tcm` (`Domain=.costco.com`, a JSON value, expiring 2027) into the jar and the
+shared `cache_dir`, and ecom-api answers any request carrying it with a bare
+403: every later location read failed, costco.ca's at once and costco.com's
+when its six-hour cache lapsed, in every session on that cache, across
+restarts. So ecom-api reads use a session with no browser and no `cache_dir`,
+and the search one with the browser and no `cache_dir` (`costco/api.py`).
+wafer 0.7.12 no longer hands the page's cookies back from a signed call
+(none reached the jar or `cache_dir`, 2026-11-03), but the sessions stay apart
+because the site's own calls carry none: never move either back onto the page
+session. wafer hands back the same unsigned 429 whether the signed call was
+refused, the solve ran out of time, or the browser failed before signing (right
+after a solve cut off in the SDK wait, 2026-11-04), so a refusal never claims a
+call was signed; one that used up its timeout says to raise it. Every call in a
+read shares the caller's one deadline (`search_costco`): given the whole timeout
+each, they overran `fetch`'s, which cancelled wafer mid-solve. The Fusion
+fallback shares it too, and is skipped with under 4 s left: run late, it was cut
+off by `fetch`'s timeout, whose bare "timed out" replaced the catalogue's reason.
 
 ### Facebook Marketplace
 
@@ -436,8 +477,10 @@ converted figure is Amazon's estimate, not the listing's price; AliExpress
 Alibaba search ignores the cookie, so never describe it as pinned. wafer
 >= 0.7.11 carries `add_cookie()` cookies into renders and solves (up to 0.7.10
 the browser started without them and its cookie replaced the pin), but a
-fingerprint rotation or session retirement still empties the jar, so on a
-shared session re-add the cookie before every request.
+fingerprint rotation or session retirement still empties the jar, so re-add
+the cookie before every request on any session. A challenged `get()` rotates
+and retires before it raises, so the render fallback after it is a request
+like any other (`fetch._pin_shop_locale`).
 AliExpress formats GBP with the fullwidth `￡`, so prices pass through
 `_price.normalize_currency_signs`. AliExpress's `zero_result` is not "nothing
 matches": price-sorted searches with a price band answer it while counting

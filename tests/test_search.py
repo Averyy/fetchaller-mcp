@@ -268,6 +268,47 @@ class TestDDGPaging:
         assert error
         session.get.assert_not_awaited()
 
+    _NO_RESULTS = (
+        '<html><body><div class="no-results">'
+        "No results found for <b>python asyncio tutorial</b>.</div></body></html>"
+    )
+
+    async def test_an_empty_first_page_is_asked_once_more(self):
+        # DDG answered "python asyncio tutorial" with its no-results block 2
+        # times in ~25 on 2026-11-03, and with 10 results on the next ask.
+        session = self._session(self._page(["https://a.example/1"]))
+        session.get = AsyncMock(side_effect=[self._resp(self._NO_RESULTS), self._resp(self._page(["https://a.example/1"]))])
+        calls = []
+
+        async def pace():
+            calls.append(1)
+
+        results, error = await ddg_search(session, "python asyncio tutorial", 1, pace=pace)
+        assert error is None
+        assert [r.url for r in results] == ["https://a.example/1"]
+        assert session.get.await_count == 2
+        assert len(calls) == 2  # the second ask is paced like the first
+
+    async def test_a_query_with_no_results_stays_empty_after_one_more_ask(self):
+        session = self._session(self._NO_RESULTS)
+        session.get = AsyncMock(return_value=self._resp(self._NO_RESULTS))
+        results, error = await ddg_search(session, "zzqx nothing matches", 1)
+        assert (results, error) == ([], None)
+        assert session.get.await_count == 2  # asked twice, never more
+
+    async def test_a_walk_from_an_empty_first_page_asks_once_more(self):
+        session = self._session(
+            self._page(["https://a.example/1"], next_s=1),
+            self._page(["https://a.example/2"], next_s=2),
+        )
+        session.get = AsyncMock(
+            side_effect=[self._resp(self._NO_RESULTS), self._resp(self._page(["https://a.example/1"], next_s=1))]
+        )
+        results, error = await ddg_search(session, "q", 2)
+        assert error is None
+        assert [r.url for r in results] == ["https://a.example/2"]
+        assert session.get.await_count == 2
+
 
 class TestBrave:
     """Brave is one GET per page: `offset` is the zero-based page index."""

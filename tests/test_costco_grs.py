@@ -7,7 +7,9 @@ rendered "No products found". These tests pin the replacement's behaviour,
 including the fallbacks that keep a failure from reading as an empty shelf.
 """
 
+import asyncio
 import json
+import time
 
 import pytest
 
@@ -239,6 +241,113 @@ class TestSearchCostcoFlow:
         assert "older search service" in result["content"]
         assert "Laptop" in result["content"]
 
+    async def test_every_call_shares_the_callers_timeout(self, monkeypatch):
+        # Each call used to get the whole timeout, so together they overran
+        # fetch's own deadline, which cancelled wafer mid-solve (2026-11-04).
+        clock = [500.0]
+        config = parse_site_config(PAGE, "ca")
+        budgets = []
+
+        async def site_config(*args, timeout, **kwargs):
+            budgets.append(("config", timeout))
+            clock[0] += 1.0
+            return config
+
+        async def default_location(*args, timeout, **kwargs):
+            budgets.append(("location", timeout))
+            clock[0] += 0.5
+            return LOCATION
+
+        async def fake_search(config, location, **kwargs):
+            budgets.append(("search", kwargs["timeout"], kwargs["requested_timeout"]))
+            clock[0] += 3.0
+            if kwargs["query"]:
+                return {"searchResult": {"results": [], "totalSize": 0, "redirectUri": "/televisions.html"}}
+            return DATA
+
+        monkeypatch.setattr(costco_search.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(grs, "site_config", site_config)
+        monkeypatch.setattr(grs, "default_location", default_location)
+        monkeypatch.setattr(grs, "search", fake_search)
+        result = await costco_search.search_costco("https://www.costco.ca/s?keyword=tv", timeout=10)
+
+        assert "content" in result
+        assert budgets == [
+            ("config", 10.0), ("location", 9.0), ("search", 8.5, 10), ("search", 5.5, 10),
+        ]
+
+    async def test_a_spent_budget_says_so_instead_of_starting_a_call(self, monkeypatch):
+        clock = [500.0]
+        config = parse_site_config(PAGE, "ca")
+        searched = []
+
+        async def slow_config(*args, timeout, **kwargs):
+            clock[0] += 11.0
+            return config
+
+        async def fake_search(*args, **kwargs):
+            searched.append(kwargs)
+            return DATA
+
+        fusion_calls = []
+
+        async def fusion(**kwargs):
+            fusion_calls.append(kwargs)
+            return None
+
+        monkeypatch.setattr(costco_search.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(grs, "site_config", slow_config)
+        monkeypatch.setattr(grs, "search", fake_search)
+        monkeypatch.setattr(costco_search.api, "search", fusion)
+        result = await costco_search.search_costco("https://www.costco.com/s?keyword=laptop", timeout=10)
+
+        assert searched == []
+        assert fusion_calls == []
+        assert "used up the 10s timeout" in result["error"]
+
+    async def test_a_late_refusal_keeps_its_reason_instead_of_trying_the_older_service(self, monkeypatch):
+        # The catalogue gave up at 9.4 s of 10; the older service then queued
+        # behind Costco's request spacing, fetch's own timeout cut it off, and
+        # its bare "timed out" replaced the catalogue's reason (2026-11-04).
+        clock = [500.0]
+        fusion_calls = []
+
+        async def late_refusal(*args, **kwargs):
+            clock[0] += 9.4
+            raise grs.GrsError(grs._kasada_refusal(429, True, timeout=10))
+
+        async def fusion(**kwargs):
+            fusion_calls.append(kwargs)
+            return None
+
+        monkeypatch.setattr(costco_search.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(grs, "search", late_refusal)
+        monkeypatch.setattr(costco_search.api, "search", fusion)
+        result = await costco_search.search_costco("https://www.costco.com/s?keyword=laptop", timeout=10)
+
+        assert fusion_calls == []
+        assert "no time was left to try its older search service" in result["error"]
+        assert "did not finish within the 10s timeout" in result["error"]
+        assert "timeout=60" in result["error"]
+
+    async def test_the_older_service_ends_before_the_callers_deadline(self, monkeypatch):
+        async def failing(*args, **kwargs):
+            raise grs.GrsError("HTTP 503")
+
+        async def hanging_fusion(**kwargs):
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(costco_search, "_FALLBACK_MIN_SECONDS", 0.05)
+        monkeypatch.setattr(costco_search, "_DEADLINE_RESERVE_SECONDS", 0.1)
+        monkeypatch.setattr(grs, "search", failing)
+        monkeypatch.setattr(costco_search.api, "search", hanging_fusion)
+        started = time.monotonic()
+        result = await costco_search.search_costco("https://www.costco.ca/s?keyword=laptop", timeout=0.4)
+
+        assert time.monotonic() - started < 0.4
+        assert "older search service did not answer either" in result["error"]
+        assert "HTTP 503" in result["error"]
+
     async def test_both_services_failing_names_the_catalogue_refusal(self, monkeypatch):
         async def refused(*args, **kwargs):
             raise grs.GrsError(
@@ -256,6 +365,22 @@ class TestSearchCostcoFlow:
         assert "content" not in result
         assert "Kasada bot protection (HTTP 429)" in result["error"]
         assert "older search service did not answer either" in result["error"]
+
+    async def test_both_catalogue_reads_get_the_browser_solver(self, monkeypatch):
+        # costco.com's Kasada-gated search is signed by the site's own script in
+        # wafer's browser, which needs the server's solver on the search session.
+        solver = object()
+        seen = []
+
+        async def fake_search(config, location, **kwargs):
+            seen.append(kwargs.get("browser_solver"))
+            if kwargs["query"]:
+                return {"searchResult": {"results": [], "totalSize": 0, "redirectUri": "/televisions.html"}}
+            return DATA
+
+        monkeypatch.setattr(grs, "search", fake_search)
+        await costco_search.search_costco("https://www.costco.com/s?keyword=tv", browser_solver=solver)
+        assert seen == [solver, solver]
 
     async def test_a_category_has_no_silent_fallback(self, monkeypatch):
         async def failing(*args, **kwargs):
@@ -297,7 +422,7 @@ async def test_a_category_slug_cannot_break_out_of_its_filter(monkeypatch):
     class Session:
         post = staticmethod(fake_post)
 
-    monkeypatch.setattr(grs, "_get_session", lambda: _resolve(Session()))
+    monkeypatch.setattr(grs, "_get_search_session", lambda *a: _resolve(Session()))
     await grs.search(config, LOCATION, query="", category='tv") OR ("x', timeout=5)
     assert seen["body"]["filterBy"][0] == 'attributes.category_uri: ANY("tv\\") OR (\\"x")'
 
@@ -348,21 +473,114 @@ class TestCatalogueRefusal:
     async def _search(self, monkeypatch, response):
         config = parse_site_config(PAGE, "ca")
 
-        async def session():
+        async def session(*args):
             return _Session(response)
 
         async def no_wait(*args, **kwargs):
             return None
 
-        monkeypatch.setattr(grs, "_get_session", session)
+        monkeypatch.setattr(grs, "_get_search_session", session)
         monkeypatch.setattr(grs.costco_limiter, "wait", no_wait)
         return await grs.search(config, LOCATION, query="laptop", timeout=5)
 
     async def test_kasada_refusal_is_named(self, monkeypatch):
         response = _Response(429, {"content-type": "text/plain;charset=UTF-8", "x-kpsdk-ct": "0fh", "x-kpsdk-r": "1-AA"})
 
-        with pytest.raises(grs.GrsError, match="Kasada bot protection \\(HTTP 429\\)"):
+        with pytest.raises(grs.GrsError, match="Kasada bot protection \\(HTTP 429\\)") as caught:
             await self._search(monkeypatch, response)
+        assert "no browser is available here" in str(caught.value)
+
+    async def _signed_search(self, monkeypatch, *, timeout, elapsed, wait=0.0, requested_timeout=None, posts=None):
+        """A refused search with a browser: the limiter holds it *wait* seconds
+        and the POST takes *elapsed*."""
+        response = _Response(429, {"content-type": "text/plain;charset=UTF-8", "x-kpsdk-ct": "0fh", "x-kpsdk-r": "1-AA"})
+        clock = [1000.0]
+        posts = [] if posts is None else posts
+
+        class _SlowSession:
+            async def post(self, *args, **kwargs):
+                posts.append(kwargs["timeout"])
+                clock[0] += elapsed
+                return response
+
+        async def session(*args):
+            return _SlowSession()
+
+        async def limiter_wait(*args, **kwargs):
+            clock[0] += wait
+
+        monkeypatch.delenv("TZ", raising=False)
+        monkeypatch.setattr(grs.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(grs, "_get_search_session", session)
+        monkeypatch.setattr(grs.costco_limiter, "wait", limiter_wait)
+        config = parse_site_config(PAGE, "ca")
+        with pytest.raises(grs.GrsError) as caught:
+            await grs.search(
+                config, LOCATION, query="laptop", timeout=timeout, browser_solver=object(),
+                requested_timeout=requested_timeout,
+            )
+        return str(caught.value)
+
+    async def test_a_refusal_that_used_up_the_timeout_says_to_raise_it(self, monkeypatch):
+        # In the Linux image a signed search takes 15-25 s; at fetch's 10 s
+        # default wafer gave up on the browser and handed back the unsigned
+        # 429, which used to be reported as refused "even when ... signed".
+        message = await self._signed_search(monkeypatch, timeout=10, elapsed=9.2)
+        assert "did not finish within the 10s timeout" in message
+        assert "timeout=60" in message
+        assert "even when" not in message
+
+    async def test_a_refusal_with_time_left_does_not_claim_a_signed_call(self, monkeypatch):
+        # wafer hands back the same unsigned 429 when the browser fails before
+        # signing anything: right after a cancelled solve, the next one failed
+        # at once with TargetClosedError and was reported as refused "even when
+        # the site's own page signed it" (2026-11-04).
+        message = await self._signed_search(monkeypatch, timeout=90, elapsed=19.5)
+        assert "the browser, which has the site's own page sign it, did not get it through" in message
+        assert "even when" not in message
+        assert "timeout" not in message
+
+    async def test_the_out_of_time_message_names_the_callers_timeout(self, monkeypatch):
+        # search_costco hands each call what is left of the caller's budget.
+        message = await self._signed_search(monkeypatch, timeout=7.4, elapsed=7.0, requested_timeout=10)
+        assert "did not finish within the 10s timeout" in message
+
+    async def test_the_limiters_wait_comes_out_of_the_budget(self, monkeypatch):
+        posts = []
+        await self._signed_search(monkeypatch, timeout=10, elapsed=1.0, wait=2.5, posts=posts)
+        assert posts == [7.5]
+
+    async def test_a_budget_spent_waiting_sends_nothing(self, monkeypatch):
+        posts = []
+        message = await self._signed_search(monkeypatch, timeout=2, elapsed=1.0, wait=2.5, posts=posts)
+        assert posts == []
+        assert "used up the 2s timeout" in message
+        assert "timeout=60" in message
+
+    @pytest.mark.parametrize(
+        ("tz", "named"),
+        [
+            ("UTC", True),
+            ("Etc/UTC", True),
+            (":UTC", True),
+            ("", True),
+            ("America/Toronto", False),
+            ("Europe/London", False),
+            (None, False),
+        ],
+    )
+    def test_a_refused_signed_call_names_utc_only_when_tz_does(self, monkeypatch, tz, named):
+        # From the Linux image Kasada refused even the page's own signed call
+        # with the browser on UTC, and accepted it on a named zone (2026-11-03).
+        # With no TZ, wafer runs a browser that would inherit a UTC system clock
+        # on Europe/London, so only a TZ naming UTC leaves it there.
+        if tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", tz)
+        message = grs._kasada_refusal(429, had_browser=True)
+        assert "did not get it through" in message
+        assert ("set TZ" in message) is named
 
     async def test_plain_rate_limit_is_not_called_kasada(self, monkeypatch):
         response = _Response(429, {"content-type": "text/plain", "retry-after": "30"})
@@ -371,3 +589,80 @@ class TestCatalogueRefusal:
             await self._search(monkeypatch, response)
 
         assert str(caught.value) == "Costco's catalogue search returned HTTP 429"
+
+
+class TestServiceRequestsCarryNoCookies:
+    """The site's page calls ecom-api and gdx-api cross-origin with fetch()'s
+    default credentials, so neither carries a cookie (captured 2026-11-03).
+    Once a browser had signed a costco.com search, the shared session and
+    cache_dir held the page's consent cookie ``tcm`` (Domain=.costco.com, JSON
+    value, expiring 2027), and ecom-api refused every location read with 403."""
+
+    async def test_location_reads_use_the_cookie_free_session(self, monkeypatch):
+        used = []
+
+        class Session:
+            def __init__(self, name):
+                self.name = name
+
+            async def get(self, url, headers=None, timeout=None):
+                used.append(self.name)
+
+                class R:
+                    status_code = 200
+
+                    @staticmethod
+                    def json():
+                        return {}
+
+                return R()
+
+        monkeypatch.setattr(grs, "_get_session", lambda: _resolve(Session("page")))
+        monkeypatch.setattr(grs, "_get_search_session", lambda *a: _resolve(Session("search")))
+        monkeypatch.setattr(grs, "_get_service_session", lambda: _resolve(Session("service")))
+        await grs._get_json("https://ecom-api.costco.com/core/warehouse-locator/v1/salesLocations.json", {}, timeout=5)
+        assert used == ["service"]
+
+    async def test_the_search_post_uses_the_search_session_with_the_solver(self, monkeypatch):
+        config = parse_site_config(PAGE, "ca")
+        solver = object()
+        offered = []
+
+        async def search_session(browser_solver=None):
+            offered.append(browser_solver)
+            return _Session(_Response(200, {}, {"searchResult": {"results": [], "totalSize": 0}}))
+
+        async def no_wait(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(grs, "_get_search_session", search_session)
+        monkeypatch.setattr(grs.costco_limiter, "wait", no_wait)
+        await grs.search(config, LOCATION, query="laptop", timeout=5, browser_solver=solver)
+        assert offered == [solver]
+
+    async def test_neither_service_session_shares_the_cache(self, monkeypatch):
+        from fetchaller.costco import api
+
+        built = []
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                built.append(kwargs)
+
+        monkeypatch.setattr(api.wafer, "AsyncSession", FakeSession)
+        await api.close_session()
+        solver = object()
+        try:
+            await api._get_service_session()
+            await api._get_search_session()
+            await api._get_search_session(solver)  # rebuilt once a solver is offered
+            await api._get_search_session(solver)  # and then kept
+            await api._get_session()
+        finally:
+            await api.close_session()
+
+        service, search_cold, search_solver, page = built
+        assert "cache_dir" not in service and "browser_solver" not in service
+        assert "cache_dir" not in search_cold and search_cold["browser_solver"] is None
+        assert "cache_dir" not in search_solver and search_solver["browser_solver"] is solver
+        assert "cache_dir" in page  # pages keep the shared cache

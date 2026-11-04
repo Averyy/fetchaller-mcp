@@ -1876,6 +1876,40 @@ class TestErrorHandling:
             result = await fetch_url("https://protected.example.com")
         assert "error" in result
         assert "cloudflare" in result["error"].lower()
+        assert "larger timeout" not in result["error"]  # no browser: the budget was not the limit
+
+    @_PATCH_SSRF
+    async def test_a_challenge_that_spent_the_budget_says_to_raise_the_timeout(self, _mock_ssrf):
+        # eBay from the Linux image, 2026-11-03: a cold read goes through the
+        # browser (5-25 s), so the 10 s default failed with "Try again", and
+        # trying again at 10 s fails the same way.
+        import wafer
+
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.ChallengeDetected("akamai", "https://www.ebay.ca/sch/i.html", 403))
+        with _patch_wafer(session):
+            result = await fetch_url("https://www.ebay.ca/sch/i.html?_nkw=x", timeout=3, browser_solver=object())
+        assert "akamai" in result["error"]
+        assert "used up the 3s timeout" in result["error"]
+        assert "timeout=60" in result["error"]
+
+    @_PATCH_SSRF
+    async def test_a_challenge_with_budget_left_keeps_the_plain_message(self, _mock_ssrf):
+        import wafer
+
+        from fetchaller.tools.fetch import fetch_url
+
+        session = MockWaferSession()
+        session.get = AsyncMock(side_effect=wafer.ChallengeDetected("akamai", "https://www.ebay.ca/sch/i.html", 403))
+        with (
+            _patch_wafer(session),
+            patch("fetchaller.tools.fetch._render_after_challenge", AsyncMock(return_value=None)),
+        ):
+            result = await fetch_url("https://www.ebay.ca/sch/i.html?_nkw=x", timeout=60, browser_solver=object())
+        assert "could not be bypassed" in result["error"]
+        assert "larger timeout" not in result["error"]
 
     @_PATCH_SSRF
     async def test_reddit_refused_explicit_json_never_reaches_the_browser(self, _mock_ssrf):
@@ -2926,3 +2960,68 @@ class TestShopLocaleCookies:
             await fetch_url(url)
 
         assert session.cookies == []
+
+    @_PATCH_SSRF
+    async def test_every_same_host_hop_is_pinned(self, _mock_ssrf):
+        # A same-host redirect reuses the session, and a rotation on the first
+        # hop empties its jar (wafer 0.7.11), so the pin goes on per request.
+        from fetchaller.tools.fetch import fetch_url
+
+        short = "https://www.amazon.co.uk/dp/B0D9LTCDRR"
+        canonical = "https://www.amazon.co.uk/Widget/dp/B0D9LTCDRR"
+        page = "<html><body><h1>Widget</h1><p>Real product text.</p></body></html>"
+        redirect = MockResponse(b"", "text/html", 301, short, headers={"location": canonical})
+        session = _CookieRecordingSession(
+            responses={short: redirect},
+            default=_html_response(page, canonical),
+        )
+
+        with _patch_wafer(session):
+            result = await fetch_url(short)
+
+        assert "error" not in result
+        pin = "i18n-prefs=GBP; Domain=amazon.co.uk; Path=/"
+        assert session.cookies == [(pin, short), (pin, canonical)]
+
+    async def test_render_fallback_repins_an_emptied_jar(self, monkeypatch):
+        # A challenged get() rotates and retires before it raises, and both
+        # start an empty jar. The render that follows must carry the pin again,
+        # which wafer >= 0.7.11 seeds into the browser.
+        from fetchaller.tools.fetch import _render_after_challenge
+
+        monkeypatch.setenv("SHOPPING_COUNTRY", "GB")
+        monkeypatch.setenv("SHOPPING_CURRENCY", "GBP")
+        url = "https://www.aliexpress.com/item/1005006367324382.html"
+
+        class Response:
+            status_code = 200
+            headers = {"content-type": "text/html"}
+            content = b"<html><body>GBP 9.99</body></html>"
+
+        class RetiredSession:
+            def __init__(self):
+                self.jar: list[tuple[str, str]] = []  # emptied by the retirement
+                self.jar_at_render: list[tuple[str, str]] | None = None
+
+            def add_cookie(self, raw_set_cookie, cookie_url):
+                self.jar.append((raw_set_cookie, cookie_url))
+
+            async def render(self, render_url, timeout=None):
+                self.jar_at_render = list(self.jar)
+                response = Response()
+                response.url = render_url
+                return response
+
+        session = RetiredSession()
+        out = await _render_after_challenge(
+            session,
+            url,
+            method="GET",
+            browser_solver=object(),
+            deadline=time.monotonic() + 60,
+        )
+
+        assert out is not None
+        assert session.jar_at_render == [
+            ("aep_usuc_f=site=glo&c_tp=GBP&region=GB&b_locale=en_US; Domain=.aliexpress.com; Path=/", url)
+        ]

@@ -28,6 +28,7 @@ the output names the warehouse a price belongs to.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
@@ -38,7 +39,7 @@ import wafer
 
 from ..content._json_extract import extract_json_object
 from ..ratelimit import costco_limiter
-from .api import _get_session, _log
+from .api import _get_search_session, _get_service_session, _get_session, _log
 
 ORIGIN = {"com": "https://www.costco.com", "ca": "https://www.costco.ca"}
 SITE_CODE = {"com": "USBC", "ca": "CABC"}
@@ -243,9 +244,10 @@ async def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> obj
     Not spaced by ``costco_limiter``: these are two small reads on a separate
     service, made once per cache window, and the site makes them in parallel
     with its own page load. Spacing them 2 s apart pushed a cold search past
-    the fetch tool's 10 s default.
+    the fetch tool's 10 s default. Read with no cookies, as the site reads them
+    (see ``api._get_service_session``).
     """
-    session = await _get_session()
+    session = await _get_service_session()
     response = await session.get(url, headers={"Accept": "application/json", **headers}, timeout=timeout)
     if response.status_code != 200:
         raise GrsError(f"{url.split('?')[0]} returned HTTP {response.status_code}")
@@ -327,8 +329,19 @@ async def search(
     order_by: str | None = None,
     filters: list[str] | None = None,
     timeout: float,
+    browser_solver=None,
+    requested_timeout: float | None = None,
 ) -> dict:
-    """One page of results, exactly as the site's own request builds it."""
+    """One page of results, exactly as the site's own request builds it.
+
+    ``browser_solver`` lets wafer have the site's own script sign the call when
+    Kasada refuses it (costco.com); see ``api._get_search_session``.
+    ``timeout`` bounds the whole call, the limiter's spacing included, so a
+    browser solve ends at wafer's own deadline rather than being cancelled by
+    the caller's. ``requested_timeout`` is the caller's whole budget, named in
+    the error when this call used up its share (default ``timeout``).
+    """
+    called = time.monotonic()
     filter_by = list(filters or [])
     if category:
         filter_by.insert(0, f"attributes.category_uri: ANY({json.dumps(category)})")
@@ -351,8 +364,13 @@ async def search(
         "pageCategories": [category] if category else [],
     }
     origin = ORIGIN[config.domain]
-    session = await _get_session()
+    session = await _get_search_session(browser_solver)
     await costco_limiter.wait()
+    started = time.monotonic()
+    named = requested_timeout or timeout
+    timeout -= started - called
+    if timeout <= 0:
+        raise GrsError(_out_of_time(named, browser_solver is not None))
     response = await session.post(
         config.search_endpoint,
         json=body,
@@ -370,12 +388,19 @@ async def search(
             # costco.com, 2026-11-03: an empty text/plain 429 carrying
             # x-kpsdk-ct/x-kpsdk-r, where the site's own page sends per-request
             # Kasada tokens (x-kpsdk-ct/cd/h/v) with this POST. That is bot
-            # protection refusing the request, which is wafer's to clear.
-            raise GrsError(
-                f"Costco's catalogue search refused the request with its Kasada bot "
-                f"protection (HTTP {response.status_code}); the site's own page sends "
-                "Kasada tokens with this request"
-            )
+            # protection refusing the request, which is wafer's to clear: with
+            # a browser solver it has the page sign the call. Reaching here
+            # means there was no browser, or the browser did not get the call
+            # through: its signed call was refused, the timeout ran out, or the
+            # browser failed before signing anything (TargetClosedError right
+            # after a cancelled solve, 2026-11-04). wafer hands back the
+            # unsigned refusal in every case, so only the time spent tells one
+            # of them apart.
+            out_of_time = timeout - (time.monotonic() - started) <= _SIGN_MIN_SECONDS
+            raise GrsError(_kasada_refusal(
+                response.status_code, browser_solver is not None,
+                timeout=named if out_of_time else None,
+            ))
         raise GrsError(f"Costco's catalogue search returned HTTP {response.status_code}")
     try:
         data = response.json()
@@ -384,6 +409,74 @@ async def search(
     if not isinstance(data, dict) or not isinstance(data.get("searchResult"), dict):
         raise GrsError("Costco's catalogue search returned no search result")
     return data
+
+
+# The zone names of a UTC clock. The browser takes its time zone from TZ, and
+# wafer (>= 0.7.12) runs one that would inherit a UTC system clock on
+# Europe/London instead, so it is on UTC only where TZ names UTC.
+_UTC_ZONES = frozenset(
+    {
+        "UTC", "UCT", "GMT", "GMT0", "Zulu", "Universal", "Greenwich",
+        "Etc/UTC", "Etc/UCT", "Etc/GMT", "Etc/GMT0", "Etc/GMT+0", "Etc/GMT-0",
+        "Etc/Zulu", "Etc/Universal", "Etc/Greenwich",
+    }
+)  # fmt: skip
+
+
+def _tz_names_utc() -> bool:
+    """Whether TZ puts the browser this process starts on UTC."""
+    tz = os.environ.get("TZ")
+    if tz is None:
+        return False
+    name = tz.strip().lstrip(":")
+    return not name or name in _UTC_ZONES
+
+
+# A refused call with less than this left of its timeout ran out of time in the
+# browser rather than being refused signed. Signing loads the site's page and
+# makes the call there: 3-9 s on macOS, 15-25 s in the Linux image (2026-11-03).
+_SIGN_MIN_SECONDS = 5
+
+
+def _out_of_time(timeout: float, had_browser: bool) -> str:
+    """The catalogue search's budget was spent before its request went out."""
+    message = f"Costco's catalogue search used up the {timeout:g}s timeout"
+    if had_browser:
+        message += " (costco.com's search goes through the browser, where a signed search can take 15-25 s)"
+    return f"{message}; retry with a larger timeout, e.g. timeout=60"
+
+
+def _kasada_refusal(status: int, had_browser: bool, timeout: float | None = None) -> str:
+    """What to tell the caller when Kasada refuses the catalogue search.
+
+    *timeout* is set when the refused call used up its timeout, so the browser
+    may never have finished signing it. Otherwise the message still does not
+    say the call was signed: wafer hands back the same unsigned refusal when
+    the browser fails before signing anything.
+    """
+    message = f"Costco's catalogue search refused the request with its Kasada bot protection (HTTP {status})"
+    if not had_browser:
+        return (
+            f"{message}. The site's own page signs this request with per-request Kasada "
+            "tokens, and no browser is available here to have it sign ours"
+        )
+    if timeout is not None:
+        return (
+            f"{message}, and the browser that has the site's own page sign it did not "
+            f"finish within the {timeout:g}s timeout. A signed search can take 15-25 s; "
+            "retry with a larger timeout, e.g. timeout=60"
+        )
+    message += ", and the browser, which has the site's own page sign it, did not get it through"
+    if _tz_names_utc():
+        # Measured from the Linux image on a Canadian IP, 2026-11-03: the page's
+        # own signed call was refused with the browser on UTC (0 of 4) and
+        # accepted on America/Toronto and on Europe/London, same code and IP.
+        message += (
+            ". TZ on this server names UTC, which puts the browser on UTC, and Kasada "
+            "refused the browser on UTC where it accepted it on named time zones; set TZ "
+            "to the zone of this server's public IP (e.g. TZ=America/Toronto)"
+        )
+    return message
 
 
 def _text(attrs: dict, key: str) -> list[str]:

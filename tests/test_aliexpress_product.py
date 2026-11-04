@@ -1,7 +1,7 @@
 """Unit tests for AliExpress product module."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -380,6 +380,38 @@ class TestBrowserProductFallback:
         )
 
         assert result is None
+
+    @pytest.mark.asyncio
+    @patch("fetchaller.aliexpress.product.wafer.AsyncSession")
+    async def test_browser_fallback_renders_in_the_configured_currency(
+        self,
+        session_factory,
+        monkeypatch,
+    ):
+        # MTop is asked for SHOPPING_CURRENCY; the browser fallback must be too.
+        # wafer >= 0.7.11 seeds add_cookie() cookies into the render's browser.
+        monkeypatch.setenv("SHOPPING_COUNTRY", "GB")
+        monkeypatch.setenv("SHOPPING_CURRENCY", "GBP")
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = None
+        session.add_cookie = MagicMock()
+        session.render.return_value.status_code = 200
+        session.render.return_value.url = "https://www.aliexpress.com/item/1005006367324383.html"
+        session_factory.return_value = session
+
+        await _fetch_browser_product(
+            "1005006367324382",
+            browser_solver=object(),
+            deadline=asyncio.get_running_loop().time() + 10,
+        )
+
+        url = "https://www.aliexpress.com/item/1005006367324382.html"
+        session.add_cookie.assert_called_once_with(
+            "aep_usuc_f=site=glo&c_tp=GBP&region=GB&b_locale=en_US; Domain=.aliexpress.com; Path=/",
+            url,
+        )
+        session.render.assert_awaited_once()
 
 
 class TestUsefulProductData:
