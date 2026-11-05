@@ -28,6 +28,7 @@ import re
 import sys
 import time
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import wafer
 
@@ -127,6 +128,28 @@ def _release(sent_at: float | None = None) -> None:
         return
     _hold_until = 0.0
     _hold_length = 0.0
+
+
+def _referer(page_url: str | None) -> str:
+    """The Referer of a gateway call: the page being read, on the gateway's origin.
+
+    The site calls the gateway from the page that shows the data (a product page
+    asks ``productClientOnlyProduct``, a search page ``searchModel``), so that
+    page is where the call comes from, not the site's root. It also decides
+    where wafer clears Akamai when it routes a refused call through the browser:
+    on 2026-11-05 a product page's clearance carried to the gateway and the
+    root's did not (the root is never refused, so its script never ran). The
+    host is always www.homedepot.com and the fragment is dropped, as a browser
+    sends it; anything unprintable falls back to the root.
+    """
+    root = f"{COM_ORIGIN}/"
+    if not page_url:
+        return root
+    parts = urlsplit(page_url)
+    referer = f"{COM_ORIGIN}{parts.path or '/'}" + (f"?{parts.query}" if parts.query else "")
+    if any(ord(ch) <= 0x20 or ord(ch) >= 0x7F for ch in referer):
+        return root
+    return referer
 
 
 def _minutes(seconds: float) -> str:
@@ -280,7 +303,15 @@ def _refusal(response) -> str:
     )
 
 
-async def _post(operation: str, query: str, variables: dict, *, experience: str, timeout: float) -> dict:
+async def _post(
+    operation: str,
+    query: str,
+    variables: dict,
+    *,
+    experience: str,
+    timeout: float,
+    page_url: str | None = None,
+) -> dict:
     """Run one gateway operation and return its ``data``.
 
     A GraphQL error is raised, never returned as empty data: the gateway answers
@@ -303,18 +334,34 @@ async def _post(operation: str, query: str, variables: dict, *, experience: str,
     if (remaining := _hold_until - _clock()) > 0:
         raise held_error(remaining)
     sent_at = _clock()
-    response = await session.post(
-        f"{GATEWAY}?opname={operation}",
-        json={"operationName": operation, "variables": variables, "query": query},
-        headers={
-            "x-experience-name": experience,
-            "x-hd-dc": "origin",
-            "x-debug": "false",
-            "Origin": COM_ORIGIN,
-            "Referer": f"{COM_ORIGIN}/",
-        },
-        timeout=timeout,
-    )
+    try:
+        response = await session.post(
+            f"{GATEWAY}?opname={operation}",
+            json={"operationName": operation, "variables": variables, "query": query},
+            headers={
+                "x-experience-name": experience,
+                "x-hd-dc": "origin",
+                "x-debug": "false",
+                "Origin": COM_ORIGIN,
+                "Referer": _referer(page_url),
+            },
+            timeout=timeout,
+        )
+    except (wafer.ChallengeDetected, wafer.RateLimited) as exc:
+        # wafer raises, rather than returns, an answer it reads as a refusal
+        # (a 429 after its retries, a challenge it could not solve, and the
+        # edge's 206 once wafer classifies it). It is the same refusal, so it
+        # holds the gateway the same way: unheld, every read went straight back
+        # into it.
+        refused = exc.response
+        held = _hold()
+        status = getattr(refused, "status_code", None) or getattr(exc, "status_code", None)
+        _log(f"{operation}: refused ({type(exc).__name__}, HTTP {status}); holding the gateway for {held:.0f}s")
+        reason = _refusal(refused) if refused is not None else (
+            f"homedepot.com's data gateway was refused (HTTP {status})" if status
+            else "homedepot.com's data gateway was refused"
+        )
+        raise GatewayError(f"{reason}. Not calling it again for {_minutes(held)}") from exc
     if response.status_code != 200:
         if _edge_refused(response):
             held = _hold()
@@ -340,13 +387,14 @@ async def _post(operation: str, query: str, variables: dict, *, experience: str,
     return data
 
 
-async def fetch_product(item_id: str, *, timeout: float) -> dict:
+async def fetch_product(item_id: str, *, timeout: float, page_url: str | None = None) -> dict:
     data = await _post(
         "productClientOnlyProduct",
         PRODUCT_QUERY,
         {"itemId": item_id, "storeId": DEFAULT_STORE_ID},
         experience="general-merchandise",
         timeout=timeout,
+        page_url=page_url,
     )
     product = data.get("product")
     if not isinstance(product, dict):
@@ -385,7 +433,12 @@ def _search_variables(target: ComTarget, nav_param: str | None, keyword: str | N
 
 
 async def fetch_listing(
-    target: ComTarget, *, timeout: float, nav_param: str | None = None, keyword: str | None = None
+    target: ComTarget,
+    *,
+    timeout: float,
+    nav_param: str | None = None,
+    keyword: str | None = None,
+    page_url: str | None = None,
 ) -> dict:
     """One page of a search or category listing (the ``searchModel``)."""
     nav = nav_param if nav_param is not None else target.nav_param
@@ -396,6 +449,7 @@ async def fetch_listing(
         _search_variables(target, nav, kw),
         experience="search-desktop" if kw else "browse-desktop",
         timeout=timeout,
+        page_url=page_url,
     )
     model = data.get("searchModel")
     if not isinstance(model, dict):
@@ -403,7 +457,9 @@ async def fetch_listing(
     return model
 
 
-async def fetch_reviews(target: ComTarget, *, timeout: float) -> tuple[dict | None, dict]:
+async def fetch_reviews(
+    target: ComTarget, *, timeout: float, page_url: str | None = None
+) -> tuple[dict | None, dict]:
     """Product identity plus one page of its reviews, in one request.
 
     Home Depot pools reviews across a product's variant family: a page for
@@ -430,6 +486,7 @@ async def fetch_reviews(target: ComTarget, *, timeout: float) -> tuple[dict | No
         # query under this one answered 17,411 reviews, page by page.
         experience="paginated-product-reviews",
         timeout=timeout,
+        page_url=page_url,
     )
     reviews = data.get("reviews")
     if not isinstance(reviews, dict):
@@ -438,7 +495,9 @@ async def fetch_reviews(target: ComTarget, *, timeout: float) -> tuple[dict | No
     return product, reviews
 
 
-async def fetch_store(store_id: str, store_zip: str, *, timeout: float) -> tuple[dict, str | None]:
+async def fetch_store(
+    store_id: str, store_zip: str, *, timeout: float, page_url: str | None = None
+) -> tuple[dict, str | None]:
     """One store's record, plus a note when the URL's store has moved.
 
     ``storeDetails(storeId)`` exists but carries almost nothing (no name, hours,
@@ -457,6 +516,7 @@ async def fetch_store(store_id: str, store_zip: str, *, timeout: float) -> tuple
         {"storeSearchInput": store_zip, "pagesize": "40", "radius": "50"},
         experience="general-merchandise",
         timeout=timeout,
+        page_url=page_url,
     )
     stores = [s for s in ((data.get("storeSearch") or {}).get("stores")) or [] if isinstance(s, dict)]
     # The search zero-pads ids ("0121") while store URLs do not ("/30339/121").

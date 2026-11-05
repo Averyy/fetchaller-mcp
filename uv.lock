@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "fetchaller-mcp"
-version = "3.8.10"
+version = "3.8.11"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -428,7 +428,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.12" },
+    { name = "wafer-py", extras = ["browser"], specifier = ">=0.7.13" },
 ]
 provides-extras = ["dev"]
 
@@ -1646,15 +1646,15 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.7.12"
+version = "0.7.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/14/0f/fd9ad9f7a34d2e8c0f861c4ca10efc04cdff3ccf483614fcc09f7df3682e/wafer_py-0.7.12.tar.gz", hash = "sha256:8d7bf541ee2a45cee6494863fd5f8280b9a0ad48abd152d0ab4f11c3a7868c3e", size = 1926081, upload-time = "2026-11-04T15:52:55.636Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/26/7b/67721ceda814b1642d253921a6153ea0f39ba4fbdafd41f2998e7b0c455a/wafer_py-0.7.13.tar.gz", hash = "sha256:132748245af2a16c0e819de4cb91af070ecafc562bc0a8cf7eed7a27040ac97b", size = 1930207, upload-time = "2026-11-05T09:21:31.936Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/e2/f30503d0244281a8075b4c693ae840af1a493132522e729a19c23a825207/wafer_py-0.7.12-py3-none-any.whl", hash = "sha256:f29f219bfa9366717994f819891fa3657bb8a31ec77f90142591db2ae601017f", size = 673748, upload-time = "2026-11-04T15:52:53.617Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/97/063bce325500dcaec96d622fa5d712fe197a3c2512e35d8a2bd6f310da36/wafer_py-0.7.13-py3-none-any.whl", hash = "sha256:18aeeab499c544b3a4f7fda9a761b8751837959757b4088a994b00f2be4a1efb", size = 674389, upload-time = "2026-11-05T09:21:29.9Z" },
 ]
 
 [package.optional-dependencies]

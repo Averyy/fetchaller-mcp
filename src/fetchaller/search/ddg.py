@@ -78,7 +78,10 @@ def extract_results(html: str) -> list[SearchResult]:
         if not link or not link.get("href"):
             continue
 
-        title = link.get_text(strip=True)
+        # The page's own spacing, collapsed. get_text(strip=True) stripped each
+        # text node and joined them with nothing, so every term DDG bolds ran
+        # into its neighbours: "ExploreRust'sborrowcheckerand learn".
+        title = " ".join(link.get_text().split())
         if not title:
             continue
 
@@ -95,7 +98,7 @@ def extract_results(html: str) -> list[SearchResult]:
 
         # Extract snippet
         snippet_el = result_div.select_one(".result__snippet")
-        snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+        snippet = " ".join(snippet_el.get_text().split()) if snippet_el else ""
 
         results.append(
             SearchResult(
@@ -160,6 +163,11 @@ def _offset(form: dict[str, str] | None) -> int:
 def _url_key(url: str) -> str:
     return url.split("#")[0].rstrip("/")
 
+
+NO_RESULTS_TWICE = (
+    'DuckDuckGo answered "No results found" twice; it sometimes says that to every query for '
+    "minutes at a time, so it is not reported as an empty result"
+)
 
 _request_lock = asyncio.Lock()
 _backoff_until = 0.0
@@ -245,15 +253,25 @@ async def _fetch_first_page(
     DuckDuckGo's HTML endpoint sometimes answers an ordinary query with its own
     "No results found for ..." block: "python asyncio tutorial" drew it 2 times
     in about 25 searches on 2026-11-03 (on two wafer versions), with 10 results
-    on the very next ask. A query that really has no results gets the same
-    block, so the only way to tell them apart is to ask again. The second ask
-    goes through the same lock, pace and limiter (six-second spacing), and its
-    answer is the one returned, empty or not.
+    on the very next ask. The second ask goes through the same lock, pace and
+    limiter (six-second spacing).
+
+    Two such answers are reported as DuckDuckGo's failure, not as an empty
+    result. On 2026-11-05 it gave that block to every query for minutes on end
+    (04:26-04:31 EST at least), from macOS and the Linux image, to a GET and to
+    its own form's POST alike, so a second empty answer says little about the
+    query. A genuinely empty query is rare there: the day before, it returned
+    ten results for "zxqvjw plorkfinnet qqzrtx". Reported, the miss reaches the
+    caller as a failure and Google's fallback goes on to Brave, where an empty
+    answer would have stopped the chain at "No results found".
     """
     results, next_form, error = await _fetch_page(session, query, None, pace)
     if error is None and not results:
         _log("ddg explicit zero results on page 1; asking once more")
         results, next_form, error = await _fetch_page(session, query, None, pace)
+        if error is None and not results:
+            _log("ddg explicit zero results twice; reported as a failure, not an empty result")
+            return [], None, NO_RESULTS_TWICE
     return results, next_form, error
 
 

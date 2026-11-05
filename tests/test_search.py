@@ -16,7 +16,7 @@ from src.fetchaller.search import brave as brave_mod
 from src.fetchaller.search import ddg as ddg_mod
 from src.fetchaller.search.brave import extract_results as brave_extract
 from src.fetchaller.search.brave import fetch_brave
-from src.fetchaller.search.ddg import MAX_DDG_PAGE
+from src.fetchaller.search.ddg import MAX_DDG_PAGE, NO_RESULTS_TWICE
 from src.fetchaller.search.ddg import extract_results as ddg_extract
 from src.fetchaller.search.ddg import search_ddg as ddg_search
 
@@ -73,6 +73,24 @@ class TestDDGExtraction:
         assert results[0].url == "https://example.com/page"
         assert results[0].snippet == "This is a snippet about the page."
         assert results[1].url == "https://other.com/"
+
+    def test_bolded_terms_keep_their_spaces(self):
+        # DDG bolds the query's terms; their spaces live in the text between.
+        html = (
+            '<div class="result"><a class="result__a" href="https://a.example/1">Rust <b>borrow</b> checker</a>'
+            '<a class="result__snippet">Explore <b>Rust&#x27;s</b> <b>borrow</b> <b>checker</b> and learn. '
+            "To accomplish this, <b>Rust</b> uses a\xa0borrowing mechanism.</a></div>"
+        )
+        [result] = ddg_extract(html)
+        assert result.title == "Rust borrow checker"
+        assert result.snippet == (
+            "Explore Rust's borrow checker and learn. To accomplish this, Rust uses a borrowing mechanism."
+        )
+
+    def test_captured_page_snippets_keep_their_spaces(self):
+        results = ddg_extract((FIXTURES / "ddg_html.html").read_text())
+        joined = " ".join(r.snippet for r in results)
+        assert "Python'sasyncio" not in joined and "Python's asyncio" in joined
 
     def test_empty_html_returns_empty(self):
         """Empty HTML returns no results."""
@@ -289,12 +307,23 @@ class TestDDGPaging:
         assert session.get.await_count == 2
         assert len(calls) == 2  # the second ask is paced like the first
 
-    async def test_a_query_with_no_results_stays_empty_after_one_more_ask(self):
+    async def test_two_no_results_answers_are_a_failure_not_an_empty_result(self):
+        # On 2026-11-05 DDG answered every query this way for minutes, GET and
+        # its own form's POST alike; an empty result would have read as an answer.
         session = self._session(self._NO_RESULTS)
         session.get = AsyncMock(return_value=self._resp(self._NO_RESULTS))
-        results, error = await ddg_search(session, "zzqx nothing matches", 1)
-        assert (results, error) == ([], None)
+        results, error = await ddg_search(session, "rust borrow checker explained", 1)
+        assert results == []
+        assert error == NO_RESULTS_TWICE
         assert session.get.await_count == 2  # asked twice, never more
+
+    async def test_a_walk_from_two_empty_first_pages_reports_the_failure(self):
+        session = self._session(self._NO_RESULTS)
+        session.get = AsyncMock(return_value=self._resp(self._NO_RESULTS))
+        session.post = AsyncMock()
+        results, error = await ddg_search(session, "q", 2)
+        assert (results, error) == ([], NO_RESULTS_TWICE)
+        session.post.assert_not_awaited()
 
     async def test_a_walk_from_an_empty_first_page_asks_once_more(self):
         session = self._session(
@@ -339,6 +368,20 @@ class TestBrave:
         session = MagicMock()
         session.get = AsyncMock(return_value=resp)
         return session
+
+    def test_bolded_terms_take_no_extra_space(self):
+        html = (
+            '<div class="snippet svelte-x" data-type="web" data-pos="0">'
+            '<a href="https://a.example/1"><div class="title">The <strong>asyncio</strong> docs</div></a>'
+            '<div class="content"><div class="generic-snippet">Source code: Lib/<strong>asyncio</strong>/queues.py. '
+            "Write concurrent code with <strong>asyncio</strong>, using the async/await <strong>syntax</strong>."
+            "</div></div></div>"
+        )
+        [result] = brave_extract(html)
+        assert result.title == "The asyncio docs"
+        assert result.snippet == (
+            "Source code: Lib/asyncio/queues.py. Write concurrent code with asyncio, using the async/await syntax."
+        )
 
     def test_extracts_only_organic_web_snippets(self):
         cluster = '<div class="snippet" data-type="cluster"><a href="https://news.example/x"><div class="title">News</div></a></div>'
@@ -621,6 +664,23 @@ class TestUnifiedSearch:
             result = await search("query")
         assert [c.args[0] for c in run.await_args_list] == ["google", "ddg", "brave"]
         assert "automatic fallback to brave" in result["content"] and "[brave]" in result["content"]
+
+    async def test_ddgs_repeated_no_results_moves_the_fallback_on_to_brave(self, search_state):
+        rows, _ = google.parse_response(captured_response().text)
+        with patch.object(
+            search_mod, "_run_engine", AsyncMock(side_effect=[([], "HTTP 429"), ([], NO_RESULTS_TWICE), (rows, None)])
+        ) as run:
+            result = await search("rust borrow checker explained")
+        assert [c.args[0] for c in run.await_args_list] == ["google", "ddg", "brave"]
+        text = result["content"]
+        assert "[brave]" in text and "No results found." not in text.split("Provider failures:")[0]
+        assert 'ddg: DuckDuckGo answered "No results found" twice' in text
+
+    async def test_explicit_ddg_with_repeated_no_results_is_a_failure(self, search_state):
+        with patch.object(search_mod, "_run_engine", AsyncMock(return_value=([], NO_RESULTS_TWICE))):
+            result = await search("rust borrow checker explained", provider="ddg")
+        assert "Search FAILED" in result["error"]
+        assert "not reported as an empty result" in result["error"]
 
     async def test_deep_page_fallback_skips_ddg(self, search_state):
         rows, _ = google.parse_response(captured_response("page2").text)

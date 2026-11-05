@@ -32,14 +32,17 @@ budget per provider with at least six-second spacing. DDG/Brave add jitter,
 serialize the full HTTP exchange, disable hidden wafer retries, and enable
 wafer's own six-second limiter. DDG's page 1 is asked once more, through the
 same gate, when it answers its "No results found" block: it sometimes sends that
-for an ordinary query. A 429 holds that provider for 60 seconds; a 403
+for an ordinary query. Two such answers are DDG's failure, never an empty result,
+so Google's fallback goes on to Brave: on 2026-11-05 it sent that block to every
+query for minutes, from macOS and the image, to a GET and its form's POST. A 429 holds that provider for 60 seconds; a 403
 (or DDG's blocking 202) holds it for 300 seconds, extended by longer Retry-After.
 Do not bypass the provider gate for `all` or Google fallback. Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.10 requires published
-wafer 0.7.12 or later (Kasada-signed calls for costco.com, Chrome 157; 0.7.11
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.11 requires published
+wafer 0.7.13 or later (Linux and Windows `platformVersion` as Chrome reports
+it; 0.7.12 added Kasada-signed calls for costco.com and Chrome 157; 0.7.11
 carried `add_cookie()` cookies into the browser; 0.7.10 added Reddit's refused
 reads and GraphQL on the app route; 0.7.9 first carried the Brave handler),
 with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
@@ -216,7 +219,24 @@ from one. (wafer 0.7.6 also stopped keeping a rejected solve's cookies.)
 `com.py` still holds the gateway after any 206, failing reads at once and saying
 when it will try again, and one failed solve still holds homedepot.com pages
 (the HTML path) for 10 minutes, since a solve that fails tends to fail every
-time it is retried.
+time it is retried. A refusal wafer *raises* (`ChallengeDetected`,
+`RateLimited`, with the answer on `.response`) holds the gateway exactly like
+one it returns; unheld, reads went straight back into it. Every gateway call
+sends the page being read as its Referer (a followed redirect, its target's
+page), on www.homedepot.com without the fragment, not the root: that is the
+page the call is made for, and where wafer clears Akamai when it routes a
+refused call through the browser.
+**From the Linux image the gateway is refused (2026-11-05):** a cold,
+cookie-less POST drew the edge's 206 in the image on 0.7.12 and wafer's tree
+alike while macOS passed seconds later, after passing in the image every time
+before. wafer found nothing on the wire that differs (same headers, JA4,
+HTTP/2 fingerprint and IP; it follows the container's connections, whichever
+edge they reach), and a product page's browser clearance carried to the
+gateway where the root's did not (03:22). The verdict on the image worsened
+with each of about ten visits: by 04:45 the product page itself was refused
+through a reload. Both sessions stopped homedepot.com traffic from the image;
+no fix can be verified there until it recovers. Open with wafer
+(`../wafer/todo-homedepot-gateway-206-linux-image.md`).
 
 Prices, pickup stock and badges are **per store**: quote store #121
 (Cumberland, GA), the one the site assigns with none selected, and name it

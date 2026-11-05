@@ -1,5 +1,41 @@
 # Changelog
 
+## 3.8.11 (2026-11-05)
+
+Requires wafer 0.7.13.
+
+- **wafer 0.7.13** reports the platform version as Chrome does: an empty
+  `Sec-CH-UA-Platform-Version` on Linux (it sent the kernel's, `7.0.0` in the
+  image, which no Linux Chrome sends) and the Windows API contract version on
+  Windows (it sent the OS build).
+- **Home Depot's data gateway is asked from the page being read.** Every
+  product, listing, review and store read sent homedepot.com's root page as
+  its Referer; it now sends the page being read (a followed keyword redirect,
+  its target), which is also where wafer clears Akamai's check when it routes
+  a refused call through the browser. In the Linux image a product page's
+  clearance carried to the gateway and the root's did not (2026-11-05).
+- **A refusal wafer raises holds the gateway too.** The gateway is held for
+  10 minutes (doubling) after Akamai refuses it, so reads fail at once
+  instead of going back into the refusal. That held only for a refusal wafer
+  returned; one it raised (a 429 after its retries, an unsolved challenge)
+  went through unheld. Both now hold, with the edge's own message.
+- **DuckDuckGo's "No results found" is no longer taken at its word twice.**
+  3.8.10 asked page 1 once more when DuckDuckGo said it found nothing, and
+  let a second empty answer stand. On 2026-11-05 it gave that answer to every
+  query for minutes on end, so a search reported "No results found" and
+  Google's fallback stopped there. Two such answers are now DuckDuckGo's
+  failure: an explicit DuckDuckGo search says so, and the fallback goes on to
+  Brave.
+- **Search snippets keep their spaces.** DuckDuckGo bolds the query's terms,
+  and its snippets lost the spaces around every one ("ExploreRust'sborrowchecker
+  and learn"). Brave's had the opposite fault, a space before punctuation after
+  a bolded term and inside paths ("syntax .", "Lib/ asyncio /queues.py").
+  Both now keep the page's own spacing.
+
+Known issue, open with wafer: from the Linux image, homedepot.com's gateway
+has refused product reads since 2026-11-05 (Akamai's 206 "Generic errors" on
+the first request) while macOS reads them; the error names the refusal.
+
 ## 3.8.10 (2026-11-04)
 
 Requires wafer 0.7.12.

@@ -70,12 +70,15 @@ def extract_results(html: str) -> list[SearchResult]:
             continue
 
         title_el = snippet.select_one(".title")
-        title = title_el.get_text(" ", strip=True) if title_el else ""
+        # The page's own spacing, collapsed. A space between every text node put
+        # one before punctuation after each bolded term and inside paths
+        # ("syntax .", "Lib/ asyncio /queues.py").
+        title = " ".join(title_el.get_text().split()) if title_el else ""
         if not title:
             continue
 
         desc_el = snippet.select_one(".generic-snippet") or snippet.select_one(".content")
-        description = desc_el.get_text(" ", strip=True) if desc_el else ""
+        description = " ".join(desc_el.get_text().split()) if desc_el else ""
 
         results.append(
             SearchResult(

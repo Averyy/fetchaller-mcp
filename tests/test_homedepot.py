@@ -433,7 +433,7 @@ class TestGateway:
     async def test_keyword_redirect_is_followed_with_the_callers_paging(self, monkeypatch):
         calls = []
 
-        async def fake_listing(target, *, timeout, nav_param=None, keyword=None):
+        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None):
             calls.append((nav_param, keyword, target.start_index))
             if nav_param is None:
                 return {"searchReport": None, "metadata": {"searchRedirect": "/b/DEWALT/N-5yc1vZ4j2?NCNI-5"}, "products": []}
@@ -445,7 +445,7 @@ class TestGateway:
         assert "sends the search \"dewalt\" to https://www.homedepot.com/b/DEWALT/N-5yc1vZ4j2" in result["content"]
 
     async def test_unknown_category_is_an_error_not_an_empty_listing(self, monkeypatch):
-        async def fake_listing(target, *, timeout, nav_param=None, keyword=None):
+        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None):
             return {"searchReport": None, "metadata": {}, "products": []}
 
         monkeypatch.setattr(com, "fetch_listing", fake_listing)
@@ -522,6 +522,63 @@ class TestGateway:
         answers.append(_Answered())
         await com.fetch_product("1", timeout=5)
         assert (com._hold_until, com._hold_length) == (0.0, 0.0)
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            pytest.param("challenge", id="ChallengeDetected"),
+            pytest.param("ratelimited", id="RateLimited"),
+        ],
+    )
+    async def test_a_refusal_wafer_raises_holds_the_gateway_too(self, monkeypatch, exc):
+        """wafer raising the refusal, instead of returning it, must not skip the hold.
+
+        wafer's planned classification of the edge's 206 raises
+        ChallengeDetected("akamai") on a browser-free session, with the 206 on
+        ``.response``; a 429 after its retries is RateLimited.
+        """
+        posts = []
+
+        class _Refused:
+            status_code = 206 if exc == "challenge" else 429
+            headers = {"server": "AkamaiGHost", "content-type": "application/json"}
+
+            def json(self):
+                return {"error": [{"message": "Generic errors"}]}
+
+        url = f"{com.GATEWAY}?opname=productClientOnlyProduct"
+
+        class _Session:
+            async def post(self, *args, **kwargs):
+                posts.append(1)
+                if exc == "challenge":
+                    raise wafer.ChallengeDetected("akamai", url, 206, response=_Refused())
+                raise wafer.RateLimited(url, retry_after=None, response=_Refused())
+
+        monkeypatch.setattr(com, "get_session", lambda: _resolve(_Session()))
+        with pytest.raises(com.GatewayError) as excinfo:
+            await com.fetch_product("204279858", timeout=5)
+        status = 206 if exc == "challenge" else 429
+        assert str(excinfo.value) == (
+            f"homedepot.com's data gateway returned HTTP {status} from its Akamai edge: Generic errors. "
+            "Not calling it again for 10 minutes"
+        )
+        with pytest.raises(com.GatewayError, match="not calling it again for 10 minutes"):
+            await com.fetch_product("204279858", timeout=5)
+        assert len(posts) == 1  # held: the second read never reached the gateway
+
+    async def test_a_raised_refusal_without_a_response_still_holds(self, monkeypatch):
+        class _Session:
+            async def post(self, *args, **kwargs):
+                raise wafer.ChallengeDetected("akamai", com.GATEWAY, 403)
+
+        monkeypatch.setattr(com, "get_session", lambda: _resolve(_Session()))
+        with pytest.raises(com.GatewayError) as excinfo:
+            await com.fetch_product("1", timeout=5)
+        assert str(excinfo.value) == (
+            "homedepot.com's data gateway was refused (HTTP 403). Not calling it again for 10 minutes"
+        )
+        assert com._hold_until > com._clock()
 
     async def test_the_hold_stops_doubling_at_its_cap(self, monkeypatch):
         clock = [0.0]
@@ -894,6 +951,67 @@ async def test_the_first_service_call_loads_a_page_even_just_after_boot(monkeypa
     assert calls[0] == ("page", "https://www.homedepot.ca/product/x/1")
 
 
+class TestGatewayReferer:
+    """A gateway call names the page it is made for, as the site's pages do."""
+
+    async def _referer_of(self, monkeypatch, url, payload):
+        session = _gateway(payload)
+        monkeypatch.setattr(com, "get_session", lambda: _resolve(session))
+        result = await page.get_homedepot(url, timeout=5)
+        assert result is not None
+        return [call[1]["headers"]["Referer"] for call in session.calls], result
+
+    async def test_a_product_read_names_its_product_page(self, monkeypatch):
+        url = "https://www.homedepot.com/p/DEWALT-20V-MAX-Drill-DCD771C2/204279858"
+        referers, _ = await self._referer_of(
+            monkeypatch, url, {"data": {"product": {"itemId": "204279858"}}}
+        )
+        assert referers == [url]
+
+    async def test_a_listing_read_names_its_search_page_with_its_query(self, monkeypatch):
+        url = "https://www.homedepot.com/s/drill?Nao=24#results"
+        model = _listing_model(searchReport={"totalProducts": 1, "sortBy": "bestmatch", "startIndex": 24})
+        referers, _ = await self._referer_of(monkeypatch, url, {"data": {"searchModel": model}})
+        # The fragment is not sent, as a browser does not send it.
+        assert referers == ["https://www.homedepot.com/s/drill?Nao=24"]
+
+    async def test_a_store_read_names_its_store_page(self, monkeypatch):
+        url = "https://www.homedepot.com/l/Cumberland/GA/Atlanta/30339/121"
+        stores = [{"storeId": "0121", "name": "Cumberland", "address": {}}]
+        referers, _ = await self._referer_of(monkeypatch, url, {"data": {"storeSearch": {"stores": stores}}})
+        assert referers == [url]
+
+    async def test_a_followed_redirect_names_the_page_it_was_sent_to(self, monkeypatch):
+        seen = []
+
+        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None):
+            seen.append(page_url)
+            if nav_param is None:
+                return {"searchReport": None, "metadata": {"searchRedirect": "/b/DEWALT/N-5yc1vZ4j2"}, "products": []}
+            return _listing_model(searchReport={"totalProducts": 2977, "sortBy": "topsellers", "startIndex": 0})
+
+        monkeypatch.setattr(com, "fetch_listing", fake_listing)
+        await page.get_homedepot("https://www.homedepot.com/s/dewalt", timeout=5)
+        assert seen == ["https://www.homedepot.com/s/dewalt", "https://www.homedepot.com/b/DEWALT/N-5yc1vZ4j2"]
+
+    @pytest.mark.parametrize(
+        ("page_url", "expected"),
+        [
+            (None, "https://www.homedepot.com/"),
+            ("", "https://www.homedepot.com/"),
+            # The gateway is on www; a bare-host or http URL names the same page there.
+            ("http://homedepot.com/p/204279858", "https://www.homedepot.com/p/204279858"),
+            ("https://www.homedepot.com", "https://www.homedepot.com/"),
+            ("https://www.homedepot.com/p/x%20y/1?a=1&b=2", "https://www.homedepot.com/p/x%20y/1?a=1&b=2"),
+            # Anything unprintable on the wire falls back to the root.
+            ("https://www.homedepot.com/p/a b/1", "https://www.homedepot.com/"),
+            ("https://www.homedepot.com/p/\u00e9/1", "https://www.homedepot.com/"),
+        ],
+    )
+    def test_the_referer_is_the_page_on_the_gateways_origin(self, page_url, expected):
+        assert com._referer(page_url) == expected
+
+
 class TestReviewsExperience:
     """Reviews are read under the experience the site's own reviews page names."""
 
@@ -902,7 +1020,7 @@ class TestReviewsExperience:
 
         seen = {}
 
-        async def fake_post(operation, query, variables, *, experience, timeout):
+        async def fake_post(operation, query, variables, *, experience, timeout, page_url=None):
             seen.update(operation=operation, experience=experience, variables=variables)
             return {"reviews": {"TotalResults": 17411, "Results": []}, "product": {"itemId": "204279858"}}
 

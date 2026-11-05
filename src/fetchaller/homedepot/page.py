@@ -40,19 +40,21 @@ async def get_homedepot(url: str, *, timeout: float = 30.0) -> dict | None:
 
 async def _com(target: ComTarget, url: str, timeout: float) -> str:
     if target.kind == "product":
-        product = await com.fetch_product(target.item_id or "", timeout=timeout)
+        product = await com.fetch_product(target.item_id or "", timeout=timeout, page_url=url)
         return render.render_com_product(product, url)
     if target.kind == "reviews":
-        product, reviews = await com.fetch_reviews(target, timeout=timeout)
+        product, reviews = await com.fetch_reviews(target, timeout=timeout, page_url=url)
         return render.render_com_reviews(product, reviews, target, url)
     if target.kind == "store":
-        store, note = await com.fetch_store(target.store_id or "", target.store_zip or "", timeout=timeout)
+        store, note = await com.fetch_store(
+            target.store_id or "", target.store_zip or "", timeout=timeout, page_url=url
+        )
         return render.render_com_store(store, url, note=note)
     return await _com_listing(target, url, timeout)
 
 
 async def _com_listing(target: ComTarget, url: str, timeout: float) -> str:
-    model = await com.fetch_listing(target, timeout=timeout)
+    model = await com.fetch_listing(target, timeout=timeout, page_url=url)
     redirect = (model.get("metadata") or {}).get("searchRedirect")
     if model.get("searchReport") is None and redirect:
         # The site answers some keywords ("dewalt") with a brand or category
@@ -63,8 +65,13 @@ async def _com_listing(target: ComTarget, url: str, timeout: float) -> str:
         follow = com_target(destination)
         if follow is None or follow.kind != "listing":
             raise com.GatewayError(f'homedepot.com sends this search to {destination}, which is not a product listing')
+        # The site's page for the redirect target is the one that asks for it.
         model = await com.fetch_listing(
-            target, timeout=timeout, nav_param=follow.nav_param, keyword=follow.keyword or ""
+            target,
+            timeout=timeout,
+            nav_param=follow.nav_param,
+            keyword=follow.keyword or "",
+            page_url=destination,
         )
         if model.get("searchReport") is None:
             raise com.GatewayError(f"homedepot.com's redirect target {destination} returned no listing")
