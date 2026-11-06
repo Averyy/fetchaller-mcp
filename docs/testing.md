@@ -1,5 +1,47 @@
 # Testing Guide
 
+## Home Depot gateway recovery
+
+Fetchaller 3.8.12 pins published wafer 0.7.14. Omit `--wafer-path` to test
+the installed release; the override below is only for wafer development.
+
+```bash
+uv run --no-sync python scripts/verify_homedepot_recovery.py \
+  --wafer-path ../wafer --output /tmp/fetchaller-hd-local
+uv run --no-sync python scripts/verify_homedepot_recovery.py \
+  --wafer-path ../wafer --docker-image fetchaller-mcp:test \
+  --output /tmp/fetchaller-hd-docker
+```
+
+The main-guarded probe starts the actual stdio MCP server and calls `fetch`.
+It first makes one unsolved product GET through the gateway's own wafer
+session, preserves the site's issued cookies, waits five seconds, then lets
+the ordinary gateway request run. This is an intentional challenge trigger,
+not a production warmup. It never fabricates cookies or responses. It requires
+a real 206, the audited solver's product-page embedder, browser product 200,
+cookies without browser response passthrough, and HTTP 200 with product
+204279858 / DCD771C2. It also checks the rendered MCP product and browser
+dispatch/egress audits. Rejected third-party destinations remain rejected.
+Each run saves `server.log`, `product.md` and `summary.json`; no cookie values
+are logged. A direct 200 leaves recovery unverified and exits nonzero.
+
+On 2026-11-06 the local Linux/amd64 image, with fetchaller source and the
+wafer working tree mounted read-only, reproduced the full sequence at
+09:29 and 09:32 EST. Recovery took 14.79 and 15.44 seconds, importing 17
+cookies before the successful HTTP retry. The verified run recorded one
+audited browser dispatch, 17 allowed connections and nine denied third-party
+connections. Evidence: `/tmp/fetchaller-hd-20261106/docker-verified/`.
+The release image with published wafer 0.7.14 repeated the full recovery at
+09:51 EST in 16.48 seconds (17 cookies, one dispatch, 17 allowed and eight
+denied connections). Evidence: `/tmp/fetchaller-hd-0714-docker/`.
+Native macOS reads (short and canonical product URLs) returned the correct
+product directly; they did not verify native recovery.
+
+Fetchaller's suite against local wafer passed 4,839 tests with six skips;
+wafer's suite passed 3,196 with 25 skips. Both lint checks passed. Fetchaller
+also reported PyMuPDF deprecation warnings and unawaited `AsyncMock` warnings
+in two Reddit GraphQL backoff tests; those warnings remain to be addressed.
+
 ## Writing Tests
 
 **Every test must assert a meaningful outcome.** No useless tests.

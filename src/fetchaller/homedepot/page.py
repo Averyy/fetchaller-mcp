@@ -19,12 +19,12 @@ from . import ca, com, render
 from .urls import COM_ORIGIN, CaTarget, ComTarget, ca_target, com_target, with_param
 
 
-async def get_homedepot(url: str, *, timeout: float = 30.0) -> dict | None:
+async def get_homedepot(url: str, *, timeout: float = 30.0, browser_solver=None) -> dict | None:
     """Fetch and render one Home Depot page."""
     try:
         target = com_target(url)
         if target is not None:
-            return {"content": await _com(target, url, timeout)}
+            return {"content": await _com(target, url, timeout, browser_solver)}
         ca_tgt = ca_target(url)
         if ca_tgt is not None:
             content = await _ca(ca_tgt, url, timeout)
@@ -38,23 +38,23 @@ async def get_homedepot(url: str, *, timeout: float = 30.0) -> dict | None:
         return {"error": f"Home Depot request failed: {type(exc).__name__}: {exc}"}
 
 
-async def _com(target: ComTarget, url: str, timeout: float) -> str:
+async def _com(target: ComTarget, url: str, timeout: float, browser_solver=None) -> str:
     if target.kind == "product":
-        product = await com.fetch_product(target.item_id or "", timeout=timeout, page_url=url)
+        product = await com.fetch_product(target.item_id or "", timeout=timeout, page_url=url, browser_solver=browser_solver)
         return render.render_com_product(product, url)
     if target.kind == "reviews":
-        product, reviews = await com.fetch_reviews(target, timeout=timeout, page_url=url)
+        product, reviews = await com.fetch_reviews(target, timeout=timeout, page_url=url, browser_solver=browser_solver)
         return render.render_com_reviews(product, reviews, target, url)
     if target.kind == "store":
         store, note = await com.fetch_store(
-            target.store_id or "", target.store_zip or "", timeout=timeout, page_url=url
+            target.store_id or "", target.store_zip or "", timeout=timeout, page_url=url, browser_solver=browser_solver
         )
         return render.render_com_store(store, url, note=note)
-    return await _com_listing(target, url, timeout)
+    return await _com_listing(target, url, timeout, browser_solver)
 
 
-async def _com_listing(target: ComTarget, url: str, timeout: float) -> str:
-    model = await com.fetch_listing(target, timeout=timeout, page_url=url)
+async def _com_listing(target: ComTarget, url: str, timeout: float, browser_solver=None) -> str:
+    model = await com.fetch_listing(target, timeout=timeout, page_url=url, browser_solver=browser_solver)
     redirect = (model.get("metadata") or {}).get("searchRedirect")
     if model.get("searchReport") is None and redirect:
         # The site answers some keywords ("dewalt") with a brand or category
@@ -72,6 +72,7 @@ async def _com_listing(target: ComTarget, url: str, timeout: float) -> str:
             nav_param=follow.nav_param,
             keyword=follow.keyword or "",
             page_url=destination,
+            browser_solver=browser_solver,
         )
         if model.get("searchReport") is None:
             raise com.GatewayError(f"homedepot.com's redirect target {destination} returned no listing")

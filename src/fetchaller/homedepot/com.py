@@ -6,7 +6,8 @@ not run Akamai's sensor script with a 2.5 KB behavioural-challenge interstitial
 without a browser the HTML path cannot read a product, a search or a store.
 The data those pages render does not come from the HTML anyway: the site's
 React experiences ask ``/federation-gateway/graphql`` for it, and the gateway
-answers a plain request, cold, with no challenge. That is the read made here.
+usually answers a plain request. If Akamai refuses it, wafer solves on the
+caller's page with the server's guarded browser and retries the same request.
 
 The site builds its queries at runtime from component data models, so no query
 string exists in its bundles to copy. The ones below were assembled from the
@@ -50,13 +51,14 @@ class GatewayError(LookupError):
     """The gateway answered, but not with the data asked for."""
 
 
-# The gateway is cookieless, but it is behind Akamai's edge, which answers a
+# The gateway can answer cookieless, but Akamai's edge also answers a
 # request it will not pass with 206 ``{"error":[{"message":"Generic errors"}]}``
 # from ``AkamaiGHost``. Seen on 2026-10-07 and 2026-10-08, each time after a
 # failed browser solve of a homedepot.com page, and lifting after ~20 minutes.
 # The cause was ours: this session read wafer's shared cookie cache, so it sent
 # the failed solve's flagged Akamai cookies with every POST (see get_session).
-# The hold stays as the guard for a refusal of any other cause: sending more
+# wafer now recovers through the caller's page with the borrowed browser. The
+# hold stays as the guard for an unresolved refusal: sending more
 # reads into one earns nothing, so a refusal stops the gateway for a while and
 # every read in that window fails at once, saying when it will be tried again.
 # The first read after the window is the probe: refused again, the hold doubles
@@ -158,11 +160,13 @@ def _minutes(seconds: float) -> str:
 
 
 _session: wafer.AsyncSession | None = None
+_gateway_session: wafer.AsyncSession | None = None
+_gateway_solver = None
 _session_lock = asyncio.Lock()
 
 
 async def get_session() -> wafer.AsyncSession:
-    """Shared session for both storefronts. A Canadian listing page is ~1 MB."""
+    """Browser-free storefront session. A Canadian listing page is ~1 MB."""
     global _session
     if _session is None:
         async with _session_lock:
@@ -186,9 +190,33 @@ async def get_session() -> wafer.AsyncSession:
     return _session
 
 
+async def get_gateway_session(browser_solver=None) -> wafer.AsyncSession:
+    """Borrow the server's audited solver; wafer owns solving and cookie replay.
+
+    Keep browser clearance separate from Canada's browser-free page/API
+    sequence and from the shared disk cache. A different server/solver gets a
+    new session, so we never dispatch through a previous owner's closed solver.
+    """
+    global _gateway_session, _gateway_solver
+    if browser_solver is None:
+        return await get_session()
+    async with _session_lock:
+        if _gateway_session is None or _gateway_solver is not browser_solver:
+            _gateway_session = wafer.AsyncSession(
+                browser_solver=browser_solver,
+                max_response_size=10 * 1024 * 1024,
+                follow_redirects=False,
+            )
+            _gateway_solver = browser_solver
+    return _gateway_session
+
+
 async def close_session() -> None:
-    global _session
+    # The server owns and closes the borrowed solver, not these sessions.
+    global _session, _gateway_session, _gateway_solver
     _session = None
+    _gateway_session = None
+    _gateway_solver = None
 
 
 PRODUCT_FIELDS = """
@@ -311,6 +339,7 @@ async def _post(
     experience: str,
     timeout: float,
     page_url: str | None = None,
+    browser_solver=None,
 ) -> dict:
     """Run one gateway operation and return its ``data``.
 
@@ -328,7 +357,7 @@ async def _post(
 
     if (remaining := _hold_until - _clock()) > 0:
         raise held_error(remaining)
-    session = await get_session()
+    session = await get_gateway_session(browser_solver)
     await homedepot_com_limiter.wait()
     # A hold can begin while this read waits its turn at the limiter.
     if (remaining := _hold_until - _clock()) > 0:
@@ -387,7 +416,7 @@ async def _post(
     return data
 
 
-async def fetch_product(item_id: str, *, timeout: float, page_url: str | None = None) -> dict:
+async def fetch_product(item_id: str, *, timeout: float, page_url: str | None = None, browser_solver=None) -> dict:
     data = await _post(
         "productClientOnlyProduct",
         PRODUCT_QUERY,
@@ -395,6 +424,7 @@ async def fetch_product(item_id: str, *, timeout: float, page_url: str | None = 
         experience="general-merchandise",
         timeout=timeout,
         page_url=page_url,
+        browser_solver=browser_solver,
     )
     product = data.get("product")
     if not isinstance(product, dict):
@@ -439,6 +469,7 @@ async def fetch_listing(
     nav_param: str | None = None,
     keyword: str | None = None,
     page_url: str | None = None,
+    browser_solver=None,
 ) -> dict:
     """One page of a search or category listing (the ``searchModel``)."""
     nav = nav_param if nav_param is not None else target.nav_param
@@ -450,6 +481,7 @@ async def fetch_listing(
         experience="search-desktop" if kw else "browse-desktop",
         timeout=timeout,
         page_url=page_url,
+        browser_solver=browser_solver,
     )
     model = data.get("searchModel")
     if not isinstance(model, dict):
@@ -458,7 +490,7 @@ async def fetch_listing(
 
 
 async def fetch_reviews(
-    target: ComTarget, *, timeout: float, page_url: str | None = None
+    target: ComTarget, *, timeout: float, page_url: str | None = None, browser_solver=None
 ) -> tuple[dict | None, dict]:
     """Product identity plus one page of its reviews, in one request.
 
@@ -487,6 +519,7 @@ async def fetch_reviews(
         experience="paginated-product-reviews",
         timeout=timeout,
         page_url=page_url,
+        browser_solver=browser_solver,
     )
     reviews = data.get("reviews")
     if not isinstance(reviews, dict):
@@ -496,7 +529,7 @@ async def fetch_reviews(
 
 
 async def fetch_store(
-    store_id: str, store_zip: str, *, timeout: float, page_url: str | None = None
+    store_id: str, store_zip: str, *, timeout: float, page_url: str | None = None, browser_solver=None
 ) -> tuple[dict, str | None]:
     """One store's record, plus a note when the URL's store has moved.
 
@@ -517,6 +550,7 @@ async def fetch_store(
         experience="general-merchandise",
         timeout=timeout,
         page_url=page_url,
+        browser_solver=browser_solver,
     )
     stores = [s for s in ((data.get("storeSearch") or {}).get("stores")) or [] if isinstance(s, dict)]
     # The search zero-pads ids ("0121") while store URLs do not ("/30339/121").

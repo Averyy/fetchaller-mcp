@@ -433,7 +433,7 @@ class TestGateway:
     async def test_keyword_redirect_is_followed_with_the_callers_paging(self, monkeypatch):
         calls = []
 
-        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None):
+        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None, browser_solver=None):
             calls.append((nav_param, keyword, target.start_index))
             if nav_param is None:
                 return {"searchReport": None, "metadata": {"searchRedirect": "/b/DEWALT/N-5yc1vZ4j2?NCNI-5"}, "products": []}
@@ -445,7 +445,7 @@ class TestGateway:
         assert "sends the search \"dewalt\" to https://www.homedepot.com/b/DEWALT/N-5yc1vZ4j2" in result["content"]
 
     async def test_unknown_category_is_an_error_not_an_empty_listing(self, monkeypatch):
-        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None):
+        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None, browser_solver=None):
             return {"searchReport": None, "metadata": {}, "products": []}
 
         monkeypatch.setattr(com, "fetch_listing", fake_listing)
@@ -984,7 +984,7 @@ class TestGatewayReferer:
     async def test_a_followed_redirect_names_the_page_it_was_sent_to(self, monkeypatch):
         seen = []
 
-        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None):
+        async def fake_listing(target, *, timeout, nav_param=None, keyword=None, page_url=None, browser_solver=None):
             seen.append(page_url)
             if nav_param is None:
                 return {"searchReport": None, "metadata": {"searchRedirect": "/b/DEWALT/N-5yc1vZ4j2"}, "products": []}
@@ -1020,7 +1020,7 @@ class TestReviewsExperience:
 
         seen = {}
 
-        async def fake_post(operation, query, variables, *, experience, timeout, page_url=None):
+        async def fake_post(operation, query, variables, *, experience, timeout, page_url=None, browser_solver=None):
             seen.update(operation=operation, experience=experience, variables=variables)
             return {"reviews": {"TotalResults": 17411, "Results": []}, "product": {"itemId": "204279858"}}
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.8.12 (2026-11-06)
+
+Pins published wafer 0.7.14 for Akamai API refusal recovery.
+
+- Home Depot gateway reads now receive the server's existing audited,
+  egress-guarded browser solver. wafer solves a 206 refusal on the caller's
+  product-page Referer and retries the original www gateway POST over HTTP.
+  Cookies remain in wafer's memory-only gateway session; Canada retains its
+  browser-free session. Unresolved refusals retain the existing cooldown,
+  and only the server closes the borrowed solver.
+- Added a live stdio MCP recovery probe. On 2026-11-06 the Linux image
+  recovered real 206 refusals twice, in 14.79 and 15.44 seconds. Native macOS
+  returned the correct product directly; native recovery remains unverified.
+
 ## 3.8.11 (2026-11-05)
 
 Requires wafer 0.7.13.

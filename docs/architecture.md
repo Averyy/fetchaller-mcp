@@ -16,10 +16,17 @@ challenge detection, or cookie management.
 A blocked *page* is not always a blocked *read*. homedepot.com answers every
 page but its home page with an Akamai challenge unless a browser has run the
 sensor script, and passing that is wafer's. But the page's data comes from the
-site's own federation-gateway GraphQL, which answers plainly, so
+site's own federation-gateway GraphQL, which usually answers plainly, so
 `src/fetchaller/homedepot/` reads that instead — finding a request is content
 work. Pages with no such source (`/c/` articles) still go through the HTML path
 and wafer's browser solver, which clears the challenge on macOS (wafer >= 0.7.3) and in the Linux image (wafer >= 0.7.6, which renders WebGL on SwiftShader where there is no GPU; Akamai refused Mesa's llvmpipe), returning the server's own document. The gateway session has no `cache_dir`: wafer's cookie cache holds solver cookies, and a failed solve's flagged Akamai cookies, carried into gateway POSTs, got the gateway refused (HTTP 206) for ~20 minutes at a time.
+
+Home Depot gateway operations receive the server's audited, egress-guarded
+solver too. wafer recognizes the 206 API refusal, solves on the caller's
+product-page Referer and retries the original HTTP POST with its cookies.
+The gateway session has no disk cache, remains separate from Canada's
+browser-free session, and borrows the solver without closing it. Failed
+recovery retains the existing gateway cooldown.
 
 fetchaller injects wafer's shared `BrowserSolver` into sessions and, when
 configured, launches it once during startup readiness preflight. All challenge

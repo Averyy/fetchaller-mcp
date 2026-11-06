@@ -1690,8 +1690,9 @@ async def _fetch_url_impl(
     # The Home Depot. homedepot.com answers every page but its home page with an
     # Akamai behavioural challenge unless a browser has run the sensor script,
     # yet the data those pages draw comes from the site's own federation
-    # gateway, which answers plainly — so products, listings, reviews and
-    # stores are read there. homedepot.ca is not blocked, but it draws products
+    # gateway — so products, listings, reviews and stores are read there.
+    # wafer recovers a gateway refusal with the same guarded solver on the
+    # caller's page, then retries over HTTP. homedepot.ca draws products
     # and listings client-side from transfer state, so its markup renders as a
     # product with no specifications and a category with no products. Returns
     # None for pages neither read covers, which take the HTML path.
@@ -1701,7 +1702,7 @@ async def _fetch_url_impl(
             return _hit
         from ..homedepot.page import get_homedepot
 
-        result = await get_homedepot(url, timeout=float(timeout))
+        result = await get_homedepot(url, timeout=float(timeout), browser_solver=browser_solver)
         if result is not None:
             if "content" in result:
                 _intercept_cache_set(url, result["content"], "markdown")
