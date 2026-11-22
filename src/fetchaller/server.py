@@ -24,6 +24,7 @@ from .apple_jobs.search import search_apple_jobs
 from .cache.response_cache import ResponseCache
 from .config import Config, load_config, set_wafer_cache_dir
 from .content.reddit import REDDIT_SORT_OPTIONS
+from .content.reddit_graphql import valid_search_cursor
 from .eightfold.search import search_eightfold_jobs
 from .gcjobs.search import get_gcjobs_job, search_gcjobs
 from .gojobs.search import get_gojobs_job, search_gojobs
@@ -1179,8 +1180,13 @@ def _validate_tool_arguments(tool_name: str, arguments: object) -> str | None:
         if arguments["min_price"] > arguments["max_price"]:
             return "min_price must not exceed max_price"
     after = arguments.get("after")
-    if after is not None and not re.fullmatch(r"t[1-6]_[A-Za-z0-9]{2,16}", after):
-        return "after must be a Reddit pagination cursor"
+    if after is not None:
+        if tool_name == "search_reddit":
+            # Post search pages by SearchPosts' own opaque cursor (OQ==).
+            if not valid_search_cursor(after):
+                return "after must be a Reddit search cursor from a previous search_reddit page"
+        elif not re.fullmatch(r"t[1-6]_[A-Za-z0-9]{2,16}", after):
+            return "after must be a Reddit pagination cursor"
     subreddit = arguments.get("subreddit")
     if subreddit is not None and not re.fullmatch(
         r"[a-zA-Z0-9][a-zA-Z0-9_]{0,20}",
@@ -1551,8 +1557,8 @@ def create_server(
                         },
                         "after": {
                             "type": "string",
-                            "pattern": "^t[1-6]_[A-Za-z0-9]{2,16}$",
-                            "description": "Pagination cursor from previous response",
+                            "pattern": "^[A-Za-z0-9+/]{1,62}={0,2}$",
+                            "description": "Pagination cursor from a previous search_reddit page (e.g. OQ==)",
                         },
                         "timeout": {
                             "type": "integer",

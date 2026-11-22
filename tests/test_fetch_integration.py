@@ -3162,3 +3162,20 @@ class TestBraveResultLinks:
             result = await fetch_url(self._LINK, timeout=30)
 
         assert json_module.loads(result["content"]) == {"ok": True}
+
+
+
+async def test_a_reddit_timeout_names_the_shared_budget():
+    import asyncio as asyncio_module
+
+    from fetchaller.tools.fetch import fetch_url
+
+    async def slow(**_kwargs):
+        await asyncio_module.sleep(5)
+
+    with patch("fetchaller.tools.fetch._fetch_url_impl", side_effect=slow):
+        reddit = await fetch_url("https://www.reddit.com/r/Python/wiki/index/", timeout=1)
+        other = await fetch_url("https://example.com/", timeout=1)
+
+    assert "10 a minute" in reddit["error"]
+    assert "slow servers" in other["error"]

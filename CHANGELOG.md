@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.8.15 (2026-11-22)
+
+- `search_reddit` accepts its own page cursors (`after="OQ=="`); 3.8.14 rejected
+  them at the tool boundary, so page 2 failed.
+- A Reddit `fetch` timeout says reads share a 10-a-minute budget instead of
+  blaming a slow server.
+
 ## 3.8.14 (2026-11-22)
 
 - A Google request that times out is retried on a fresh connection instead of

@@ -1424,3 +1424,26 @@ async def test_browser_dispatch_respects_brave_cap_and_shorter_request_deadlines
         called = inner.solve
     assert called.call_args.kwargs["timeout"] == expected
     assert audit == {"total": 1, "reddit": 0}
+
+
+
+@pytest.mark.asyncio
+async def test_search_reddit_accepts_its_own_cursor_at_the_boundary(server):
+    """Search pages by SearchPosts' base64 cursor, not a t3_ fullname."""
+    with patch(
+        "fetchaller.server.search_reddit",
+        new_callable=AsyncMock,
+        return_value={"content": "verified"},
+    ) as implementation:
+        result = await _call_tool(server, "search_reddit", {"query": "asyncio", "after": "OQ=="})
+        rejected = await _call_tool(server, "search_reddit", {"query": "asyncio", "after": "t3_abc123"})
+
+    assert result.isError is False
+    assert implementation.await_args.kwargs["after"] == "OQ=="
+    assert rejected.isError is True
+    assert implementation.await_count == 1
+    # browse_reddit still pages by fullname.
+    from fetchaller.server import _validate_tool_arguments
+
+    assert _validate_tool_arguments("browse_reddit", {"subreddit": "Python", "after": "t3_abc123"}) is None
+    assert _validate_tool_arguments("browse_reddit", {"subreddit": "Python", "after": "OQ=="})

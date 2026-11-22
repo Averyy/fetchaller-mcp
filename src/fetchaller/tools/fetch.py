@@ -3539,6 +3539,14 @@ async def _fetch_url_impl(
     return {"error": f"Unsupported content type: {content_type}"}
 
 
+def _is_reddit_host(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return False
+    return host == "reddit.com" or host.endswith(".reddit.com") or host == "redd.it"
+
+
 async def fetch_url(
     url: str,
     max_tokens: int = 25000,
@@ -3682,6 +3690,16 @@ async def fetch_url(
                     result.pop("body", None)
             return result
     except TimeoutError:
+        if _is_reddit_host(url):
+            # Usually not a slow server: Reddit reads share fetchaller's
+            # 10-a-minute budget, so a burst of reads queues.
+            return {
+                "error": (
+                    f"Request timed out after {timeout}s. Reddit reads share a budget of "
+                    "10 a minute, so this one may have waited behind earlier reads: retry "
+                    "shortly, or raise timeout (e.g. 30)."
+                )
+            }
         return {
             "error": (f"Request timed out after {timeout}s. Try increasing the timeout parameter for slow servers.")
         }

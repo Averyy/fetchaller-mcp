@@ -45,7 +45,7 @@ Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.14 pins published
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.15 pins published
 wafer 0.7.15 (TMD reCAPTCHA punishments routed whatever the action's case;
 0.7.14 recovered Akamai's 206 API refusals; 0.7.13 Linux and Windows
 `platformVersion` as Chrome reports it; 0.7.12 added Kasada-signed calls for costco.com and Chrome 157; 0.7.11
