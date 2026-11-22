@@ -129,8 +129,9 @@ removed, because a retired Reddit feature is answered the way Reddit answers
 it, never reconstructed from an archive.
 
 For normal public URLs, fetchaller validates the path shape, builds a bounded
-`www.reddit.com/*.json` request, and renders only fields visible/useful to a
-public reader. Profile roots use five independent public sources under one
+`www.reddit.com/*.json` request (or, for a read Reddit refuses as JSON to
+logged-out clients, the app's GraphQL read or New Reddit's own page; see the
+next section), and renders only fields visible/useful to a public reader. Profile roots use five independent public sources under one
 deadline: profile, overview, trophies, public multireddits, and moderated
 communities.
 
@@ -165,6 +166,12 @@ GraphQL actually returned (`_fetchaller_reddit_provenance: "graphql"`).
 | Several posts at once: `/by_id` lists, related-post details, collections | `PostsByIds` (one batch): `/by_id` refuses a list of posts, and `/api/info` refuses even one |
 | Profile details (`about`, profile root, user directory) | `UserProfile`; an account with no profile is dated by `GetMatrixChatUsersByIds`' `cakeDayOn` |
 | Comment streams | none: reported as Reddit's refusal, never as an empty stream |
+| Post search (`search_reddit`, `/search/`, `/r/<sub>/search/`, `type=link`) | `SearchPosts` (app 2026.47.0): `productSurface: "android"`, the sort as `SearchPostSort`, and `time_range`, `subreddit_names` (`a,b` for `r/a+b`) and `nsfw: "0"` as `FilterInput` pairs; results are `search.general.posts.edges[].node`, converted by `post_data()`; `AdPost` nodes are ads and dropped; a restricted search Reddit does not echo in `feedMetadata.appliedFilters` is an error; the cursor is opaque base64 (`OQ==`, an offset) |
+| Community / account search (`type=sr`, `type=user`) | `/subreddits/search.json`, `/users/search.json` (REST, still served); a mixed `type=` is one read per kind, in the order asked, with no shared cursor and a notice saying so |
+| `/r/<sub>/new`, `/r/<sub>/rising` (`fetch` and `browse_reddit`) | `SubredditFeedSdui` for the ordered post ids (its `CellGroup.groupId`; carousels, onboarding units and groups with an `adPayload` dropped), then one `PostsByIds` read; about seven elements a read and no page-size variable, so further pages are followed (up to five) only while another page and the hydration fit the deadline, and a short page says so; `endCursor` is base64 of the last post's fullname, so `after=t3_...` carries over; `before` cannot be followed; a community the feed does not serve is named from its still-served `/hot.json` state |
+| Wiki page (`/r/<sub>/wiki/<page>/`) | New Reddit's server-rendered page: `shreddit-app[routename=subreddit_wiki]` with a matching canonical URL, the one `main div.md.wiki` converted to Markdown (labelled as converted), and the reviser and `faceplate-timeago[ts]` after "Last revised by"; a page Reddit says "does not exist" is an error |
+| Wiki revisions of a page | New Reddit's own `WikiPageRevisionsV2` on `/svc/shreddit/graphql` (the page-tree operation), after the page's HTML seeds the CSRF cookie; every revision must belong to the asked page and community; paged by `after` (base64 of `WikiRevision_<id>:<n>`) |
+| A subreddit's `randomrising`, `r/a+b` combos, wiki discussions, an earlier wiki revision (`?v=`, so diffs), all-pages wiki revisions | none (measured 2026-11-22): the feed has no random order and rejects `a+b`, the rendered wiki page ignores `?v=`, `WikiPageRevisionsV2` answers nothing without a page name, and nothing lists a page's discussions; each reports Reddit's refusal and names what is still readable |
 
 Thread limits are derived from `maxTokens` (`count` 5–500, `maxDepth` 1–10),
 then the final character budget is enforced at whole-section boundaries.
@@ -182,12 +189,14 @@ flags (`UnavailableProfileReason` has no suspension value). REST's thread
 display toggles (`threaded`, `showmore`, `showedits`, ...) have no
 `PostComments` variable and are not sent. An explicit `.json` thread URL is
 reported as refused and never reaches the browser. The persisted hashes are
-the 2026.44.0 app's; a retired one answers `PersistedQueryNotFound`, which
+the 2026.44.0 app's (`SearchPosts` and `SubredditFeedSdui`: 2026.47.0's); a retired one answers `PersistedQueryNotFound`, which
 surfaces as an error naming the operation.
 
 **When an operation stops working** (`PersistedQueryNotFound`, or a new field
 is needed), take the current hash and query document from the app itself.
-The 2026.44.0 app ships 382 query operations.
+The 2026.44.0 app ships 382 query operations, 2026.47.0 385. Hand the
+decompiled tree to static analysis rather than reading it inline: an SDUI
+document is ~49 KB with ~150 fragments, and its caller fixes most variables.
 
 1. Download the current `com.reddit.frontpage` bundle from APKMirror with
    wafer (it handles APKMirror's Cloudflare), into its own empty directory.

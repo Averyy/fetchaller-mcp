@@ -105,6 +105,14 @@ def test_reddit_parity_corpus_covers_every_declared_route_representation():
         # directory redirects to the premium one.
         "collection",
         "subreddit_directory_gold",
+        # Refused to logged-out clients since 2026-11 with no logged-out
+        # equivalent: a subreddit's randomrising (the app's feed has no random
+        # order), r/a+b combinations, wiki discussions, and any earlier wiki
+        # revision (so a diff).
+        "listing_subreddit_randomrising",
+        "listing_multi_subreddit",
+        "wiki_discussions",
+        "wiki_diff",
     }
     assert all(
         entry.offline_reason
@@ -130,7 +138,6 @@ def test_reddit_parity_corpus_covers_every_declared_route_representation():
         "thread_global_permalink",
         "listing_by_id_comment",
         "listing_by_id_mixed",
-        "wiki_diff",
     }
 
 
@@ -363,8 +370,10 @@ def test_result_starved_routes_do_not_claim_pagination():
     # 37 once the five gilded listings left (Reddit retired them; their
     # pagination was through an archive reconstruction, not Reddit), then 36
     # when Reddit refused the per-community comment stream to logged-out
-    # clients (2026-10-20) and comment_listing became fixture-only.
-    assert len(asserting) >= 36, f"pagination coverage collapsed to {len(asserting)}"
+    # clients (2026-10-20) and comment_listing became fixture-only, then 34
+    # when it refused a subreddit's randomrising and r/a+b combinations
+    # (2026-11-22) and both became fixture-only.
+    assert len(asserting) >= 34, f"pagination coverage collapsed to {len(asserting)}"
 
 
 def test_activity_gate_requires_every_comment_body_and_exact_navigation():

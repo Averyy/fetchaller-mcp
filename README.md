@@ -246,6 +246,8 @@ browse_reddit({
 ```
 
 Returns post titles, scores, comment counts, and URLs. Use `fetch` to read full posts.
+`new` and `rising` arrive a few posts per read and default to a 30-second
+timeout; a short page says so, and a longer `timeout` reads more at once.
 
 ### `search_reddit` - Search Posts
 
@@ -260,35 +262,42 @@ search_reddit({
 ```
 
 Returns matching posts with metadata. Use `fetch` to read full discussions.
+A search limited to a subreddit is confirmed by Reddit or reported as an
+error. Page with the returned `after` cursor (an opaque string such as `OQ==`).
 
 ### Compact New Reddit Fetching
 
-Normal Reddit URLs and emitted links are canonicalized to `www.reddit.com`.
-Structured JSON reads use the logged-out `api.reddit.com` origin and are
-rendered as compact Markdown; HTML-only legs remain on the fixed New Reddit
-`www` origin. Since about 2026-10-20 Reddit refuses a thread's JSON,
-`/api/info`, `/api/morechildren` and `/user/{name}/about` to every logged-out
-client, so threads, comments and profiles are read the way the Reddit app
-reads them: as persisted GraphQL operations on `gql-fed.reddit.com`, still
-anonymous (the post itself still comes from `/by_id`). Reddit returns at most
-200 comments per read: by default (`redditComments: "fast"`) a thread is one
-read with "Load more" links carrying the comment forest's own cursor, and
-`redditComments: "more"` follows those links automatically -- top-level
-comments first, up to five extra reads, until `maxTokens` is full or the
-timeout is near (raise both with it). `redditSort` sets the comment order:
-`best` (default, Reddit's own ranking), `top`, `new`, `old`, `controversial` or
-`qa`; a thread URL's own `?sort=` works too. Several posts at once (a `/by_id` list,
-related-post details) are one batch read, since Reddit refuses `/by_id` lists
-to logged-out clients. Comment streams (`/r/{subreddit}/comments/`
-and the sitewide one) have no logged-out equivalent, and fetchaller says
-Reddit refuses them rather than showing an empty stream.
-`/r/{subreddit}/wiki/pages/` first reads the canonical New Reddit SSR page tree,
-then falls back to New Reddit's own logged-out `WikiPageRevisionsV2` page tree on
-the fixed `/svc/shreddit/graphql` route when a community does not server-render
-that tree. Both paths are anonymous: the page index needs no OAuth scope and no
-browser. Reddit retired post collections, gilded listings and the gold-only
-community directory; each is reported with Reddit's own answer (HTTP 500,
-400/403/404, or a redirect), never rebuilt from an archive.
+Normal Reddit URLs and emitted links are canonicalized to `www.reddit.com`
+and rendered as compact Markdown. Every read is anonymous: logged-out JSON
+where Reddit serves it, and otherwise the reads the Reddit app and New Reddit
+make themselves -- the app's GraphQL on `gql-fed.reddit.com` for threads,
+comments, profiles, post search and a community's `new` and `rising` posts,
+and New Reddit's own pages and GraphQL for wiki pages, the wiki page index and a page's
+revision history. No read needs a browser, an account or an OAuth scope.
+
+Reddit returns at most 200 comments per read: by default
+(`redditComments: "fast"`) a thread is one read with "Load more" links carrying
+the comment forest's own cursor, and `redditComments: "more"` follows those
+links automatically -- top-level comments first, up to five extra reads, until
+`maxTokens` is full or the timeout is near (raise both with it). `redditSort`
+sets the comment order: `best` (default, Reddit's own ranking), `top`, `new`,
+`old`, `controversial` or `qa`; a thread URL's own `?sort=` works too. Several
+posts at once (a `/by_id` list, related-post details) are one batch read.
+
+A search limited to a community is confirmed by Reddit or reported as an
+error, never shown as results from all of Reddit; `r/a+b/search` works.
+A community's `new` and `rising` posts arrive a few per read, so a short page
+says so and a longer `timeout` reads more at once. A wiki page is converted
+from its rendered page and says so.
+
+Reads Reddit serves no logged-out client are reported as Reddit's answer, never
+shown as empty: comment streams (`/r/{subreddit}/comments/` and the sitewide
+one), a community's `randomrising`, combined `r/a+b` listings, wiki
+discussions, earlier wiki revisions, and the retired post collections, gilded
+listings and gold-only community directory (HTTP 500, 400/403/404, or a
+redirect), which are never rebuilt from an archive. Where something related is
+still readable, the error names it.
+
 Thread output includes the public vote score and upvote ratio returned by
 Reddit, comment count and nested comments, outbound/discussion links, and
 structured gallery, video, crosspost, poll, NSFW/spoiler/locked/archived, and

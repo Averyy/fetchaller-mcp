@@ -198,6 +198,30 @@ async def test_every_tool_dispatches_through_the_server(
     implementation.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("arguments", "timeout"),
+    [
+        ({"subreddit": "Python"}, 10),
+        ({"subreddit": "Python", "sort": "top"}, 10),
+        # new and rising are two Reddit reads six seconds apart.
+        ({"subreddit": "Python", "sort": "new"}, 30),
+        ({"subreddit": "Python", "sort": "rising"}, 30),
+        ({"subreddit": "Python", "sort": "new", "timeout": 12}, 12),
+    ],
+)
+@pytest.mark.asyncio
+async def test_browse_reddit_default_timeout_fits_the_feed(server, arguments, timeout):
+    with patch(
+        "fetchaller.server.browse_reddit",
+        new_callable=AsyncMock,
+        return_value={"content": "verified"},
+    ) as implementation:
+        result = await _call_tool(server, "browse_reddit", arguments)
+
+    assert result.isError is False
+    assert implementation.await_args.kwargs["timeout"] == timeout
+
+
 @pytest.mark.asyncio
 async def test_aliexpress_product_timeout_dispatch_and_range(server):
     with patch(

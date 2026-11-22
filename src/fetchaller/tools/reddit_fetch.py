@@ -24,27 +24,39 @@ from ..content.reddit import (
     RedditRoute,
     normalize_moderator_roster_children,
     parse_reddit_related_html,
+    parse_reddit_wiki_page_html,
     parse_reddit_wiki_page_tree,
     parse_reddit_wiki_pages_html,
+    parse_reddit_wiki_revisions,
     render_reddit_route,
     route_reddit_url,
+    valid_wiki_revision_cursor,
 )
 from ..content.reddit_graphql import (
     RedditGraphQLRequest,
     account_cake_day,
     account_cake_day_request,
     comments_by_ids_things,
+    feed_cursor_fullname,
     graphql_request,
     post_comments_listing,
     posts_by_ids_request,
     posts_by_ids_things,
+    search_posts_listing,
+    search_scope,
     user_profile_about,
     user_profile_request,
     valid_comment_cursor,
 )
 from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..ratelimit import reddit_limiter
-from .browse_reddit import _get_session, fetch_reddit_graphql, fetch_reddit_json
+from .browse_reddit import (
+    _feed_notice,
+    _get_session,
+    fetch_reddit_graphql,
+    fetch_reddit_json,
+    fetch_subreddit_feed,
+)
 
 _MODERATOR_AUTH_REQUIRED = (
     "Reddit requires a logged-in account for exact moderator rosters, and "
@@ -1556,17 +1568,49 @@ async def _fetch_reddit_wiki_page_tree(
     queue: RedditRequestQueue | None,
     deadline: float,
 ) -> dict:
-    """Read the wiki page index from New Reddit's own anonymous GraphQL route.
+    """Read the wiki page index from New Reddit's own anonymous GraphQL route."""
+
+    result = await _post_wiki_page_revisions(
+        subreddit, "index", None, session, queue, deadline
+    )
+    if "error" in result:
+        return result
+    pages = parse_reddit_wiki_page_tree(result["payload"], subreddit)
+    if pages is None:
+        return {
+            "error": (
+                "Reddit returned an invalid anonymous wiki page tree for "
+                f"r/{subreddit}."
+            )
+        }
+    return {"pages": pages}
+
+
+async def _post_wiki_page_revisions(
+    subreddit: str,
+    page: str,
+    after: str | None,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+) -> dict:
+    """POST ``WikiPageRevisionsV2`` to New Reddit's own anonymous GraphQL.
 
     This is the logged-out path the wiki UI itself uses, so it needs no OAuth
-    scope and no browser.  It only works with the CSRF token Reddit hands the
-    same session, so the caller must already have loaded a New Reddit wiki
-    document; a missing or malformed token is reported instead of retried
-    without one.
+    scope and no browser. It answers a page's revision history (``after``
+    pages it) with the community's page tree. It only works with the CSRF
+    token Reddit hands the same session, so the caller must already have
+    loaded a New Reddit document; a missing or malformed token is reported
+    instead of retried without one. Returns ``{"payload"}`` or ``{"error"}``.
     """
 
     if re.fullmatch(r"[A-Za-z0-9_]{1,21}", subreddit) is None:
         return {"error": "Invalid subreddit for the Reddit wiki page index."}
+    if not _safe_wiki_page(page):
+        return {"error": "Invalid Reddit wiki page name."}
+    variables = {"subredditName": subreddit, "wikiPageName": page}
+    if after is not None:
+        variables["after"] = after
     csrf_token = session.get_cookie("csrf_token", "https://www.reddit.com/")
     if not isinstance(csrf_token, str) or _CSRF_TOKEN_RE.fullmatch(csrf_token) is None:
         return {
@@ -1584,10 +1628,7 @@ async def _fetch_reddit_wiki_page_tree(
             _SHREDDIT_GRAPHQL_URL,
             json={
                 "operation": _WIKI_PAGE_TREE_OPERATION,
-                "variables": {
-                    "subredditName": subreddit,
-                    "wikiPageName": "index",
-                },
+                "variables": variables,
                 "csrf_token": csrf_token,
             },
             headers={
@@ -1642,15 +1683,23 @@ async def _fetch_reddit_wiki_page_tree(
         payload = response.json()
     except Exception:
         return {"error": "Reddit wiki page index returned unparsable JSON."}
-    pages = parse_reddit_wiki_page_tree(payload, subreddit)
-    if pages is None:
-        return {
-            "error": (
-                "Reddit returned an invalid anonymous wiki page tree for "
-                f"r/{subreddit}."
-            )
-        }
-    return {"pages": pages}
+    return {"payload": payload}
+
+
+def _safe_wiki_page(page: str) -> bool:
+    """A decoded wiki page path, as the router accepts it (it is sent as a
+    JSON variable, never spliced into a URL)."""
+
+    return (
+        isinstance(page, str)
+        and 0 < len(page) <= 1024
+        and all(
+            part not in {"", ".", ".."}
+            and len(part) <= 256
+            and all(ord(character) >= 0x20 and ord(character) != 0x7F for character in part)
+            for part in page.split("/")
+        )
+    )
 
 
 def _bounded_related_detail(detail: object) -> str:
@@ -2199,6 +2248,384 @@ async def _fetch_items_by_id(
     return _markdown(route, content)
 
 
+_SEARCH_SPLIT_NOTICE = (
+    "Reddit answers a logged-out search for posts, communities and accounts "
+    "as separate searches, so each was read on its own and they cannot share "
+    "one page cursor. To read further, search one type at a time "
+    "(type=link, type=sr or type=user)."
+)
+
+
+def _unfollowable_search_cursor(route: RedditRoute) -> str | None:
+    """Why a search URL's page cursor cannot be followed, or None.
+
+    The router drops a cursor the read cannot carry; reading page one in its
+    place would answer a different page as though it were the one asked for.
+    """
+
+    query = parse_qs(urlparse(route.canonical_url).query)
+    asked = {name for name in ("after", "before") if query.get(name)}
+    if not asked:
+        return None
+    if len(route.requests) > 1:
+        return (
+            "A Reddit search for several kinds is one read per kind, which "
+            "cannot share a page cursor; page one kind at a time (type=link, "
+            "type=sr or type=user)."
+        )
+    request = route.requests[0]
+    if isinstance(request, RedditGraphQLRequest):
+        if "before" in asked:
+            return (
+                "Reddit's post search pages forward only: a `before` cursor "
+                "cannot be followed. Use `after`."
+            )
+        if "afterCursor" not in request.variables:
+            return (
+                "Reddit's post search pages with its own cursor (opaque base64, "
+                "e.g. OQ==, from a previous fetchaller page); this `after` is "
+                "not one."
+            )
+        return None
+    sent = parse_qs(urlparse(request).query)
+    if any(name not in sent for name in asked):
+        return "This Reddit search cannot follow that page cursor."
+    return None
+
+
+async def _fetch_search(
+    route: RedditRoute,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+    timeout: float,
+    max_tokens: int,
+    chars_per_token: int,
+) -> dict:
+    """A search: ``SearchPosts`` for posts, the directory searches for
+    communities and accounts (``/search.json`` is refused logged out)."""
+
+    if not route.requests:
+        return {"error": "Invalid Reddit search route."}
+    single = len(route.requests) == 1
+    if (unfollowable := _unfollowable_search_cursor(route)) is not None:
+        return {"error": unfollowable}
+    children: list[dict] = []
+    after = before = None
+    for request in route.requests:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"error": f"Request timed out ({timeout:g}s limit)"}
+        if isinstance(request, RedditGraphQLRequest):
+            if request.operation != "SearchPosts":
+                return {"error": "Invalid Reddit search route."}
+            result = await fetch_reddit_graphql(request, session, queue, remaining)
+            if "error" in result:
+                return _refused_detail(result, "Reddit post search")
+            converted = search_posts_listing(
+                result["data"], subreddits=search_scope(request)
+            )
+            if "error" in converted:
+                return converted
+            data = converted["listing"]
+        else:
+            result = await fetch_reddit_json(request, session, queue, remaining)
+            if "error" in result:
+                return _refused_detail(result, "Reddit search")
+            data = result["data"]
+            if isinstance(data, dict) and data.get("_reddit_content_state"):
+                if single:
+                    return _markdown(
+                        route,
+                        render_reddit_route(
+                            route,
+                            [data],
+                            max_tokens=max_tokens,
+                            chars_per_token=chars_per_token,
+                        ),
+                    )
+                continue
+            if not _is_listing_payload(data, allowed_kinds=frozenset({"t2", "t5"})):
+                return {"error": "Reddit returned an invalid search response."}
+        children.extend(data["data"]["children"])
+        if single:
+            after = data["data"].get("after")
+            before = data["data"].get("before")
+    listing_data: dict[str, object] = {
+        "children": children,
+        "after": after,
+        "before": before,
+        "dist": len(children),
+    }
+    if not single:
+        listing_data["_fetchaller_notice"] = _SEARCH_SPLIT_NOTICE
+    listing = {"kind": "Listing", "data": listing_data}
+    if not _is_listing_payload(listing, allowed_kinds=frozenset({"t2", "t3", "t5"})):
+        return {"error": "Reddit returned an invalid search response."}
+    return _markdown(
+        route,
+        render_reddit_route(
+            route,
+            [listing],
+            max_tokens=max_tokens,
+            chars_per_token=chars_per_token,
+        ),
+    )
+
+
+_FEED_DEFAULT_POSTS = 25
+
+
+async def _fetch_subreddit_feed_listing(
+    route: RedditRoute,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+    timeout: float,
+    max_tokens: int,
+    chars_per_token: int,
+) -> dict:
+    """``/r/<sub>/new`` or ``/rising``: the app's community feed, hydrated."""
+
+    request = route.requests[0]
+    if (
+        len(route.requests) != 1
+        or not isinstance(request, RedditGraphQLRequest)
+        or route.subreddit is None
+        or route.label not in {"new", "rising"}
+    ):
+        return {"error": "Invalid Reddit feed route."}
+    query = parse_qs(urlparse(route.canonical_url).query)
+    if query.get("before") and not query.get("after"):
+        return {
+            "error": (
+                f"Reddit serves r/{route.subreddit}/{route.label} to logged-out "
+                "clients only as the app's community feed, which pages forward: "
+                "a `before` cursor cannot be followed. Use `after`."
+            )
+        }
+    requested = (query.get("limit") or [""])[0]
+    wanted = (
+        min(100, int(requested))
+        if requested.isdigit() and int(requested) > 0
+        else _FEED_DEFAULT_POSTS
+    )
+    cursor = request.variables.get("after")
+    after = None
+    if cursor is not None:
+        after = feed_cursor_fullname(cursor)
+    if query.get("after") and after is None:
+        return {
+            "error": (
+                f"Reddit's r/{route.subreddit}/{route.label} feed pages after a "
+                "post (after=t3_...); this `after` is not one."
+            )
+        }
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return {"error": f"Request timed out ({timeout:g}s limit)"}
+    result = await fetch_subreddit_feed(
+        route.subreddit,
+        route.label,
+        wanted=wanted,
+        after=after,
+        session=session,
+        queue=queue,
+        timeout=remaining,
+    )
+    if "error" in result:
+        return _refused_detail(result, f"Reddit's r/{route.subreddit} feed")
+    state = (result.get("data") or {}).get("_reddit_content_state")
+    if state:
+        # The community's own state (banned, private, not found), as every
+        # other mapped route reports it.
+        return _markdown(route, f"# Reddit\n\n{state}")
+    payload = result["listing"]
+    notice = _feed_notice(payload, wanted)
+    if notice and isinstance(payload.get("data"), dict):
+        payload["data"]["_fetchaller_notice"] = notice
+    content = render_reddit_route(
+        route,
+        [payload],
+        max_tokens=max_tokens,
+        chars_per_token=chars_per_token,
+    )
+    return _markdown(route, content)
+
+
+def _refusal_hint(route: RedditRoute) -> str | None:
+    """What is still readable when Reddit refuses a route outright.
+
+    Each of these REST reads is refused to logged-out clients (2026-11-22)
+    and has no logged-out equivalent: the app's community feed has no random
+    order, New Reddit's wiki page ignores ``?v=`` and its revision history
+    needs a page name, and nothing else lists a wiki page's discussions.
+    """
+
+    sub = route.subreddit
+    if not sub:
+        return None
+    base = f"https://www.reddit.com/r/{sub}"
+    if route.kind == "listing" and route.label == "randomrising":
+        return (
+            f"r/{sub}/randomrising shuffles the community's rising listing, "
+            "which Reddit serves logged-out clients only as the app's feed, and "
+            f"that feed has no random order; read {base}/rising/ instead."
+        )
+    if route.kind in {"wiki", "wiki_diff"} and route.label:
+        return (
+            "Reddit serves no earlier wiki revision to logged-out clients: the "
+            "page's JSON is refused and its rendered page ignores ?v=. The "
+            f"current page is {base}/wiki/{route.label}/ and its history "
+            f"{base}/wiki/revisions/{route.label}/."
+        )
+    if route.kind == "wiki_revisions":
+        return (
+            "Reddit serves wiki revision history to logged-out clients one page "
+            f"at a time; name the page, e.g. {base}/wiki/revisions/index/ "
+            f"(pages are listed at {base}/wiki/pages/)."
+        )
+    if route.kind == "wiki_discussions":
+        return (
+            "Reddit has no logged-out source for the posts that discuss a wiki "
+            "page."
+        )
+    return None
+
+
+def _is_wiki_html_request(route: RedditRoute) -> bool:
+    """A wiki route read from New Reddit's page rather than refused JSON."""
+
+    request = route.requests[0] if len(route.requests) == 1 else None
+    return (
+        isinstance(request, str)
+        and route.subreddit is not None
+        and bool(route.label)
+        and _is_fixed_new_reddit_html_url(request)
+        and urlparse(request).path.endswith("/")
+        and not urlparse(request).query
+    )
+
+
+async def _fetch_wiki_page_html(
+    route: RedditRoute,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+    max_tokens: int,
+    chars_per_token: int,
+) -> dict:
+    """A wiki page from its server-rendered New Reddit document."""
+
+    result = await _fetch_reddit_html(route.requests[0], session, queue, deadline)
+    if "error" in result:
+        return result
+    parsed = parse_reddit_wiki_page_html(result["html"], route.subreddit, route.label)
+    if parsed is None:
+        return {
+            "error": (
+                f"Reddit's page for r/{route.subreddit}/wiki/{route.label} did not "
+                "render a wiki page (the community may be private, banned, or "
+                "have no wiki)."
+            )
+        }
+    if parsed.get("missing"):
+        return {
+            "error": (
+                f"Reddit says r/{route.subreddit} has no wiki page named "
+                f'"{route.label}".'
+            )
+        }
+    if parsed.get("disabled"):
+        return {
+            "error": (
+                f"Reddit says the moderators of r/{route.subreddit} have "
+                "disabled its wiki."
+            )
+        }
+    content = render_reddit_route(
+        route,
+        [parsed],
+        max_tokens=max_tokens,
+        chars_per_token=chars_per_token,
+    )
+    return _markdown(route, content)
+
+
+async def _fetch_wiki_page_revisions(
+    route: RedditRoute,
+    *,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+    max_tokens: int,
+    chars_per_token: int,
+) -> dict:
+    """A page's revision history: ``WikiPageRevisionsV2`` after its page.
+
+    The operation needs the CSRF cookie New Reddit hands an anonymous session
+    with its first document, so the revisions page itself is read first when
+    the session has none yet.
+    """
+
+    query = parse_qs(urlparse(route.canonical_url).query)
+    if query.get("before"):
+        return {
+            "error": (
+                "Reddit's wiki revision history pages forward only: a `before` "
+                "cursor cannot be followed. Use `after`."
+            )
+        }
+    after = (query.get("after") or [None])[0]
+    if after is not None and not valid_wiki_revision_cursor(after):
+        return {
+            "error": (
+                "Reddit's wiki revision history pages with its own cursor (from "
+                "a previous fetchaller page); this `after` is not one."
+            )
+        }
+    csrf_token = session.get_cookie("csrf_token", "https://www.reddit.com/")
+    if not isinstance(csrf_token, str) or _CSRF_TOKEN_RE.fullmatch(csrf_token) is None:
+        seeded = await _fetch_reddit_html(route.requests[0], session, queue, deadline)
+        if "error" in seeded:
+            return seeded
+    result = await _post_wiki_page_revisions(
+        route.subreddit, route.label, after, session, queue, deadline
+    )
+    if "error" in result:
+        return result
+    listing = parse_reddit_wiki_revisions(
+        result["payload"], route.subreddit, route.label
+    )
+    if listing is None:
+        return {
+            "error": (
+                "Reddit returned an invalid wiki revision history for "
+                f"r/{route.subreddit}/wiki/{route.label}."
+            )
+        }
+    page = (
+        ((result["payload"].get("data") or {}).get("subreddit") or {}).get("wiki") or {}
+    ).get("page")
+    if not listing["data"]["children"] and not isinstance(page, dict):
+        return {
+            "error": (
+                f"Reddit says r/{route.subreddit} has no wiki page named "
+                f'"{route.label}".'
+            )
+        }
+    content = render_reddit_route(
+        route,
+        [listing],
+        max_tokens=max_tokens,
+        chars_per_token=chars_per_token,
+    )
+    return _markdown(route, content)
+
+
 async def _fetch_morechildren(
     route: RedditRoute,
     *,
@@ -2277,6 +2704,19 @@ async def fetch_mapped_reddit(
     payloads: list[object] = []
     session = await _get_session(browser_solver)
 
+    if route.kind in {"wiki", "wiki_revisions"} and _is_wiki_html_request(route):
+        fetcher = (
+            _fetch_wiki_page_html if route.kind == "wiki" else _fetch_wiki_page_revisions
+        )
+        return await fetcher(
+            route,
+            session=session,
+            queue=queue,
+            deadline=deadline,
+            max_tokens=max_tokens,
+            chars_per_token=chars_per_token,
+        )
+
     if route.kind == "wiki_pages":
         if route.subreddit is None or len(route.requests) != 1:
             return {"error": "Invalid New Reddit wiki-page tree route."}
@@ -2353,12 +2793,19 @@ async def fetch_mapped_reddit(
     graphql_fetchers = {
         "thread": _fetch_reddit_thread,
         "morechildren": _fetch_morechildren,
+        "search": _fetch_search,
     }
     if route.kind in graphql_fetchers or (
         route.kind == "listing"
         and any(isinstance(request, RedditGraphQLRequest) for request in route.requests)
     ):
         fetcher = graphql_fetchers.get(route.kind, _fetch_items_by_id)
+        if any(
+            isinstance(request, RedditGraphQLRequest)
+            and request.operation == "SubredditFeedSdui"
+            for request in route.requests
+        ):
+            fetcher = _fetch_subreddit_feed_listing
         extra = {"comments_mode": reddit_comments} if route.kind == "thread" else {}
         return await fetcher(
             route,
@@ -2422,6 +2869,8 @@ async def fetch_mapped_reddit(
         if "error" in result:
             if route.kind == "comment_listing" and result.get("reddit_refused"):
                 return {"error": COMMENT_STREAM_REFUSED}
+            if result.get("reddit_refused") and (hint := _refusal_hint(route)):
+                return {"error": f"{result['error']} {hint}", "reddit_refused": True}
             if route.kind in {"multi_profile", "user_profile", "live"}:
                 payloads.append({"_fetch_error": result["error"]})
                 continue

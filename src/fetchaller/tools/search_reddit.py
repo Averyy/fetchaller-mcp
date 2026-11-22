@@ -1,15 +1,17 @@
 """Search Reddit tool - search posts across Reddit."""
 
-from urllib.parse import urlencode
-
 from ..content.reddit import format_reddit_post
+from ..content.reddit_graphql import (
+    search_posts_listing,
+    search_posts_request,
+    valid_search_cursor,
+)
 from ..queue.reddit_queue import RedditRequestQueue
 from .browse_reddit import (
-    _PAGINATION_CURSOR_PATTERN,
     _SUBREDDIT_PATTERN,
     _get_session,
     _validated_listing_data,
-    fetch_reddit_json,
+    fetch_reddit_graphql,
 )
 
 
@@ -60,29 +62,23 @@ async def search_reddit(
 
     # Clamp limit
     limit = max(1, min(25, limit))
-    if after is not None and not _PAGINATION_CURSOR_PATTERN.fullmatch(after):
-        return {"error": "Invalid Reddit pagination cursor"}
+    # Search pages are cursors of Reddit's GraphQL search (opaque base64), not
+    # the t3_ fullnames REST listings page by: REST /search.json is refused
+    # to logged-out clients, so post search is the app's SearchPosts read.
+    if after is not None and not valid_search_cursor(after):
+        return {"error": "Invalid Reddit search pagination cursor"}
 
-    # Build URL
-    params = {
-        "q": query,
-        "sort": sort,
-        "t": time,
-        "limit": str(limit),
-        "raw_json": "1",
-    }
-    if after:
-        params["after"] = after
-
-    if subreddit:
-        params["restrict_sr"] = "1"
-        url = f"https://www.reddit.com/r/{subreddit}/search.json?{urlencode(params)}"
-    else:
-        url = f"https://www.reddit.com/search.json?{urlencode(params)}"
-
+    request = search_posts_request(
+        query,
+        sort=sort,
+        time=time,
+        subreddits=(subreddit,) if subreddit else (),
+        limit=limit,
+        after=after,
+    )
     session = await _get_session(browser_solver)
-    result = await fetch_reddit_json(
-        url,
+    result = await fetch_reddit_graphql(
+        request,
         session,
         queue,
         float(timeout),
@@ -91,13 +87,12 @@ async def search_reddit(
     if "error" in result:
         return result
 
-    payload = result["data"]
-    if (
-        isinstance(payload, dict)
-        and (content_state := payload.get("_reddit_content_state"))
-    ):
-        return {"content": f'Search: "{query}" · {sort} · {time}\n\n{content_state}'}
-    listing_data = _validated_listing_data(payload)
+    converted = search_posts_listing(
+        result["data"], subreddits=(subreddit,) if subreddit else ()
+    )
+    if "error" in converted:
+        return {"error": converted["error"]}
+    listing_data = _validated_listing_data(converted["listing"])
     if listing_data is None:
         return {"error": "Reddit returned an invalid search response"}
     posts = listing_data["children"]
@@ -114,14 +109,7 @@ async def search_reddit(
         # Include subreddit in search results (unless limited to one)
         lines.append(format_reddit_post(post.get("data", {}), i, include_subreddit=not subreddit))
 
-    if isinstance(after_cursor, str) and _PAGINATION_CURSOR_PATTERN.fullmatch(
-        after_cursor
-    ):
+    if valid_search_cursor(after_cursor):
         lines.append(f"\n[Next page: after={after_cursor}]")
-    elif after_cursor is not None:
-        lines.append(
-            "\n[Next page unavailable: Reddit returned an invalid pagination "
-            "cursor]"
-        )
 
     return {"content": "\n".join(lines)}

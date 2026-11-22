@@ -1471,7 +1471,11 @@ def create_server(
                             "type": "string",
                             "enum": ["hot", "new", "top", "rising"],
                             "default": "hot",
-                            "description": "Sort order",
+                            "description": (
+                                "Sort order. new and rising are read from "
+                                "Reddit's app feed, a few posts per read: "
+                                "allow a longer timeout (e.g. 30) for more."
+                            ),
                         },
                         "time": {
                             "type": "string",
@@ -1495,7 +1499,11 @@ def create_server(
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 300,
-                            "description": "Request timeout in seconds (default: 10)",
+                            "description": (
+                                "Request timeout in seconds (default: 10; 30 for "
+                                "new and rising, which are two Reddit reads six "
+                                "seconds apart)"
+                            ),
                         },
                     },
                     "required": ["subreddit"],
@@ -2970,13 +2978,18 @@ def create_server(
                 return _format_result(name, result, start_time)
 
             elif name == "browse_reddit":
+                sort = arguments.get("sort", "hot")
+                # new and rising are the app's community feed plus a PostsByIds
+                # read, six seconds apart on the Reddit limiter: ten seconds
+                # cannot hold both once another read took the last slot.
+                default_timeout = 30 if sort in ("new", "rising") else 10
                 result = await browse_reddit(
                     subreddit=arguments["subreddit"],
-                    sort=arguments.get("sort", "hot"),
+                    sort=sort,
                     time=arguments.get("time", "day"),
                     limit=arguments.get("limit", 10),
                     after=arguments.get("after"),
-                    timeout=max(1, min(300, arguments.get("timeout", 10))),
+                    timeout=max(1, min(300, arguments.get("timeout", default_timeout))),
                     queue=reddit_queue,
                     browser_solver=browser_solver,
                 )

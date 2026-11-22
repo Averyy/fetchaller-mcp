@@ -10,11 +10,17 @@ import wafer
 from ..config import get_wafer_cache_dir
 from ..content.reddit import format_reddit_post
 from ..content.reddit_graphql import (
-    GRAPHQL_URL as REDDIT_GRAPHQL_URL,
-)
-from ..content.reddit_graphql import (
+    FEED_SORTS,
     RedditGraphQLRequest,
     graphql_errors,
+    graphql_errors_under,
+    posts_by_ids_request,
+    posts_by_ids_things,
+    subreddit_feed_page,
+    subreddit_feed_request,
+)
+from ..content.reddit_graphql import (
+    GRAPHQL_URL as REDDIT_GRAPHQL_URL,
 )
 from ..queue.reddit_queue import RedditRequestQueue, parse_retry_after
 from ..ratelimit import reddit_limiter
@@ -810,6 +816,199 @@ async def fetch_reddit_graphql(
     return {"data": payload}
 
 
+# Following another feed page costs a limiter slot, and the posts still need
+# their own read after it: only follow one when both fit before the deadline.
+_FEED_FOLLOW_MARGIN = 2 * 6.0 + 4.0
+_MAX_FEED_PAGES = 5
+
+
+async def fetch_subreddit_feed(
+    subreddit: str,
+    sort: str,
+    *,
+    wanted: int,
+    after: str | None,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    timeout: float,
+) -> dict:
+    """``r/<sub>/new`` or ``/rising`` as a REST ``Listing``.
+
+    Reddit refuses both REST listings to logged-out clients (2026-11-22); the
+    app reads them as ``SubredditFeedSdui``, whose cells give the ordered
+    post ids (about seven elements a page, no page size to ask for). The
+    posts are then one ``PostsByIds`` read, so every field is the post's own
+    rather than the feed's rendered text. Further pages are followed until
+    ``wanted`` posts, five pages, or too little time is left for one more
+    page and the posts. Returns ``{"listing", "pages"}`` or ``{"error"}``; a
+    post Reddit returned nothing for is named in ``listing.data``'s notice.
+    """
+
+    deadline = monotonic_time.monotonic() + timeout
+    timed_out = {
+        "error": (
+            f"Request timed out ({timeout:g}s limit): r/{subreddit}/{sort} is "
+            "Reddit's app feed and then its posts, two Reddit reads six seconds "
+            "apart; allow a timeout of 20 or more."
+        )
+    }
+    fullnames: list[str] = []
+    cursor = after
+    next_after: str | None = None
+    invalid_cursor = False
+    pages = 0
+    while True:
+        remaining = deadline - monotonic_time.monotonic()
+        if remaining <= 0:
+            if not fullnames:
+                return timed_out
+            next_after = cursor
+            break
+        result = await fetch_reddit_graphql(
+            subreddit_feed_request(subreddit, sort, after=cursor),
+            session,
+            queue,
+            remaining,
+        )
+        if "error" in result:
+            if not result["error"].startswith("Request timed out"):
+                # A later page Reddit failed is reported, never shown as a
+                # short page blamed on the clock.
+                return result
+            if not fullnames:
+                return timed_out
+            next_after = cursor
+            break
+        page = subreddit_feed_page(result["data"])
+        if "error" in page:
+            if fullnames or not page.get("unavailable"):
+                # A malformed element, or a later page Reddit answered with
+                # nothing, is a degraded answer: report it rather than show
+                # the posts around it as the whole listing.
+                return {"error": page["error"]}
+            return await _feed_unavailable(subreddit, page, session, queue, deadline)
+        pages += 1
+        new = [value for value in page["fullnames"] if value not in fullnames]
+        fullnames.extend(new)
+        if page["after"] is False:
+            invalid_cursor = True
+            break
+        cursor = page["after"]
+        if cursor is None or not new:
+            next_after = None if cursor is None else cursor
+            break
+        next_after = cursor
+        if (
+            len(fullnames) >= wanted
+            or pages >= _MAX_FEED_PAGES
+            or deadline - monotonic_time.monotonic() < _FEED_FOLLOW_MARGIN
+        ):
+            break
+    if len(fullnames) > wanted:
+        fullnames = fullnames[:wanted]
+        next_after = fullnames[-1]
+    children: list[dict] = []
+    missing: list[str] = []
+    if fullnames:
+        remaining = deadline - monotonic_time.monotonic()
+        if remaining <= 0:
+            return timed_out
+        hydrated = await fetch_reddit_graphql(
+            posts_by_ids_request([value[3:] for value in fullnames]),
+            session,
+            queue,
+            remaining,
+        )
+        if "error" in hydrated:
+            if hydrated["error"].startswith("Request timed out"):
+                return timed_out
+            return hydrated
+        if graphql_errors_under(hydrated["data"], ("postsInfoByIds",)):
+            # The feed just listed these posts: an error reading them is
+            # Reddit failing, not posts that went missing.
+            return {
+                "error": "Reddit's post lookup failed: "
+                + "; ".join(graphql_errors(hydrated["data"]))
+                + "."
+            }
+        converted = posts_by_ids_things(hydrated["data"], fullnames)
+        if "error" in converted:
+            return {"error": converted["error"]}
+        children = [
+            converted["things"][value]
+            for value in fullnames
+            if value in converted["things"]
+        ]
+        missing = [value for value in fullnames if value not in converted["things"]]
+    data: dict[str, object] = {
+        "children": children,
+        "after": None if invalid_cursor else next_after,
+        "before": None,
+        "dist": len(children),
+    }
+    if invalid_cursor:
+        data["_fetchaller_invalid_after"] = True
+    if missing:
+        data["_fetchaller_missing"] = missing
+    return {"listing": {"kind": "Listing", "data": data}, "pages": pages}
+
+
+def _feed_notice(payload: object, wanted: int) -> str | None:
+    """What a feed answer left out: posts Reddit returned nothing for, and a
+    short page (the feed serves a few posts per read)."""
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or "children" not in data:
+        return None
+    notes = []
+    missing = data.get("_fetchaller_missing") or []
+    if missing:
+        notes.append(
+            f"Reddit listed {len(missing)} post(s) in the feed but returned "
+            f"nothing for {', '.join(missing[:10])}."
+        )
+    if not data["children"] and data.get("after"):
+        notes.append(
+            "Reddit's app feed, the only logged-out source for this listing, "
+            "returned no posts on this read; follow the next page for more."
+        )
+    elif len(data["children"]) < wanted and data.get("after"):
+        notes.append(
+            "Reddit serves this feed to logged-out clients only as the app's "
+            "community feed, a few posts per read; fewer than asked fit in "
+            "the time allowed. Follow the next page for more, or allow a "
+            "longer timeout."
+        )
+    return " ".join(notes) or None
+
+
+async def _feed_unavailable(
+    subreddit: str,
+    page: dict,
+    session: wafer.AsyncSession,
+    queue: RedditRequestQueue | None,
+    deadline: float,
+) -> dict:
+    """A feed Reddit answered with nothing: say why when Reddit says so.
+
+    The feed does not name a private, banned or missing community; its hot
+    listing, which Reddit still serves logged out, answers with that state.
+    """
+
+    remaining = deadline - monotonic_time.monotonic()
+    if remaining > 0:
+        state = await fetch_reddit_json(
+            f"https://www.reddit.com/r/{subreddit}/hot.json?limit=1&raw_json=1",
+            session,
+            queue,
+            remaining,
+        )
+        data = state.get("data")
+        if isinstance(data, dict) and data.get("_reddit_content_state"):
+            return {"data": data}
+    return {"error": page["error"]}
+
+
 def _validated_listing_data(payload: object) -> dict | None:
     """Return Listing.data only when every renderer-facing field is safe."""
 
@@ -876,27 +1075,45 @@ async def browse_reddit(
     if after is not None and not _PAGINATION_CURSOR_PATTERN.fullmatch(after):
         return {"error": "Invalid Reddit pagination cursor"}
 
-    # Build URL
-    params = {"limit": str(limit), "raw_json": "1"}
-    if sort == "top":
-        params["t"] = time
-    if after:
-        params["after"] = after
-
-    url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?{urlencode(params)}"
-
     session = await _get_session(browser_solver)
-    result = await fetch_reddit_json(
-        url,
-        session,
-        queue,
-        float(timeout),
-    )
-
-    if "error" in result:
-        return result
-
-    payload = result["data"]
+    notice = None
+    feed = sort in FEED_SORTS and subreddit.lower() not in {"all", "popular"}
+    if feed and after is not None and not after.startswith("t3_"):
+        # The community feed pages after a post (its cursor is the post's
+        # fullname); any other fullname cannot be carried.
+        return {"error": "Invalid Reddit pagination cursor"}
+    if feed:
+        # REST /r/<sub>/new and /rising are refused to logged-out clients;
+        # they are the app's community feed, a few posts per read.
+        result = await fetch_subreddit_feed(
+            subreddit,
+            sort,
+            wanted=limit,
+            after=after,
+            session=session,
+            queue=queue,
+            timeout=float(timeout),
+        )
+        if "error" in result:
+            return result
+        payload = result.get("data") or result["listing"]
+        notice = _feed_notice(payload, limit)
+    else:
+        params = {"limit": str(limit), "raw_json": "1"}
+        if sort == "top":
+            params["t"] = time
+        if after:
+            params["after"] = after
+        url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?{urlencode(params)}"
+        result = await fetch_reddit_json(
+            url,
+            session,
+            queue,
+            float(timeout),
+        )
+        if "error" in result:
+            return result
+        payload = result["data"]
     if (
         isinstance(payload, dict)
         and (content_state := payload.get("_reddit_content_state"))
@@ -908,11 +1125,16 @@ async def browse_reddit(
     posts = listing_data["children"]
     after_cursor = listing_data.get("after")
 
-    if not posts:
+    if not posts and not notice and not (
+        isinstance(after_cursor, str) and _PAGINATION_CURSOR_PATTERN.fullmatch(after_cursor)
+    ):
         return {"content": f"r/{subreddit} · {sort} · No posts found"}
 
-    # Format output
+    # Format output (a feed page can hold no posts yet continue: keep its
+    # notice and its cursor)
     lines = [f"r/{subreddit} · {sort} · {len(posts)} posts\n"]
+    if notice:
+        lines.append(f"{notice}\n")
 
     for i, post in enumerate(posts, 1):
         lines.append(format_reddit_post(post.get("data", {}), i, include_subreddit=False))
@@ -921,7 +1143,7 @@ async def browse_reddit(
         after_cursor
     ):
         lines.append(f"\n[Next page: after={after_cursor}]")
-    elif after_cursor is not None:
+    elif after_cursor is not None or listing_data.get("_fetchaller_invalid_after"):
         lines.append(
             "\n[Next page unavailable: Reddit returned an invalid pagination "
             "cursor]"

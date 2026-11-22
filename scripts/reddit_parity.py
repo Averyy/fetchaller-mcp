@@ -176,7 +176,8 @@ _VELOCITY_RANKED_FEEDS = frozenset({
     "listing_global_rising",
     "listing_global_randomrising",
     "listing_subreddit_rising",
-    "listing_subreddit_randomrising",
+    # listing_subreddit_randomrising left: Reddit refuses it logged out
+    # (2026-11-22) and the corpus keeps it fixture-only.
     "multi_rising",
     "multi_randomrising",
 })

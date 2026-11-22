@@ -40,9 +40,10 @@ Do not bypass the provider gate for `all` or Google fallback. Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.12 pins published
-wafer 0.7.14 (Linux and Windows `platformVersion` as Chrome reports
-it; 0.7.12 added Kasada-signed calls for costco.com and Chrome 157; 0.7.11
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.13 pins published
+wafer 0.7.15 (TMD reCAPTCHA punishments routed whatever the action's case;
+0.7.14 recovered Akamai's 206 API refusals; 0.7.13 Linux and Windows
+`platformVersion` as Chrome reports it; 0.7.12 added Kasada-signed calls for costco.com and Chrome 157; 0.7.11
 carried `add_cookie()` cookies into the browser; 0.7.10 added Reddit's refused
 reads and GraphQL on the app route; 0.7.9 first carried the Brave handler),
 with its PyPI artifact locked. Unresolved challenges, including HTTP 200 gates, are errors
@@ -112,7 +113,32 @@ field GraphQL lacks -- a comment's `controversiality`, an account's
 email-verified, Premium or suspended flag stay absent rather than defaulted.
 Comment streams have no logged-out equivalent: report Reddit's refusal, never
 an empty stream. See `docs/architecture.md` ("Reads Reddit serves logged-out
-clients only over GraphQL"). **Gilded listings** (`/gilded/`,
+clients only over GraphQL").
+
+**Search, a community's new/rising feed and the wiki moved too (2026-11-22).**
+Reddit refuses `/search.json` (every `type=`, with `restrict_sr` too),
+`/r/<sub>/new` and `/rising`, and the wiki JSON to logged-out clients, while
+`/hot`, `/top`, `/controversial`, multireddit, domain and sitewide listings are
+still REST. Post search is the app's `SearchPosts` (`productSurface:
+"android"`; time, community and `nsfw: "0"` as `FilterInput` pairs;
+`subreddit_names` takes `a,b`); a restricted search must come back with that
+filter among Reddit's `appliedFilters` or it is an error, never sitewide
+results under a community's name. Its cursor is opaque base64. Community and
+account search are `/subreddits/search.json` and `/users/search.json`, still
+served; a mixed `type=` is one read per kind and says it cannot share a cursor.
+`/r/<sub>/new` and `/rising` are `SubredditFeedSdui` for the ordered post ids
+(server-driven cells: never render them) hydrated by `PostsByIds`. The feed
+serves about seven elements a read and takes no page size, and reads are 6 s
+apart, so it follows pages only while one more page and the hydration fit the
+caller's timeout, and says when a page is short. Its `endCursor` is the base64
+of the last post's fullname, so `after=t3_...` carries over both ways. A
+subreddit's `randomrising` (a shuffle of the rising pool), `r/a+b` combos, wiki
+discussions, an earlier wiki revision (`?v=`, so diffs) and all-pages
+revisions have no logged-out source: report the refusal and name what is
+still readable. A wiki page is its server-rendered New Reddit document (`main
+div.md.wiki`, "Last revised by"), converted from HTML and labelled so; a
+page's revisions are New Reddit's own `WikiPageRevisionsV2`, paged by `after`.
+**Gilded listings** (`/gilded/`,
 `/comments/gilded/`, `/r/<sub>[/comments]/gilded/`, `/user/<name>/gilded/`)
 were retired by Reddit, which answers them with 400, a structured 403, 404, or
 a 301 to the profile; fetchaller reports exactly that answer. **Post

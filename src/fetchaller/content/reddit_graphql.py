@@ -19,13 +19,17 @@ value Reddit never sent. Each converted Thing carries
 ``_fetchaller_reddit_provenance: "graphql"``.
 
 Persisted-query hashes come from the 2026.44.0 app (``gql_ops.tsv`` in the
-wafer handoff). Only the hash and variables are sent, never query text: the app
+wafer handoff); ``SearchPosts`` and ``SubredditFeedSdui`` from 2026.47.0, which
+Reddit's refusal of REST search and a community's new/rising feed (2026-11-22)
+made necessary. Only the hash and variables are sent, never query text: the app
 never sends query text, and Reddit answers ``PersistedQueryNotFound`` when an
 operation is retired, which surfaces as an error naming the operation.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from dataclasses import dataclass
@@ -60,7 +64,44 @@ PERSISTED_QUERIES: dict[str, str] = {
     "GetMatrixChatUsersByIds": (
         "1412e2c935de284ee35ec458baabc6920b530d87309da5eecdaa8b83f87f36c4"
     ),
+    # search.general.posts (app 2026.47.0): REST /search.json is refused to
+    # logged-out clients for every type= and with restrict_sr (2026-11-22).
+    "SearchPosts": (
+        "615b36e7dfafab21d903a94d16cb5fd5404c36efa765fd4ab8cca2f8c42f7476"
+    ),
+    # subredditV3.elements (app 2026.47.0): a community's feed by sort. REST
+    # /r/<sub>/new and /rising are refused logged out (2026-11-22) while
+    # /hot, /top and /controversial are still served. Its answer is
+    # server-driven UI cells, so it is read for the ordered post ids only,
+    # and the posts themselves come from PostsByIds.
+    "SubredditFeedSdui": (
+        "5d2b722d6b627e1cb624d02f03687f4048113b6409bbd4ae7b481c0fc38490ca"
+    ),
 }
+
+# REST subreddit sorts read through SubredditFeedSdui, and the app's
+# PostFeedSort values. Reddit has no RANDOMRISING value.
+FEED_SORTS = {"new": "NEW", "rising": "RISING"}
+_FULLNAME_RE = re.compile(r"t3_[A-Za-z0-9]{2,16}\Z")
+# A feed page holds about seven elements (2026-11-22); this bounds the
+# answer, never the page size, which the operation does not take.
+_MAX_FEED_EDGES = 100
+
+# REST search sorts and the app's SearchPostSort enum (com.reddit.type).
+_SEARCH_POST_SORT_ENUM = {
+    "relevance": "RELEVANCE",
+    "hot": "HOT",
+    "top": "TOP",
+    "new": "NEW",
+    "comments": "COMMENTS",
+}
+# The app's SearchSortTimeFrame values, sent as the ``time_range`` filter.
+_SEARCH_TIME_RANGES = frozenset({"hour", "day", "week", "month", "year", "all"})
+# A search page cursor is opaque base64 (``OQ==`` -- an offset -- on
+# 2026-11-22); it round-trips through a URL, so accept only that alphabet.
+_SEARCH_CURSOR_RE = re.compile(r"[A-Za-z0-9+/]{1,256}={0,2}\Z")
+_SUBREDDIT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_]{0,20}\Z")
+_MAX_SEARCH_PAGE = 100
 
 # REST comment sorts and the app's CommentSort enum (com.reddit.type).
 _COMMENT_SORT_ENUM = {
@@ -204,6 +245,164 @@ def posts_by_ids_request(post_ids: list[str]) -> RedditGraphQLRequest:
     )
 
 
+def valid_search_cursor(value: object) -> bool:
+    """A SearchPosts page cursor: canonical base64 of printable ASCII."""
+
+    if not isinstance(value, str) or _SEARCH_CURSOR_RE.fullmatch(value) is None:
+        return False
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return (
+        bool(decoded)
+        and all(0x20 <= byte < 0x7F for byte in decoded)
+        and base64.b64encode(decoded).decode("ascii") == value
+    )
+
+
+def search_posts_request(
+    query: str,
+    *,
+    sort: str = "relevance",
+    time: str = "all",
+    subreddits: list[str] | tuple[str, ...] = (),
+    limit: int = 25,
+    after: str | None = None,
+) -> RedditGraphQLRequest:
+    """The app's post search, as its search client builds it.
+
+    The app sends ``productSurface: "android"``, the time range and the
+    community a search is restricted to as ``FilterInput`` key/value pairs,
+    and an ``nsfw`` filter of ``"0"`` unless the reader opted into NSFW
+    results, which a logged-out reader has not (REST excluded them too).
+    ``subreddit_names`` also takes a comma-separated list (``r/a+b``), which
+    Reddit echoes back among its applied filters (checked 2026-11-22).
+    """
+
+    if not isinstance(query, str) or not query.strip() or len(query) > 512:
+        raise ValueError("invalid Reddit search query")
+    if sort not in _SEARCH_POST_SORT_ENUM:
+        raise ValueError("invalid Reddit search sort")
+    if time not in _SEARCH_TIME_RANGES:
+        raise ValueError("invalid Reddit search time range")
+    if len(subreddits) > 20 or not all(
+        _SUBREDDIT_NAME_RE.fullmatch(name) for name in subreddits
+    ):
+        raise ValueError("invalid Reddit subreddit names")
+    if not 1 <= limit <= _MAX_SEARCH_PAGE:
+        raise ValueError("invalid Reddit search page size")
+    if after is not None and not valid_search_cursor(after):
+        raise ValueError("invalid Reddit search cursor")
+    filters = [{"key": "time_range", "value": time}]
+    if subreddits:
+        filters.append({"key": "subreddit_names", "value": ",".join(subreddits)})
+    filters.append({"key": "nsfw", "value": "0"})
+    variables: dict[str, object] = {
+        "query": query,
+        "productSurface": "android",
+        "pageSize": limit,
+        "sort": _SEARCH_POST_SORT_ENUM[sort],
+        "filters": filters,
+    }
+    if after is not None:
+        variables["afterCursor"] = after
+    return graphql_request("SearchPosts", variables)
+
+
+def feed_cursor(fullname: str) -> str:
+    """The feed cursor for the page after ``fullname``.
+
+    SubredditFeedSdui pages by the base64 of the last post's fullname (its
+    ``endCursor`` was ``base64("t3_1y0riix")`` for a page ending on that post,
+    2026-11-22), so a REST ``after`` fullname carries over unchanged.
+    """
+
+    if not _FULLNAME_RE.fullmatch(fullname):
+        raise ValueError("invalid Reddit post fullname")
+    return base64.b64encode(fullname.encode("ascii")).decode("ascii")
+
+
+def feed_cursor_fullname(cursor: object) -> str | None:
+    """The post fullname a feed ``endCursor`` names, or None."""
+
+    if not valid_search_cursor(cursor):
+        return None
+    fullname = base64.b64decode(str(cursor)).decode("ascii")
+    return fullname if _FULLNAME_RE.fullmatch(fullname) else None
+
+
+def subreddit_feed_request(
+    subreddit: str,
+    sort: str,
+    *,
+    after: str | None = None,
+) -> RedditGraphQLRequest:
+    """One page of a community's feed, as the app requests it: the name,
+    sort and cursor, with no page size (the operation takes none)."""
+
+    if not _SUBREDDIT_NAME_RE.fullmatch(subreddit):
+        raise ValueError("invalid Reddit subreddit name")
+    if sort not in FEED_SORTS:
+        raise ValueError("invalid Reddit feed sort")
+    variables: dict[str, object] = {
+        "subredditName": subreddit,
+        "sort": FEED_SORTS[sort],
+    }
+    if after is not None:
+        variables["after"] = feed_cursor(after)
+    return graphql_request("SubredditFeedSdui", variables)
+
+
+def subreddit_feed_page(payload: object) -> dict:
+    """A ``SubredditFeedSdui`` page as its ordered post fullnames.
+
+    Only cell groups identifying a post are kept: recommendation carousels,
+    onboarding units and promoted posts (a group with an ad payload) are the
+    app's furniture, not the listing. ``after`` is the fullname the next page
+    starts after, None at the end, or ``False`` when Reddit sent a cursor that
+    does not name a post. A community Reddit does not serve (none by that
+    name, private, banned) answers ``subredditV3: null`` or an input error.
+    """
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    community = data.get("subredditV3") if isinstance(data, dict) else None
+    elements = community.get("elements") if isinstance(community, dict) else None
+    edges = elements.get("edges") if isinstance(elements, dict) else None
+    if not isinstance(edges, list):
+        errors = graphql_errors(payload)
+        return {
+            "unavailable": True,
+            "error": "Reddit's community feed answered no feed"
+            + (f": {'; '.join(errors)}" if errors else "."),
+        }
+    if graphql_errors_under(payload, ("subredditV3", "elements")):
+        errors = graphql_errors(payload)
+        return {
+            "unavailable": True,
+            "error": "Reddit's community feed failed: " + "; ".join(errors) + ".",
+        }
+    fullnames: list[str] = []
+    for edge in edges[:_MAX_FEED_EDGES]:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        if not isinstance(node, dict) or not isinstance(node.get("__typename"), str):
+            return {"error": "Reddit's community feed returned an invalid element."}
+        if node["__typename"] != "CellGroup":
+            continue
+        if node.get("adPayload"):
+            continue
+        group = node.get("groupId")
+        if isinstance(group, str) and _FULLNAME_RE.fullmatch(group):
+            if group not in fullnames:
+                fullnames.append(group)
+    page_info = elements.get("pageInfo")
+    cursor = page_info.get("endCursor") if isinstance(page_info, dict) else None
+    after: str | None | bool = None
+    if cursor is not None:
+        after = feed_cursor_fullname(cursor) or False
+    return {"fullnames": fullnames, "after": after}
+
+
 def comments_by_ids_request(comment_ids: list[str]) -> RedditGraphQLRequest:
     if not 1 <= len(comment_ids) <= _MAX_BATCH or not all(
         _POST_ID_RE.fullmatch(value) for value in comment_ids
@@ -219,6 +418,23 @@ def comments_by_ids_request(comment_ids: list[str]) -> RedditGraphQLRequest:
 
 
 # -- response helpers --------------------------------------------------------
+
+
+def graphql_errors_under(payload: object, prefix: tuple[str, ...]) -> bool:
+    """Whether a GraphQL ``errors`` entry is located at or below ``prefix``
+    (``path`` is the field path; list indices are ints)."""
+
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if not isinstance(errors, list):
+        return False
+    for error in errors[:50]:
+        path = error.get("path") if isinstance(error, dict) else None
+        if not isinstance(path, list):
+            continue
+        names = tuple(part for part in path if isinstance(part, str))
+        if names[: len(prefix)] == prefix:
+            return True
+    return False
 
 
 def graphql_errors(payload: object) -> list[str]:
@@ -967,3 +1183,105 @@ def posts_by_ids_things(payload: object, fullnames: list[str]) -> dict:
             return {"error": "Reddit's post lookup returned an invalid or substituted post."}
         things[str(converted["name"])] = {"kind": "t3", "data": converted}
     return {"things": things}
+
+
+def search_scope(request: RedditGraphQLRequest) -> tuple[str, ...]:
+    """The communities a ``SearchPosts`` request is restricted to."""
+
+    for entry in request.variables.get("filters") or ():
+        if isinstance(entry, dict) and entry.get("key") == "subreddit_names":
+            return tuple(str(entry.get("value") or "").split(","))
+    return ()
+
+
+def search_posts_listing(
+    payload: object,
+    *,
+    subreddits: list[str] | tuple[str, ...] = (),
+) -> dict:
+    """``search.general.posts`` as a REST search ``Listing`` or an error.
+
+    Promoted posts (``AdPost``) are the app's ads, not results, and REST
+    search never returned them, so they are dropped. A search restricted to
+    one community must come back with that restriction among the filters
+    Reddit says it applied: an answer that dropped it would be sitewide
+    results presented as the community's.
+    """
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    search = data.get("search") if isinstance(data, dict) else None
+    general = search.get("general") if isinstance(search, dict) else None
+    posts = general.get("posts") if isinstance(general, dict) else None
+    edges = posts.get("edges") if isinstance(posts, dict) else None
+    if not isinstance(edges, list):
+        errors = graphql_errors(payload)
+        return {
+            "error": "Reddit's post search failed"
+            + (f": {'; '.join(errors)}" if errors else ".")
+        }
+    if subreddits:
+        wanted = {name.lower() for name in subreddits}
+        applied = _applied_search_filters(posts) or []
+        if not any(
+            key == "subreddit_names"
+            and {name.strip().lower() for name in value.split(",")} == wanted
+            for key, value in applied
+        ):
+            scope = "+".join(subreddits)
+            return {
+                "error": (
+                    f"Reddit's post search did not confirm the r/{scope} "
+                    "restriction, so its results may be from all of Reddit."
+                )
+            }
+    if graphql_errors_under(payload, ("search", "general", "posts")):
+        errors = graphql_errors(payload)
+        return {"error": "Reddit's post search failed: " + "; ".join(errors) + "."}
+    children: list[dict] = []
+    for edge in edges[:_MAX_SEARCH_PAGE]:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        if not isinstance(node, dict):
+            # A null result is a degraded answer, never an absent post.
+            return {"error": "Reddit's post search returned an invalid result."}
+        if node.get("__typename") == "AdPost":
+            continue
+        converted = post_data(node)
+        if converted is None:
+            return {"error": "Reddit's post search returned an invalid post."}
+        children.append({"kind": "t3", "data": converted})
+    page_info = posts.get("pageInfo")
+    after = None
+    if isinstance(page_info, dict) and page_info.get("hasNextPage") is True:
+        cursor = page_info.get("endCursor")
+        if valid_search_cursor(cursor):
+            after = cursor
+        else:
+            return {"error": "Reddit's post search returned an invalid page cursor."}
+    return {
+        "listing": {
+            "kind": "Listing",
+            "data": {
+                "children": children,
+                "after": after,
+                "before": None,
+                "dist": len(children),
+            },
+        }
+    }
+
+
+def _applied_search_filters(posts: dict) -> list[tuple[str, str]] | None:
+    metadata = posts.get("feedMetadata")
+    applied = metadata.get("appliedFilters") if isinstance(metadata, dict) else None
+    edges = applied.get("edges") if isinstance(applied, dict) else None
+    if not isinstance(edges, list):
+        return None
+    pairs = []
+    for edge in edges[:50]:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        if not isinstance(node, dict):
+            continue
+        key, value = node.get("key"), node.get("value")
+        if isinstance(key, str) and isinstance(value, str):
+            pairs.append((key, value))
+    return pairs

@@ -37,6 +37,12 @@ class MockResponse:
         return json.loads(self.text)
 
 
+def _app_route(response: MockResponse) -> MockResponse:
+    """Mark a response as served by wafer's Reddit app route."""
+    response.emulation = "reddit_app"
+    return response
+
+
 def _html_response(html: str, url: str, content_type: str = "text/html") -> MockResponse:
     """Build a MockResponse from an HTML string."""
     return MockResponse(
@@ -67,7 +73,9 @@ class MockWaferSession:
             "https://example.com",
         )
         self.calls: list[str] = []
+        self.request_methods: list[str] = []
         self.request_headers: list[dict[str, str]] = []
+        self.posted_json: list[object] = []
 
     async def __aenter__(self):
         return self
@@ -80,7 +88,15 @@ class MockWaferSession:
 
     async def get(self, url: str, **kwargs) -> MockResponse:
         self.calls.append(url)
+        self.request_methods.append("GET")
         self.request_headers.append(dict(kwargs.get("headers") or {}))
+        return self.responses.get(url, self.default)
+
+    async def post(self, url: str, **kwargs) -> MockResponse:
+        self.calls.append(url)
+        self.request_methods.append("POST")
+        self.request_headers.append(dict(kwargs.get("headers") or {}))
+        self.posted_json.append(kwargs.get("json"))
         return self.responses.get(url, self.default)
 
 
@@ -1140,14 +1156,37 @@ class TestRedditUrlTransform:
         secret = "caller-a-private-query"
         raw_url = "https://www.reddit.com/r/python/about/"
         explicit_url = f"https://www.reddit.com/r/python/hot.json?query={secret}"
-        search_url = (
-            f"https://www.reddit.com/r/python/search.json?q={secret}&sort=new&t=all&limit=1&raw_json=1&restrict_sr=1"
-        )
-        browse_url = "https://www.reddit.com/r/python/new.json?limit=1&raw_json=1"
-        search_transport_url = search_url.replace(
-            "www.reddit.com",
-            "api.reddit.com",
-        )
+        # Post search is the app's SearchPosts GraphQL read (REST search.json
+        # is refused logged out), POSTed with no headers of ours.
+        search_transport_url = "https://gql-fed.reddit.com/"
+        search_answer = json.dumps(
+            {
+                "data": {
+                    "search": {
+                        "general": {
+                            "posts": {
+                                "edges": [],
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "feedMetadata": {
+                                    "appliedFilters": {
+                                        "edges": [
+                                            {
+                                                "node": {
+                                                    "key": "subreddit_names",
+                                                    "value": "python",
+                                                }
+                                            }
+                                        ]
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        ).encode()
+        # hot is still a REST read (new/rising are the app's GraphQL feed).
+        browse_url = "https://www.reddit.com/r/python/hot.json?limit=1&raw_json=1"
         browse_transport_url = browse_url.replace(
             "www.reddit.com",
             "api.reddit.com",
@@ -1161,11 +1200,13 @@ class TestRedditUrlTransform:
                     200,
                     explicit_url,
                 ),
-                search_transport_url: MockResponse(
-                    listing,
-                    "application/json",
-                    200,
-                    search_transport_url,
+                search_transport_url: _app_route(
+                    MockResponse(
+                        search_answer,
+                        "application/json",
+                        200,
+                        search_transport_url,
+                    )
                 ),
                 browse_transport_url: MockResponse(
                     listing,
@@ -1196,7 +1237,7 @@ class TestRedditUrlTransform:
                     queue=queue,
                 )
             elif first_request == "browse":
-                first = await browse_reddit("python", sort="new", limit=1, queue=queue)
+                first = await browse_reddit("python", sort="hot", limit=1, queue=queue)
             else:
                 first = await fetch_url(explicit_url, reddit_queue=queue)
             second = await fetch_url(raw_url, raw=True, reddit_queue=queue)
@@ -1205,8 +1246,14 @@ class TestRedditUrlTransform:
         assert "error" not in second
         assert secret not in second["content"]
         assert len(session.request_headers) == 2
-        for headers in session.request_headers:
-            assert headers["Referer"] == "https://www.reddit.com/"
+        for method, headers in zip(
+            session.request_methods, session.request_headers, strict=True
+        ):
+            if method == "POST":
+                # The GraphQL search carries no headers of ours at all.
+                assert headers == {}
+            else:
+                assert headers["Referer"] == "https://www.reddit.com/"
             assert secret not in json.dumps(headers)
 
     @_PATCH_SSRF

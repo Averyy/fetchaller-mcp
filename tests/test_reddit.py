@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -18,9 +19,12 @@ from fetchaller.content.reddit import (
     canonicalize_reddit_links,
     format_reddit_post,
     parse_reddit_related_html,
+    parse_reddit_wiki_page_html,
     parse_reddit_wiki_pages_html,
+    parse_reddit_wiki_revisions,
     render_reddit_route,
     route_reddit_url,
+    valid_wiki_revision_cursor,
 )
 from fetchaller.content.reddit_graphql import RedditGraphQLRequest
 from fetchaller.tools.browse_reddit import (
@@ -213,6 +217,84 @@ def _gql_post(
     return node
 
 
+def _search_answer(
+    nodes: list[dict],
+    *,
+    end_cursor: object = None,
+    has_next: bool = False,
+    applied: list[tuple[str, str]] | None = None,
+) -> dict:
+    """A ``SearchPosts`` answer (search.general.posts)."""
+
+    return {
+        "data": {
+            "search": {
+                "general": {
+                    "posts": {
+                        "edges": [{"node": node} for node in nodes],
+                        "pageInfo": {
+                            "__typename": "PageInfo",
+                            "hasNextPage": has_next,
+                            "endCursor": end_cursor,
+                        },
+                        "feedMetadata": {
+                            "appliedFilters": {
+                                "edges": [
+                                    {"node": {"key": key, "value": value}}
+                                    for key, value in (applied or [])
+                                ]
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+
+def _feed_answer(groups: list[object], *, end: str | None = None) -> dict:
+    """A ``SubredditFeedSdui`` page: cell groups (a fullname, or a node)."""
+
+    edges = []
+    for group in groups:
+        node = (
+            group
+            if isinstance(group, dict)
+            else {
+                "__typename": "CellGroup",
+                "id": base64.b64encode(group.encode()).decode(),
+                "groupId": group,
+                "cells": [{"__typename": "TitleCell", "title": "rendered"}],
+            }
+        )
+        edges.append({"__typename": "FeedElementEdge", "node": node})
+    return {
+        "data": {
+            "subredditV3": {
+                "elements": {
+                    "dist": len(edges),
+                    "pageInfo": {
+                        "endCursor": (
+                            base64.b64encode(end.encode()).decode() if end else None
+                        )
+                    },
+                    "edges": edges,
+                }
+            }
+        }
+    }
+
+
+def _posts_answer(post_ids: list[str]) -> dict:
+    return {
+        "data": {
+            "postsInfoByIds": [
+                _gql_post(post_id, f"Post {post_id}") for post_id in post_ids
+            ]
+        }
+    }
+
+
 def _gql_profile(
     name: str,
     *,
@@ -350,24 +432,119 @@ class TestRedditRouting:
         route = route_reddit_url("https://www.reddit.com/r/%50ython/wiki/getting%2Dstarted/")
 
         assert route is not None
+        # A wiki page is its server-rendered New Reddit document (the JSON
+        # is refused to logged-out clients).
         assert route.requests == (
-            "https://www.reddit.com/r/Python/wiki/getting-started.json?raw_json=1",
+            "https://www.reddit.com/r/Python/wiki/getting-started/",
         )
+
+    def test_post_search_is_the_app_graphql_read(self):
+        """REST /search.json is refused logged out (2026-11-22), so a post
+        search is SearchPosts, scoped by subreddit_names."""
+
+        def variables(url):
+            route = route_reddit_url(url)
+            assert route is not None and route.kind == "search", url
+            assert len(route.requests) == 1, url
+            request = route.requests[0]
+            assert isinstance(request, RedditGraphQLRequest), url
+            assert request.operation == "SearchPosts"
+            return request.variables
+
+        def scope(values):
+            return [
+                entry["value"]
+                for entry in values["filters"]
+                if entry["key"] == "subreddit_names"
+            ]
+
+        subreddit = variables(
+            "https://www.reddit.com/r/Python/search/?q=asyncio&sort=new&t=week&limit=5"
+        )
+        assert subreddit["query"] == "asyncio"
+        assert subreddit["productSurface"] == "android"
+        assert subreddit["sort"] == "NEW"
+        assert subreddit["pageSize"] == 5
+        assert {"key": "time_range", "value": "week"} in subreddit["filters"]
+        assert {"key": "nsfw", "value": "0"} in subreddit["filters"]
+        assert scope(subreddit) == ["Python"]
+        assert "afterCursor" not in subreddit
+
+        sitewide = variables("https://www.reddit.com/search/?q=asyncio")
+        assert sitewide["sort"] == "RELEVANCE"
+        assert {"key": "time_range", "value": "all"} in sitewide["filters"]
+        assert scope(sitewide) == []
+        assert scope(variables(
+            "https://www.reddit.com/r/Python/search/?q=x&restrict_sr=false"
+        )) == []
+        assert scope(variables("https://www.reddit.com/r/all/search/?q=x")) == []
+        assert scope(variables(
+            "https://www.reddit.com/r/Python+learnpython/search/?q=x"
+        )) == ["Python,learnpython"]
+
+        # The cursor is SearchPosts' own opaque base64; a REST fullname or
+        # anything else is not sent.
+        assert variables(
+            "https://www.reddit.com/search/?q=x&after=OQ%3D%3D"
+        )["afterCursor"] == "OQ=="
+        assert "afterCursor" not in variables(
+            "https://www.reddit.com/search/?q=x&after=t3_abc123"
+        )
+        assert "afterCursor" not in variables(
+            "https://www.reddit.com/search/?q=x&after=%7Bevil%7D"
+        )
+
+        # SearchPosts cannot exclude a community, and needs a query.
+        for url in (
+            "https://www.reddit.com/r/all-Python/search/?q=x",
+            "https://www.reddit.com/search/?q=",
+            "https://www.reddit.com/search/",
+        ):
+            route = route_reddit_url(url)
+            assert route is not None and route.kind == "html_fallback", url
+
+    def test_community_and_account_search_use_the_directory_searches(self):
+        communities = route_reddit_url(
+            "https://www.reddit.com/search/?q=python&type=sr&sort=relevance&after=t5_abc"
+        )
+        accounts = route_reddit_url("https://www.reddit.com/search/?q=python&type=user")
+        mixed = route_reddit_url(
+            "https://www.reddit.com/search/?q=python&type=link,sr,user&after=t5_abc"
+        )
+
+        assert communities is not None and communities.kind == "search"
+        assert [urlparse(value).path for value in communities.requests] == [
+            "/subreddits/search.json"
+        ]
+        assert parse_qs(urlparse(communities.requests[0]).query)["after"] == ["t5_abc"]
+        assert accounts is not None
+        assert [urlparse(value).path for value in accounts.requests] == [
+            "/users/search.json"
+        ]
+        assert mixed is not None and len(mixed.requests) == 3
+        assert mixed.requests[0].operation == "SearchPosts"
+        assert [urlparse(value).path for value in mixed.requests[1:]] == [
+            "/subreddits/search.json",
+            "/users/search.json",
+        ]
+        # Kinds read separately cannot share one cursor.
+        assert all(
+            "after" not in parse_qs(urlparse(value).query) for value in mixed.requests[1:]
+        )
+        assert "afterCursor" not in mixed.requests[0].variables
 
     def test_public_url_matrix(self):
         cases = {
             "https://www.reddit.com/r/Python/": ("listing", "/r/Python/hot.json"),
             "https://www.reddit.com/r/Python/top/?t=week": ("listing", "/r/Python/top.json"),
             "https://www.reddit.com/r/Python/comments/": ("comment_listing", "/r/Python/comments.json"),
-            "https://www.reddit.com/r/Python/search/?q=asyncio": ("search", "/r/Python/search.json"),
-            "https://www.reddit.com/search/?q=asyncio": ("search", "/search.json"),
             "https://www.reddit.com/user/spez/overview/": ("user_listing", "/user/spez/overview.json"),
             "https://www.reddit.com/user/spez/submitted/": ("user_listing", "/user/spez/submitted.json"),
             "https://www.reddit.com/u/spez/comments/": ("user_listing", "/user/spez/comments.json"),
             "https://www.reddit.com/r/Python/about/": ("subreddit_about", "/r/Python/about.json"),
             "https://www.reddit.com/r/Python/about/rules/": ("rules", "/r/Python/about/rules.json"),
-            "https://www.reddit.com/r/redditdev/wiki/oauth2/": ("wiki", "/r/redditdev/wiki/oauth2.json"),
-            "https://www.reddit.com/r/redditdev/wiki/": ("wiki", "/r/redditdev/wiki/index.json"),
+            "https://www.reddit.com/r/redditdev/wiki/oauth2/": ("wiki", "/r/redditdev/wiki/oauth2/"),
+            "https://www.reddit.com/r/redditdev/wiki/": ("wiki", "/r/redditdev/wiki/index/"),
             "https://www.reddit.com/domain/github.com/": (
                 "domain_listing",
                 "/domain/github.com/hot.json",
@@ -520,13 +697,16 @@ class TestRedditRouting:
         assert duplicate_params["crossposts_only"] == ["true"]
         assert duplicate_params["sr"] == ["Python"]
         assert duplicate_params["limit"] == ["3"]
-        search_params = parse_qs(urlparse(search.requests[0]).query)
-        assert search_params["q"] == ["asyncio"]
-        assert search_params["restrict_sr"] == ["false"]
-        assert search_params["category"] == ["dev"]
-        assert search_params["include_facets"] == ["true"]
-        assert search_params["type"] == ["link,user"]
-        assert search_params["sr_detail"] == ["false"]
+        # Post search is SearchPosts (REST /search.json is refused logged
+        # out): restrict_sr=false leaves it sitewide, and type=link,user is
+        # one read per kind. REST's category/include_facets/sr_detail have no
+        # SearchPosts variable and are not sent.
+        posts, accounts = search.requests
+        assert posts.operation == "SearchPosts"
+        assert posts.variables["query"] == "asyncio"
+        assert all(entry["key"] != "subreddit_names" for entry in posts.variables["filters"])
+        assert urlparse(accounts).path == "/users/search.json"
+        assert parse_qs(urlparse(accounts).query)["q"] == ["asyncio"]
         activity_params = parse_qs(urlparse(activity.requests[0]).query)
         assert activity_params["show"] == ["given"]
         assert activity_params["context"] == ["2"]
@@ -675,13 +855,18 @@ class TestRedditRouting:
         )
 
         assert search is not None and directory is not None and wiki is not None
-        assert parse_qs(urlparse(search.requests[0]).query)["type"] == [
-            "sr,user,link"
-        ]
+        # One read per kind, in the order the URL names them.
+        communities, accounts, posts = search.requests
+        assert urlparse(communities).path == "/subreddits/search.json"
+        assert urlparse(accounts).path == "/users/search.json"
+        assert posts.operation == "SearchPosts"
         assert parse_qs(urlparse(directory.requests[0]).query)["sort"] == [
             "activity"
         ]
-        assert parse_qs(urlparse(wiki.requests[0]).query)["count"] == ["40"]
+        # A page's history is WikiPageRevisionsV2 after its HTML page; the
+        # cursor stays on the canonical URL for the fetcher to carry.
+        assert wiki.requests == ("https://www.reddit.com/r/Python/wiki/revisions/page/",)
+        assert parse_qs(urlparse(wiki.canonical_url).query)["count"] == ["40"]
 
     def test_by_id_accepts_comments_posts_and_mixed_validated_fullnames(self):
         valid = route_reddit_url(
@@ -783,7 +968,7 @@ class TestRedditRouting:
             (
                 "https://www.reddit.com/r/Python/wiki/revisions/page/",
                 "wiki_revisions",
-                "/r/Python/wiki/revisions/page.json",
+                "/r/Python/wiki/revisions/page/",
             ),
             (
                 "https://www.reddit.com/r/Python/wiki/discussions/page/",
@@ -838,6 +1023,10 @@ class TestRedditRouting:
                 assert request == (
                     "https://www.reddit.com/r/Python/wiki/pages/"
                 )
+            elif kind in {"wiki", "wiki_revisions"} and not request.endswith(".json"):
+                # Read from New Reddit's own page: the wiki JSON is refused
+                # to logged-out clients.
+                assert request == f"https://www.reddit.com{path}"
             else:
                 assert _validated_reddit_json_url(request) is not None
                 assert parse_qs(urlparse(request).query).get(
@@ -921,8 +1110,9 @@ class TestRedditRouting:
 
         assert revisions is not None
         assert urlparse(revisions.requests[0]).path == (
-            "/r/Python/wiki/revisions/getting.started/%E2%9C%93.json"
+            "/r/Python/wiki/revisions/getting.started/%E2%9C%93/"
         )
+        assert revisions.label == "getting.started/\u2713"
         assert discussions is not None
         assert urlparse(discussions.requests[0]).path == (
             "/r/Python/wiki/discussions/getting.started/%E2%9C%93.json"
@@ -6095,7 +6285,17 @@ class TestRedditTransportAndTools:
 
     async def test_browse_and_search_keep_current_tools_and_new_links(self):
         browse_session = _JsonSession([_JsonResponse({"data": {"children": [_post()], "after": "t3_next"}})])
-        search_session = _JsonSession([_JsonResponse({"data": {"children": [_post()], "after": None}})])
+        search_session = _JsonSession(
+            [
+                _GqlResponse(
+                    _search_answer(
+                        [_gql_post("post1", "A compact Reddit post")],
+                        has_next=True,
+                        end_cursor="OQ==",
+                    )
+                )
+            ]
+        )
 
         with patch("fetchaller.tools.browse_reddit._get_session", AsyncMock(return_value=browse_session)):
             browsed = await browse_reddit("Python", limit=1)
@@ -6106,8 +6306,915 @@ class TestRedditTransportAndTools:
         assert "[Next page: after=t3_next]" in browsed["content"]
         assert "A compact Reddit post" in searched["content"]
         assert "r/Python" in searched["content"]
+        assert "[Next page: after=OQ==]" in searched["content"]
         assert "https://www.reddit.com/" in browsed["content"] + searched["content"]
         assert "old.reddit.com" not in browsed["content"] + searched["content"]
+        # Post search is the app's SearchPosts read, never REST search.json.
+        method, url, kwargs = search_session.request_details[0]
+        assert (method, url) == ("POST", "https://gql-fed.reddit.com/")
+        assert kwargs["json"]["operationName"] == "SearchPosts"
+        assert kwargs["json"]["variables"]["query"] == "asyncio"
+        assert "headers" not in kwargs
+
+    async def test_search_reddit_scopes_pages_and_drops_promoted_posts(self):
+        session = _JsonSession(
+            [
+                _GqlResponse(
+                    _search_answer(
+                        [
+                            _gql_post("post1", "Asyncio internals"),
+                            _gql_post("ad1", "Buy this", __typename="AdPost"),
+                        ],
+                        has_next=True,
+                        end_cursor="MTk=",
+                        applied=[("subreddit_names", "python"), ("time_range", "week")],
+                    )
+                )
+            ]
+        )
+        with patch(
+            "fetchaller.tools.search_reddit._get_session",
+            AsyncMock(return_value=session),
+        ):
+            result = await search_reddit(
+                "asyncio",
+                subreddit="Python",
+                sort="top",
+                time="week",
+                limit=10,
+                after="OQ==",
+            )
+
+        content = result["content"]
+        assert 'Search: "asyncio" in r/Python · top · week · 1 results' in content
+        assert "Asyncio internals" in content
+        assert "Buy this" not in content
+        assert "[Next page: after=MTk=]" in content
+        variables = session.request_details[0][2]["json"]["variables"]
+        assert variables["sort"] == "TOP"
+        assert variables["pageSize"] == 10
+        assert variables["afterCursor"] == "OQ=="
+        assert variables["filters"] == [
+            {"key": "time_range", "value": "week"},
+            {"key": "subreddit_names", "value": "Python"},
+            {"key": "nsfw", "value": "0"},
+        ]
+
+    async def _fetch_search(self, url: str, responses: list) -> tuple[dict, _JsonSession]:
+        route = route_reddit_url(url)
+        assert route is not None and route.kind == "search"
+        session = _JsonSession(responses)
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch(
+                "fetchaller.tools.browse_reddit.reddit_limiter.wait",
+                AsyncMock(),
+            ),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+        return result, session
+
+    async def test_fetch_post_search_pages_by_its_own_cursor(self):
+        result, session = await self._fetch_search(
+            "https://www.reddit.com/r/Python/search/?q=asyncio&sort=new&limit=3",
+            [
+                _GqlResponse(
+                    _search_answer(
+                        [_gql_post("post1", "Asyncio internals")],
+                        has_next=True,
+                        end_cursor="Mg==",
+                        applied=[("subreddit_names", "Python")],
+                    )
+                )
+            ],
+        )
+
+        content = result["content"]
+        assert content.startswith(
+            "# r/Python · asyncio · sort new · time all · type link"
+        )
+        assert "Asyncio internals" in content
+        assert (
+            "[Next page: https://www.reddit.com/r/Python/search/?q=asyncio&sort=new"
+            "&limit=3&after=Mg%3D%3D&count=1]"
+        ) in content
+        assert [method for method, _url, _kwargs in session.request_details] == ["POST"]
+
+        follow = route_reddit_url(
+            "https://www.reddit.com/r/Python/search/?q=asyncio&sort=new&limit=3"
+            "&after=Mg%3D%3D&count=1"
+        )
+        assert follow is not None
+        assert follow.requests[0].variables["afterCursor"] == "Mg=="
+
+    async def test_fetch_post_search_never_renders_an_unconfirmed_scope(self):
+        result, _session = await self._fetch_search(
+            "https://www.reddit.com/r/Python/search/?q=asyncio",
+            [_GqlResponse(_search_answer([_gql_post("post1", "Elsewhere")]))],
+        )
+
+        assert "r/Python restriction" in result["error"]
+
+    async def test_fetch_mixed_search_reads_each_kind_and_says_so(self):
+        result, session = await self._fetch_search(
+            "https://www.reddit.com/search/?q=python&type=link,sr&limit=2",
+            [
+                _GqlResponse(
+                    _search_answer(
+                        [_gql_post("post1", "A Python post")],
+                        has_next=True,
+                        end_cursor="MQ==",
+                    )
+                ),
+                _JsonResponse(
+                    {
+                        "kind": "Listing",
+                        "data": {
+                            "children": [
+                                {
+                                    "kind": "t5",
+                                    "data": {
+                                        "display_name": "Python",
+                                        "title": "Python",
+                                        "subscribers": 100,
+                                        "url": "/r/Python/",
+                                    },
+                                }
+                            ],
+                            "after": "t5_next",
+                        },
+                    }
+                ),
+            ],
+        )
+
+        content = result["content"]
+        assert "A Python post" in content
+        assert "**r/Python**" in content
+        assert "separate searches" in content
+        # Two kinds cannot share one cursor: no next page is offered.
+        assert "Next page:" not in content
+        assert [method for method, _url, _kwargs in session.request_details] == [
+            "POST",
+            "GET",
+        ]
+        assert urlparse(session.request_details[1][1]).path == "/subreddits/search.json"
+
+    async def test_fetch_post_search_names_a_refusal(self):
+        result, _session = await self._fetch_search(
+            "https://www.reddit.com/search/?q=asyncio",
+            [_GqlResponse(None, 403)],
+        )
+
+        assert "error" in result
+
+    async def test_browse_new_is_the_app_feed_hydrated_by_id(self):
+        session = _JsonSession(
+            [
+                _GqlResponse(
+                    _feed_answer(
+                        [
+                            "t3_aa1",
+                            {
+                                "__typename": "CarouselCommunityRecommendationsFeedUnit",
+                                "id": "community_recommendation",
+                            },
+                            {
+                                "__typename": "CellGroup",
+                                "id": "YWQ=",
+                                "groupId": "t3_ad1",
+                                "adPayload": "{}",
+                            },
+                            "t3_bb2",
+                        ],
+                        end="t3_bb2",
+                    )
+                ),
+                _GqlResponse(_feed_answer(["t3_cc3"], end="t3_cc3")),
+                _GqlResponse(_posts_answer(["bb2", "aa1", "cc3"])),
+            ]
+        )
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit(
+                "Python", sort="new", limit=3, after="t3_zz9", timeout=60
+            )
+
+        content = result["content"]
+        assert content.startswith("r/Python · new · 3 posts")
+        # Feed order, not the hydration answer's order; furniture and the
+        # promoted group are not posts.
+        assert content.index("Post aa1") < content.index("Post bb2") < content.index("Post cc3")
+        assert "ad1" not in content
+        assert "[Next page: after=t3_cc3]" in content
+        calls = [kwargs["json"] for _method, _url, kwargs in session.request_details]
+        assert [call["operationName"] for call in calls] == [
+            "SubredditFeedSdui",
+            "SubredditFeedSdui",
+            "PostsByIds",
+        ]
+        assert calls[0]["variables"] == {
+            "after": base64.b64encode(b"t3_zz9").decode(),
+            "sort": "NEW",
+            "subredditName": "Python",
+        }
+        assert calls[1]["variables"]["after"] == base64.b64encode(b"t3_bb2").decode()
+        assert calls[2]["variables"] == {"ids": ["t3_aa1", "t3_bb2", "t3_cc3"]}
+
+    async def test_browse_feed_stops_at_the_deadline_and_says_so(self):
+        session = _JsonSession(
+            [
+                _GqlResponse(_feed_answer(["t3_aa1", "t3_bb2"], end="t3_bb2")),
+                _GqlResponse(_posts_answer(["aa1"])),
+            ]
+        )
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit("Python", sort="rising", limit=10, timeout=10)
+
+        content = result["content"]
+        # Ten seconds fit one feed page and the posts' read, not a second page.
+        assert [kwargs["json"]["operationName"] for _m, _u, kwargs in session.request_details] == [
+            "SubredditFeedSdui",
+            "PostsByIds",
+        ]
+        assert "a few posts per read" in content
+        assert "returned nothing for t3_bb2" in content
+        assert "[Next page: after=t3_bb2]" in content
+
+    async def test_browse_feed_names_an_unavailable_community(self):
+        session = _JsonSession(
+            [
+                _GqlResponse({"data": {"subredditV3": None}}),
+                _JsonResponse(
+                    {"reason": "private", "message": "Forbidden", "error": 403},
+                    403,
+                ),
+            ]
+        )
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit("secretclub", sort="new")
+
+        assert "r/secretclub · new" in result["content"]
+        assert "private" in result["content"].lower()
+        assert urlparse(session.request_details[1][1]).path == "/r/secretclub/hot.json"
+
+    async def test_browse_feed_reports_a_cursor_that_names_no_post(self):
+        answer = _feed_answer(["t3_aa1"])
+        answer["data"]["subredditV3"]["elements"]["pageInfo"]["endCursor"] = "Y2Fyb3VzZWw="
+        session = _JsonSession(
+            [_GqlResponse(answer), _GqlResponse(_posts_answer(["aa1"]))]
+        )
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit("Python", sort="new", limit=1)
+
+        assert "Post aa1" in result["content"]
+        assert "Next page unavailable: Reddit returned an invalid pagination cursor" in result["content"]
+
+    async def test_fetch_new_is_the_feed_and_pages_by_fullname(self):
+        route = route_reddit_url(
+            "https://www.reddit.com/r/Python/new/?limit=2&after=t3_zz9"
+        )
+        assert route is not None and route.kind == "listing"
+        assert route.requests == (
+            RedditGraphQLRequest(
+                "SubredditFeedSdui",
+                '{"after":"'
+                + base64.b64encode(b"t3_zz9").decode()
+                + '","sort":"NEW","subredditName":"Python"}',
+            ),
+        )
+        session = _JsonSession(
+            [
+                _GqlResponse(_feed_answer(["t3_aa1", "t3_bb2", "t3_cc3"], end="t3_cc3")),
+                _GqlResponse(_posts_answer(["aa1", "bb2"])),
+            ]
+        )
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        content = result["content"]
+        assert content.startswith("# r/Python · new\n\n2 items returned")
+        assert "Post cc3" not in content
+        # Two of three were asked for: the next page starts after the last shown.
+        assert (
+            "[Next page: https://www.reddit.com/r/Python/new/?limit=2&after=t3_bb2&count=2]"
+        ) in content
+
+    def test_feed_routes_only_single_communities(self):
+        for url in (
+            "https://www.reddit.com/r/Python/rising/",
+            "https://www.reddit.com/r/Python/new/",
+        ):
+            route = route_reddit_url(url)
+            assert route is not None
+            assert route.requests[0].operation == "SubredditFeedSdui", url
+        # The feed takes one community: combos and r/popular stay REST, and
+        # Reddit's own answer for them is what is reported.
+        for url in (
+            "https://www.reddit.com/r/Python+learnpython/new/",
+            "https://www.reddit.com/r/popular/new/",
+            "https://www.reddit.com/new/",
+            "https://www.reddit.com/r/Python/hot/",
+            "https://www.reddit.com/r/Python/top/?t=week",
+            "https://www.reddit.com/r/Python/randomrising/",
+        ):
+            route = route_reddit_url(url)
+            assert route is not None
+            assert isinstance(route.requests[0], str), url
+
+    async def test_fetch_feed_reports_a_banned_community_as_reddit_does(self):
+        route = route_reddit_url("https://www.reddit.com/r/Braincels/new/")
+        assert route is not None
+        session = _JsonSession(
+            [
+                _GqlResponse(
+                    {
+                        "errors": [
+                            {
+                                "message": "Resource not found",
+                                "path": ["subredditV3", "elements"],
+                                "extensions": {"code": "NOT_FOUND"},
+                            }
+                        ],
+                        "data": {"subredditV3": {"elements": None}},
+                    }
+                ),
+                _JsonResponse(
+                    {"reason": "banned", "message": "Not Found", "error": 404}, 404
+                ),
+            ]
+        )
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert result["content"].startswith("# Reddit\n\n")
+        assert "banned" in result["content"]
+        assert "0 items returned" not in result["content"]
+
+    async def test_browse_feed_reports_a_later_page_reddit_failed(self):
+        session = _JsonSession(
+            [
+                _GqlResponse(_feed_answer(["t3_aa1"], end="t3_aa1")),
+                _GqlResponse(
+                    {
+                        "errors": [
+                            {"message": "Internal", "path": ["subredditV3", "elements"]}
+                        ],
+                        "data": {"subredditV3": {"elements": None}},
+                    }
+                ),
+            ]
+        )
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit("Python", sort="new", limit=5, timeout=60)
+
+        assert "Internal" in result["error"]
+        # No hydration of a listing Reddit did not finish answering.
+        assert len(session.calls) == 2
+
+    @pytest.mark.parametrize("subreddit", ["all", "popular"])
+    async def test_browse_sitewide_new_stays_a_rest_listing(self, subreddit):
+        session = _JsonSession([_JsonResponse({"data": {"children": [_post()], "after": None}})])
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit(subreddit, sort="new", limit=1)
+
+        assert "A compact Reddit post" in result["content"]
+        assert session.request_details[0][0] == "GET"
+        assert urlparse(session.request_details[0][1]).path.endswith(f"/r/{subreddit}/new.json")
+
+    async def test_browse_feed_rejects_a_cursor_that_is_not_a_post(self):
+        session = _JsonSession([])
+        with patch(
+            "fetchaller.tools.browse_reddit._get_session",
+            AsyncMock(return_value=session),
+        ):
+            result = await browse_reddit("Python", sort="new", after="t1_abc123")
+
+        assert result == {"error": "Invalid Reddit pagination cursor"}
+        assert not session.calls
+
+    def test_search_scopes_search_posts_cannot_express_fall_back(self):
+        names = [f"ab{index}" for index in range(21)]
+        for url in (
+            "https://www.reddit.com/r/_abc/search/?q=x",
+            "https://www.reddit.com/r/" + "+".join(names) + "/search/?q=x",
+        ):
+            route = route_reddit_url(url)
+            assert route is not None and route.kind == "html_fallback", url
+        route = route_reddit_url(
+            "https://www.reddit.com/r/" + "+".join(names[:20]) + "/search/?q=x"
+        )
+        assert route is not None and route.requests[0].operation == "SearchPosts"
+
+    async def test_browse_feed_reports_a_failed_post_lookup(self):
+        session = _JsonSession(
+            [
+                _GqlResponse(_feed_answer(["t3_aa1"], end="t3_aa1")),
+                _GqlResponse(
+                    {
+                        "data": {"postsInfoByIds": [None]},
+                        "errors": [{"message": "Upstream", "path": ["postsInfoByIds", 0]}],
+                    }
+                ),
+            ]
+        )
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit("Python", sort="new", limit=1)
+
+        assert result == {"error": "Reddit's post lookup failed: Upstream."}
+
+    async def test_browse_feed_page_without_posts_keeps_its_cursor(self):
+        answer = _feed_answer(
+            [{"__typename": "CarouselCommunityRecommendationsFeedUnit", "id": "rec"}],
+            end="t3_zz9",
+        )
+        session = _JsonSession([_GqlResponse(answer)])
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit("Python", sort="new", limit=5, timeout=10)
+
+        content = result["content"]
+        assert "No posts found" not in content
+        assert "returned no posts on this read" in content
+        assert "[Next page: after=t3_zz9]" in content
+        # Nothing to hydrate: one read.
+        assert len(session.calls) == 1
+
+    async def test_fetch_feed_refuses_a_backward_cursor(self):
+        route = route_reddit_url("https://www.reddit.com/r/Python/new/?before=t3_aa1")
+        assert route is not None
+        session = _JsonSession([])
+        with patch(
+            "fetchaller.tools.reddit_fetch._get_session",
+            AsyncMock(return_value=session),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert "a `before` cursor cannot be followed" in result["error"]
+        assert not session.calls
+
+    async def test_subreddit_randomrising_refusal_points_to_rising(self):
+        route = route_reddit_url("https://www.reddit.com/r/Python/randomrising/")
+        assert route is not None
+        session = _JsonSession([_JsonResponse(None, 403)])
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch(
+                "fetchaller.tools.browse_reddit._is_refused_response",
+                lambda response: True,
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert result["reddit_refused"] is True
+        assert "https://www.reddit.com/r/Python/rising/" in result["error"]
+
+    @staticmethod
+    def _wiki_html(page: str, body: str | None, *, route: str = "subreddit_wiki") -> str:
+        rendered = (
+            f'<div class="md wiki"><h1>Welcome</h1><p>{body} '
+            '<a href="/r/Python/wiki/flair">flair</a></p>'
+            "<script>evil()</script></div>"
+            if body is not None
+            else f'<p>"{page}" does not exist</p><a href="/r/Python/wiki/">Wiki Home</a>'
+        )
+        return (
+            f'<html><body><shreddit-app routename="{route}" pagetype="community_wiki">'
+            f'<div id="canonical-url-updater" value="https://www.reddit.com/r/Python/wiki/{page}/"></div>'
+            '<main id="main-content"><div id="subreddit-wiki-header"></div>'
+            f"{rendered}<hr><span>Last revised by "
+            '<a href="/user/IAmKindOfCreative/">IAmKindOfCreative</a> '
+            '<faceplate-timeago ts="2020-10-22T21:39:26.000000+0000"></faceplate-timeago>'
+            "</span></main></shreddit-app></body></html>"
+        )
+
+    def test_wiki_page_html_is_the_page_body_and_its_last_revision(self):
+        page = parse_reddit_wiki_page_html(
+            self._wiki_html("index", "Read the rules."), "Python", "index"
+        )
+
+        assert page is not None and page["kind"] == "wikipage"
+        data = page["data"]
+        assert data["content_md"].startswith("# Welcome")
+        assert "[flair](https://www.reddit.com/r/Python/wiki/flair)" in data["content_md"]
+        assert "evil" not in data["content_md"]
+        assert data["revision_by"] == {"data": {"name": "IAmKindOfCreative"}}
+        assert data["revision_date"] == 1603402766.0
+        assert data["_fetchaller_wiki_source"] == "html"
+        assert "revision_id" not in data and "reason" not in data
+
+    def test_wiki_page_html_rejects_what_is_not_the_asked_page(self):
+        assert parse_reddit_wiki_page_html(
+            self._wiki_html("doesnotexist", None), "Python", "doesnotexist"
+        ) == {"missing": True}
+        # Another page's document, another route, or a shell with no body.
+        assert parse_reddit_wiki_page_html(
+            self._wiki_html("index", "x"), "Python", "other"
+        ) is None
+        assert parse_reddit_wiki_page_html(
+            self._wiki_html("index", "x", route="subreddit_wiki_revisions"),
+            "Python",
+            "index",
+        ) is None
+        shell = self._wiki_html("index", None).replace('"index" does not exist', "Loading")
+        assert parse_reddit_wiki_page_html(shell, "Python", "index") is None
+        disabled = self._wiki_html("index", None).replace(
+            '"index" does not exist',
+            "This wiki has been disabled The mods of this community have disabled their wiki",
+        )
+        assert parse_reddit_wiki_page_html(disabled, "Python", "index") == {"disabled": True}
+
+    def test_wiki_revisions_are_the_page_history_and_page_by_cursor(self):
+        cursor = base64.b64encode(
+            b"WikiRevision_0fea080a-c8d9-11e6-bbda-124bc70df506:4"
+        ).decode()
+
+        def answer(page="index", *, has_next=True, end=cursor, name="Python"):
+            return {
+                "data": {
+                    "subreddit": {
+                        "__typename": "Subreddit",
+                        "name": name,
+                        "wiki": {
+                            "page": {"name": "index"},
+                            "recentRevisions": {
+                                "edges": [
+                                    {
+                                        "node": {
+                                            "id": "WikiRevision_0eb54803-14af-11eb-8903-0e3e3e317287",
+                                            "page": {"name": page},
+                                            "authorInfo": {"name": "IAmKindOfCreative"},
+                                            "revisedAt": "2020-10-22T21:39:26.000000+0000",
+                                            "reason": "Added  a link",
+                                            "isHidden": True,
+                                        }
+                                    }
+                                ],
+                                "pageInfo": {"hasNextPage": has_next, "endCursor": end},
+                            },
+                        },
+                    }
+                },
+                "errors": [],
+            }
+
+        listing = parse_reddit_wiki_revisions(answer(), "Python", "index")
+        assert listing == {
+            "kind": "Listing",
+            "data": {
+                "children": [
+                    {
+                        "kind": "WikiRevision",
+                        "data": {
+                            "id": "WikiRevision_0eb54803-14af-11eb-8903-0e3e3e317287",
+                            "page": "index",
+                            "author": {"data": {"name": "IAmKindOfCreative"}},
+                            "timestamp": 1603402766.0,
+                            "reason": "Added a link",
+                            "revision_hidden": True,
+                        },
+                    }
+                ],
+                "after": cursor,
+                "before": None,
+            },
+        }
+        assert valid_wiki_revision_cursor(cursor)
+        assert not valid_wiki_revision_cursor("OQ==")
+        assert not valid_wiki_revision_cursor("WikiRevision_0eb54803-14af-11eb-8903-0e3e3e317287")
+        # Another page's revision, another community, or a bad cursor.
+        assert parse_reddit_wiki_revisions(answer("flair"), "Python", "index") is None
+        assert parse_reddit_wiki_revisions(answer(name="Java"), "Python", "index") is None
+        assert parse_reddit_wiki_revisions(answer(end="OQ=="), "Python", "index") is None
+
+        rendered = render_reddit_route(
+            RedditRoute(
+                "https://www.reddit.com/r/Python/wiki/revisions/index/",
+                "wiki_revisions",
+                subreddit="Python",
+                label="index",
+            ),
+            [listing],
+            max_tokens=5_000,
+        )
+        assert "u/IAmKindOfCreative · hidden" in rendered
+        assert (
+            "[Next page: https://www.reddit.com/r/Python/wiki/revisions/index/?after="
+            + quote(cursor, safe="")
+        ) in rendered
+
+    async def test_fetch_wiki_page_reads_the_rendered_page(self):
+        route = route_reddit_url("https://www.reddit.com/r/Python/wiki/index/")
+        assert route is not None and route.kind == "wiki"
+        session = _JsonSession([_HtmlResponse(self._wiki_html("index", "Read the rules."))])
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.reddit_fetch.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        content = result["content"]
+        assert content.startswith("# r/Python wiki · index")
+        assert "revised by u/IAmKindOfCreative" in content
+        assert "converted from the page's HTML" in content
+        assert "Read the rules." in content
+        assert session.calls == ["https://www.reddit.com/r/Python/wiki/index/"]
+
+    async def test_fetch_missing_wiki_page_is_reddits_answer(self):
+        route = route_reddit_url("https://www.reddit.com/r/Python/wiki/nope/")
+        session = _JsonSession([_HtmlResponse(self._wiki_html("nope", None))])
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.reddit_fetch.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert result == {"error": 'Reddit says r/Python has no wiki page named "nope".'}
+
+    async def test_fetch_wiki_revisions_seeds_csrf_then_posts_the_page(self):
+        route = route_reddit_url(
+            "https://www.reddit.com/r/Python/wiki/revisions/index/?after="
+            + quote(
+                base64.b64encode(
+                    b"WikiRevision_0eb54803-14af-11eb-8903-0e3e3e317287:0"
+                ).decode(),
+                safe="",
+            )
+        )
+        assert route is not None and route.kind == "wiki_revisions"
+        answer = {
+            "data": {
+                "subreddit": {
+                    "__typename": "Subreddit",
+                    "name": "Python",
+                    "wiki": {
+                        "page": {"name": "index"},
+                        "recentRevisions": {"edges": [], "pageInfo": {"hasNextPage": False}},
+                    },
+                }
+            }
+        }
+
+        class _Seeded(_JsonSession):
+            def get_cookie(self, name, url):
+                self.cookie_lookups.append((name, url))
+                return _CSRF_TOKEN if self.calls else None
+
+        session = _Seeded(
+            [
+                _HtmlResponse("<html></html>"),
+                _JsonResponse(answer, headers={"content-type": "application/json"}),
+            ]
+        )
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.reddit_fetch.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert result["content"].startswith("# Wiki revisions for r/Python · index")
+        assert "0 revisions returned" in result["content"]
+        method, url, kwargs = session.request_details[1]
+        assert (method, url) == ("POST", "https://www.reddit.com/svc/shreddit/graphql")
+        assert kwargs["json"]["operation"] == "WikiPageRevisionsV2"
+        assert kwargs["json"]["variables"] == {
+            "subredditName": "Python",
+            "wikiPageName": "index",
+            "after": base64.b64encode(
+                b"WikiRevision_0eb54803-14af-11eb-8903-0e3e3e317287:0"
+            ).decode(),
+        }
+        assert kwargs["json"]["csrf_token"] == _CSRF_TOKEN
+        assert session.request_details[0][1] == route.requests[0]
+
+    @pytest.mark.parametrize(
+        ("url", "hint"),
+        [
+            ("https://www.reddit.com/r/Python/wiki/index/?v=abc123", "ignores ?v="),
+            ("https://www.reddit.com/r/Python/wiki/index/?v=abc&v2=def", "ignores ?v="),
+            ("https://www.reddit.com/r/Python/wiki/revisions/", "one page at a time"),
+            (
+                "https://www.reddit.com/r/Python/wiki/discussions/index/",
+                "no logged-out source for the posts",
+            ),
+        ],
+    )
+    async def test_refused_wiki_reads_say_what_is_still_readable(self, url, hint):
+        route = route_reddit_url(url)
+        assert route is not None
+        session = _JsonSession([_JsonResponse(None, 403), _JsonResponse(None, 403)])
+        with (
+            patch(
+                "fetchaller.tools.reddit_fetch._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch(
+                "fetchaller.tools.browse_reddit._is_refused_response",
+                lambda response: True,
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert result["reddit_refused"] is True
+        assert hint in result["error"]
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            _search_answer([None]),
+            {
+                **_search_answer([_gql_post("post1", "Fine")]),
+                "errors": [
+                    {"message": "boom", "path": ["search", "general", "posts", "edges", 0]}
+                ],
+            },
+        ],
+    )
+    async def test_search_reddit_never_renders_a_degraded_answer(self, answer):
+        session = _JsonSession([_GqlResponse(answer)])
+        with patch(
+            "fetchaller.tools.search_reddit._get_session",
+            AsyncMock(return_value=session),
+        ):
+            searched = await search_reddit("asyncio", limit=1)
+
+        assert "error" in searched
+        assert "Fine" not in str(searched)
+
+    async def test_browse_feed_never_renders_a_degraded_element(self):
+        answer = _feed_answer(["t3_aa1"], end="t3_aa1")
+        answer["data"]["subredditV3"]["elements"]["edges"].append({"node": None})
+        session = _JsonSession([_GqlResponse(answer)])
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=session),
+            ),
+            patch("fetchaller.tools.browse_reddit.reddit_limiter.wait", AsyncMock()),
+        ):
+            result = await browse_reddit("Python", sort="new", limit=5)
+
+        assert result == {"error": "Reddit's community feed returned an invalid element."}
+        assert len(session.calls) == 1
+
+    async def test_browse_feed_timeout_says_how_long_to_allow(self):
+        async def slow(*_args, **_kwargs):
+            return {"error": "Request timed out (10s limit)"}
+
+        with (
+            patch(
+                "fetchaller.tools.browse_reddit._get_session",
+                AsyncMock(return_value=_JsonSession([])),
+            ),
+            patch("fetchaller.tools.browse_reddit.fetch_reddit_graphql", slow),
+        ):
+            result = await browse_reddit("Python", sort="new", timeout=10)
+
+        assert "two Reddit reads six seconds apart" in result["error"]
+        assert "allow a timeout of 20 or more" in result["error"]
+
+    @pytest.mark.parametrize(
+        ("url", "message"),
+        [
+            ("https://www.reddit.com/search/?q=x&after=t3_abc123", "not one"),
+            ("https://www.reddit.com/search/?q=x&before=OQ%3D%3D", "pages forward only"),
+            (
+                "https://www.reddit.com/search/?q=x&type=link,sr&after=OQ%3D%3D",
+                "cannot share a page cursor",
+            ),
+            ("https://www.reddit.com/r/Python/new/?after=t1_abc123", "this `after` is not one"),
+            (
+                "https://www.reddit.com/r/Python/wiki/revisions/index/"
+                "?after=WikiRevision_0eb54803-14af-11eb-8903-0e3e3e317287",
+                "this `after` is not one",
+            ),
+            (
+                "https://www.reddit.com/r/Python/wiki/revisions/index/?before=x",
+                "pages forward only",
+            ),
+        ],
+    )
+    async def test_an_unfollowable_cursor_is_never_read_as_page_one(self, url, message):
+        route = route_reddit_url(url)
+        assert route is not None
+        session = _JsonSession([])
+        with patch(
+            "fetchaller.tools.reddit_fetch._get_session",
+            AsyncMock(return_value=session),
+        ):
+            result = await fetch_mapped_reddit(route, max_tokens=5_000, timeout=30)
+
+        assert message in result["error"]
+        assert not session.calls
+
+    async def test_search_reddit_refuses_an_unconfirmed_subreddit_scope(self):
+        """A restricted search Reddit did not confirm could be sitewide."""
+
+        session = _JsonSession(
+            [_GqlResponse(_search_answer([_gql_post("post1", "Elsewhere")]))]
+        )
+        with patch(
+            "fetchaller.tools.search_reddit._get_session",
+            AsyncMock(return_value=session),
+        ):
+            result = await search_reddit("asyncio", subreddit="Python")
+
+        assert "error" in result
+        assert "r/Python" in result["error"]
+        assert "Elsewhere" not in str(result)
+
+    async def test_search_reddit_reports_graphql_errors_and_refusals(self):
+        failed = _JsonSession(
+            [_GqlResponse({"errors": [{"message": "PersistedQueryNotFound"}]})]
+        )
+        refused = _JsonSession([_GqlResponse(None, 403)])
+        with patch(
+            "fetchaller.tools.search_reddit._get_session",
+            AsyncMock(return_value=failed),
+        ):
+            missing = await search_reddit("asyncio")
+        assert "PersistedQueryNotFound" in missing["error"]
+        with patch(
+            "fetchaller.tools.search_reddit._get_session",
+            AsyncMock(return_value=refused),
+        ):
+            blocked = await search_reddit("asyncio")
+        assert "error" in blocked
 
     async def test_browse_and_search_reject_unreachable_input_cursors(self):
         browse_session = _JsonSession([])
@@ -6132,7 +7239,7 @@ class TestRedditTransportAndTools:
             overlong = await search_reddit("x" * 513)
 
         assert browsed == {"error": "Invalid Reddit pagination cursor"}
-        assert searched == {"error": "Invalid Reddit pagination cursor"}
+        assert searched == {"error": "Invalid Reddit search pagination cursor"}
         assert overlong == {"error": "Query must be 512 characters or fewer"}
         assert not browse_session.calls
         assert not search_session.calls
@@ -6145,7 +7252,17 @@ class TestRedditTransportAndTools:
             }
         }
         browse_session = _JsonSession([_JsonResponse(payload)])
-        search_session = _JsonSession([_JsonResponse(payload)])
+        search_session = _JsonSession(
+            [
+                _GqlResponse(
+                    _search_answer(
+                        [_gql_post("post1", "A compact Reddit post")],
+                        has_next=True,
+                        end_cursor="unsafe/cursor",
+                    )
+                )
+            ]
+        )
 
         with (
             patch(
@@ -6169,8 +7286,12 @@ class TestRedditTransportAndTools:
             "cursor"
         )
         assert marker in browsed["content"]
-        assert marker in searched["content"]
-        assert "after=unsafe" not in browsed["content"] + searched["content"]
+        assert "after=unsafe" not in browsed["content"]
+        # A search page with a malformed cursor is an error, never a page
+        # that silently has no continuation.
+        assert searched == {
+            "error": "Reddit's post search returned an invalid page cursor."
+        }
 
     async def test_direct_browse_and_search_share_process_limiter(self):
         browse_session = _JsonSession([_JsonResponse({"data": {"children": [], "after": None}})])
@@ -6213,7 +7334,6 @@ class TestRedditTransportAndTools:
         payload,
     ):
         browse_session = _JsonSession([_JsonResponse(payload)])
-        search_session = _JsonSession([_JsonResponse(payload)])
 
         with (
             patch(
@@ -6226,18 +7346,44 @@ class TestRedditTransportAndTools:
             ),
         ):
             browsed = await browse_reddit("Python", limit=1)
-            with patch(
-                "fetchaller.tools.search_reddit._get_session",
-                AsyncMock(return_value=search_session),
-            ):
-                searched = await search_reddit("asyncio", limit=1)
 
         assert browsed == {
             "error": "Reddit returned an invalid listing response"
         }
-        assert searched == {
-            "error": "Reddit returned an invalid search response"
-        }
+
+    @pytest.mark.parametrize(
+        ("answer", "error"),
+        [
+            ({}, "Reddit's SearchPosts read failed: no data."),
+            ({"data": None}, "Reddit's SearchPosts read failed: no data."),
+            ({"data": {"search": {"general": {"posts": {"edges": {}}}}}}, "Reddit's post search failed."),
+            (
+                _search_answer([{"__typename": "SubredditPost", "id": "t3_x1"}]),
+                "Reddit's post search returned an invalid post.",
+            ),
+            (
+                _search_answer([_gql_post("post1", "Fine", id="t1_notapost")]),
+                "Reddit's post search returned an invalid post.",
+            ),
+            (
+                _search_answer([_gql_post("post1", "Fine")], has_next=True, end_cursor=None),
+                "Reddit's post search returned an invalid page cursor.",
+            ),
+        ],
+    )
+    async def test_search_reddit_never_renders_malformed_graphql_as_empty(
+        self,
+        answer,
+        error,
+    ):
+        session = _JsonSession([_GqlResponse(answer)])
+        with patch(
+            "fetchaller.tools.search_reddit._get_session",
+            AsyncMock(return_value=session),
+        ):
+            searched = await search_reddit("asyncio", limit=1)
+
+        assert searched == {"error": error}
 
     @pytest.mark.parametrize(
         ("route", "index", "payload"),

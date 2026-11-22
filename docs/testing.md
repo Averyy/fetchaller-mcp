@@ -2,7 +2,7 @@
 
 ## Home Depot gateway recovery
 
-Fetchaller 3.8.12 pins published wafer 0.7.14. Omit `--wafer-path` to test
+Fetchaller 3.8.13 pins published wafer 0.7.15. Omit `--wafer-path` to test
 the installed release; the override below is only for wafer development.
 
 ```bash
@@ -123,7 +123,9 @@ Fixture-only routes never run live, including with `--include-unstable`; they
 are restricted to inherently non-public access states and to surfaces Reddit
 itself retired or refuses to logged-out clients (every comment stream, gilded
 listings, post collections,
-the gold-only directory), whose offline reason records Reddit's actual answer.
+the gold-only directory, and since 2026-11-22 a community's randomrising,
+`r/a+b` combinations, wiki discussions and wiki diffs), whose offline reason
+records Reddit's actual answer.
 A retired surface is never rebuilt from an archive to pass live.
 `--include-unstable` dynamically discovers current real
 post/comment, revision, multireddit and live IDs, records the
@@ -208,7 +210,21 @@ a warm-cache `search_alibaba` returns in ~2s, a real cold solve takes ~55s.
   strict same-origin JSON redirects and nonexistent-community
   state; canonical New Reddit wiki-tree SSR parsing plus the anonymous
   `WikiPageRevisionsV2` page tree (CSRF, fixed route, identity, node/path
-  agreement, uniqueness); a collection's own failure (HTTP 500 and the
+  agreement, uniqueness); post search as the app's `SearchPosts` (sort, time,
+  `subreddit_names` scope incl. `a+b`, `nsfw`, base64 cursor in and out,
+  promoted posts dropped, an unconfirmed scope and malformed answers as
+  errors) for both `search_reddit` and `fetch`, community/account search on
+  the directory endpoints and mixed `type=` read per kind; `/r/<sub>/new` and
+  `/rising` as `SubredditFeedSdui` ids hydrated by `PostsByIds` (feed order,
+  furniture and ad groups dropped, fullname cursors both ways, pages followed
+  only while the deadline allows and a short page named, an unavailable
+  community named from its hot state, `before` refused, single communities
+  only); wiki pages from New Reddit's rendered page (body, reviser, missing
+  page, wrong page or shell rejected) and a page's revisions from
+  `WikiPageRevisionsV2` (CSRF seeding, page/community identity, `after`
+  cursor, hidden revisions); the refusals with no logged-out source
+  (subreddit randomrising, earlier wiki revisions and diffs, all-pages
+  revisions, discussions) name what is still readable; a collection's own failure (HTTP 500 and the
   like) reported with one read and no archive lookup, and the gold-only
   directory's redirect named as the premium page; failure truth, queue, deadline, and backoff behavior; an empty
   sitewide comment stream (`/comments/`, `r/all`, `r/popular`) says Reddit
@@ -358,6 +374,14 @@ copied into the docs as a constant, only as a dated measurement.
 
 - Reddit listing/thread: `https://www.reddit.com/r/homelab/`,
   `https://www.reddit.com/r/Python/comments/1v6gbps/`
+- Reddit reads moved off REST on 2026-11-22 (each must return posts, not a
+  refusal or an empty page): search `https://www.reddit.com/r/Python/search/?q=asyncio&sort=new`
+  and `search_reddit("P2S exhaust fan")`; feed
+  `https://www.reddit.com/r/Python/new/` and `browse_reddit("Python", sort="rising")`;
+  wiki `https://www.reddit.com/r/Python/wiki/index/` and
+  `https://www.reddit.com/r/personalfinance/wiki/revisions/index/` (25 a page,
+  with a next page); states `https://www.reddit.com/r/Braincels/new/` (banned)
+  and `https://www.reddit.com/r/BambuLab/wiki/index/` (wiki disabled)
 - Reddit cold/warm transport: point `WAFER_CACHE_DIR` at a new temporary
   directory, make one bounded request, recreate the shared Reddit session with
   the same directory, and repeat. Assert no requested/generated URL contains

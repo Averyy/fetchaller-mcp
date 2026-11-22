@@ -8,6 +8,7 @@ the normal fetch pipeline and returns New Reddit HTML.
 
 from __future__ import annotations
 
+import base64
 import difflib
 import json
 import re
@@ -27,14 +28,19 @@ from urllib.parse import (
 )
 
 from bs4 import BeautifulSoup
+from markdownify import markdownify
 
 from .reddit_graphql import (
+    FEED_SORTS,
     RedditGraphQLRequest,
     comments_by_ids_request,
     post_comments_request,
     posts_by_ids_request,
+    search_posts_request,
+    subreddit_feed_request,
     user_profile_request,
     valid_comment_cursor,
+    valid_search_cursor,
 )
 
 # Keep both New Reddit chrome and legacy selectors here. The legacy selectors
@@ -90,8 +96,18 @@ _CURSOR_RE = re.compile(r"t[1-6]_[A-Za-z0-9]{2,16}\Z")
 _LIVE_CURSOR_RE = re.compile(
     r"LiveUpdate_[A-Fa-f0-9-]{16,64}\Z",
 )
+# A search page cursor: a REST fullname for the directory searches, or the
+# opaque base64 cursor of the app's SearchPosts read.
+_SEARCH_PAGE_CURSOR_RE = re.compile(
+    r"(?:t[1-6]_[A-Za-z0-9]{2,16}|[A-Za-z0-9+/]{1,256}={0,2})\Z"
+)
 _WIKI_CURSOR_RE = re.compile(
     r"WikiRevision_[A-Fa-f0-9-]{16,64}\Z",
+)
+# A revision page cursor: REST's WikiRevision_<id>, or WikiPageRevisionsV2's
+# base64 of ``WikiRevision_<id>:<n>``.
+_WIKI_PAGE_CURSOR_RE = re.compile(
+    r"(?:WikiRevision_[A-Fa-f0-9-]{16,64}|[A-Za-z0-9+/]{4,200}={0,2})\Z"
 )
 _REVISION_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 _UUID_RE = re.compile(
@@ -482,6 +498,91 @@ def _search_params(
     return params
 
 
+_SITEWIDE_SEARCH_SCOPES = frozenset({"all", "popular"})
+_SINGLE_SUBREDDIT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_]{0,20}\Z")
+_SEARCH_DIRECTORIES = {"sr": "/subreddits/search.json", "user": "/users/search.json"}
+
+
+def _search_route(
+    url: str,
+    query: dict[str, list[str]],
+    limit: int,
+    *,
+    subreddit: str | None = None,
+) -> RedditRoute:
+    """A search URL as the reads that still answer it logged out.
+
+    Reddit refuses ``/search.json`` to logged-out clients for every ``type=``
+    and with ``restrict_sr`` (2026-11-22). Posts are the app's ``SearchPosts``
+    read; communities and accounts are the directory searches
+    (``/subreddits/search.json``, ``/users/search.json``), which it still
+    serves. A ``type=`` naming several kinds is one read per kind, in the
+    order asked.
+    """
+
+    search_query = _first_query(query, "q")
+    if search_query is not None and len(search_query) > 512:
+        return RedditRoute(url, "html_fallback")
+    requested_types = (_first_query(query, "type") or "link").split(",")
+    types = list(
+        dict.fromkeys(value for value in requested_types if value in {"link", "sr", "user"})
+    ) or ["link"]
+    restrict = _boolean_query(query, "restrict_sr")
+    scope: tuple[str, ...] = ()
+    if (
+        subreddit is not None
+        and restrict != "false"
+        and subreddit.lower() not in _SITEWIDE_SEARCH_SCOPES
+    ):
+        if "-" in subreddit:
+            # SearchPosts restricts to communities; it has no exclusion.
+            return RedditRoute(url, "html_fallback")
+        scope = tuple(subreddit.split("+"))
+        if len(scope) > 20 or not all(
+            _SINGLE_SUBREDDIT_RE.fullmatch(name) for name in scope
+        ):
+            return RedditRoute(url, "html_fallback")
+    after = _first_query(query, "after")
+    requests: list[str | RedditGraphQLRequest] = []
+    for search_type in types:
+        if search_type == "link":
+            if not (search_query or "").strip():
+                return RedditRoute(url, "html_fallback")
+            sort = _first_query(query, "sort")
+            time_filter = _first_query(query, "t")
+            requested_limit = _first_query(query, "limit")
+            page_size = limit
+            if requested_limit and requested_limit.isdigit() and int(requested_limit) > 0:
+                page_size = min(limit, int(requested_limit))
+            requests.append(
+                search_posts_request(
+                    search_query,
+                    sort=sort if sort in _SEARCH_SORTS else "relevance",
+                    time=time_filter if time_filter in _TIME_FILTERS else "all",
+                    subreddits=scope,
+                    limit=max(1, min(100, page_size)),
+                    after=(
+                        after
+                        if len(types) == 1 and after and valid_search_cursor(after)
+                        else None
+                    ),
+                )
+            )
+        else:
+            params = _directory_search_params(query, limit)
+            if len(types) > 1:
+                params.pop("after", None)
+                params.pop("before", None)
+            requests.append(_json_url(_SEARCH_DIRECTORIES[search_type], params))
+    return RedditRoute(
+        url,
+        "search",
+        tuple(requests),
+        subreddit=subreddit,
+        label=search_query or "",
+    )
+
+
 def _directory_search_params(
     query: dict[str, list[str]],
     limit: int,
@@ -750,6 +851,27 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                 )
             if not tail or (len(tail) == 1 and tail[0] in _LISTING_SORTS):
                 sort = tail[0] if tail else "hot"
+                if (
+                    sort in FEED_SORTS
+                    and _SINGLE_SUBREDDIT_RE.fullmatch(subreddit)
+                    and subreddit.lower() not in _SITEWIDE_SEARCH_SCOPES
+                ):
+                    # REST /r/<sub>/new and /rising are refused logged out
+                    # (2026-11-22); they are the app's community feed.
+                    after = _cursor(_first_query(query, "after"))
+                    return RedditRoute(
+                        transformed.url,
+                        "listing",
+                        (
+                            subreddit_feed_request(
+                                subreddit,
+                                sort,
+                                after=after if after and after.startswith("t3_") else None,
+                            ),
+                        ),
+                        subreddit=subreddit,
+                        label=sort,
+                    )
                 params = (
                     _randomrising_params(query)
                     if sort == "randomrising"
@@ -791,20 +913,11 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                     label="comments gilded" if len(tail) == 2 else "gilded",
                 )
             if tail == ["search"]:
-                params = _search_params(
+                return _search_route(
+                    transformed.url,
                     query,
                     limit,
-                    restrict_sr_by_default=True,
-                )
-                search_query = _first_query(query, "q")
-                if search_query is not None and len(search_query) > 512:
-                    return RedditRoute(transformed.url, "html_fallback")
-                return RedditRoute(
-                    transformed.url,
-                    "search",
-                    (_json_url(f"{base}/search.json", params),),
                     subreddit=subreddit,
-                    label=search_query or "",
                 )
             if tail == ["about"]:
                 return RedditRoute(
@@ -877,12 +990,23 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                             else ""
                         )
                         params = _wiki_listing_params(query, limit)
+                        if wiki_parts:
+                            # REST revisions JSON is refused logged out
+                            # (2026-11-22): a page's history is New Reddit's
+                            # own WikiPageRevisionsV2, after its HTML page.
+                            return RedditRoute(
+                                transformed.url,
+                                "wiki_revisions",
+                                (f"https://www.reddit.com{base}/wiki/revisions{suffix}/",),
+                                subreddit=subreddit,
+                                label="/".join(wiki_parts),
+                            )
                         return RedditRoute(
                             transformed.url,
                             "wiki_revisions",
                             (_json_url(f"{base}/wiki/revisions{suffix}.json", params),),
                             subreddit=subreddit,
-                            label="/".join(wiki_parts) if wiki_parts else "all pages",
+                            label="all pages",
                         )
                 if wiki_action == "discussions":
                     wiki_parts = parts[4:]
@@ -929,6 +1053,16 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
                             transformed.url,
                             "wiki_diff",
                             tuple(revision_requests),
+                            subreddit=subreddit,
+                            label="/".join(wiki_parts),
+                        )
+                    if not params:
+                        # The page's JSON is refused logged out (2026-11-22);
+                        # New Reddit still server-renders the whole page.
+                        return RedditRoute(
+                            transformed.url,
+                            "wiki",
+                            (f"https://www.reddit.com{base}/wiki/{wiki_path}/",),
                             subreddit=subreddit,
                             label="/".join(wiki_parts),
                         )
@@ -1110,16 +1244,7 @@ def route_reddit_url(url: str, max_tokens: int = 25000) -> RedditRoute | None:
 
     # Global search and front-page listings.
     if parts == ["search"]:
-        params = _search_params(query, limit)
-        search_query = _first_query(query, "q")
-        if search_query is not None and len(search_query) > 512:
-            return RedditRoute(transformed.url, "html_fallback")
-        return RedditRoute(
-            transformed.url,
-            "search",
-            (_json_url("/search.json", params),),
-            label=search_query or "",
-        )
+        return _search_route(transformed.url, query, limit)
     if not parts or (len(parts) == 1 and parts[0].lower() in _LISTING_SORTS):
         sort = parts[0].lower() if parts else "best"
         params = (
@@ -2181,6 +2306,142 @@ def _listing_children(payload: object) -> list[dict]:
     return [child for child in children if isinstance(child, dict)]
 
 
+_WIKI_TIMESTAMP_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?[+-]\d{4}\Z"
+)
+_WIKI_REVISER_HREF_RE = re.compile(r"/user/([A-Za-z0-9_-]{1,64})/?\Z")
+WIKI_HTML_SOURCE_NOTE = (
+    "Source: New Reddit's rendered wiki page. Reddit no longer serves a "
+    "wiki's JSON, or its Markdown source, to logged-out clients, so this text "
+    "was converted from the page's HTML."
+)
+
+
+def _wiki_timestamp(value: object) -> float | None:
+    """``2020-10-22T21:39:26.000000+0000`` as Unix seconds, or None."""
+
+    if not isinstance(value, str) or not _WIKI_TIMESTAMP_RE.fullmatch(value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp()
+    except ValueError:
+        try:
+            return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z").timestamp()
+        except ValueError:
+            return None
+
+
+def _is_new_reddit_route(
+    soup: BeautifulSoup,
+    route_name: str,
+    expected_path: str,
+):
+    """The ``shreddit-app`` of one fixed-origin New Reddit page, or None."""
+
+    app = soup.select_one(f'shreddit-app[routename="{route_name}"]')
+    canonical = app.select_one("#canonical-url-updater[value]") if app else None
+    if canonical is None:
+        return None
+    try:
+        url = urlparse(unescape(str(canonical.get("value") or "")).strip())
+        port = url.port
+    except (TypeError, ValueError):
+        return None
+    if (
+        url.scheme != "https"
+        or (url.hostname or "").rstrip(".").casefold() != "www.reddit.com"
+        or port not in (None, 443)
+        or url.username is not None
+        or url.password is not None
+        or url.params
+        or url.fragment
+        or unquote(url.path).casefold() != unquote(expected_path).casefold()
+    ):
+        return None
+    return app
+
+
+def parse_reddit_wiki_page_html(
+    html: str,
+    subreddit: str,
+    page: str,
+) -> dict | None:
+    """A New Reddit wiki page as the REST ``wikipage`` fields it renders.
+
+    ``/r/<sub>/wiki/<page>.json`` is refused to logged-out clients
+    (2026-11-22); the page itself still server-renders the whole body inside
+    ``main div.md.wiki``, followed by "Last revised by" with the reviser's
+    profile link and a ``faceplate-timeago[ts]``. Only that subtree and those
+    two values are read. A page that does not exist renders "... does not
+    exist" with no body, which is ``{"missing": True}``, and a disabled wiki
+    says so, which is ``{"disabled": True}``; any other shape is None, so a degraded shell is reported rather than rendered as an empty
+    page. The Markdown is converted from the HTML: the source is not served.
+    """
+
+    if (
+        not isinstance(html, str)
+        or not html
+        or _SUBREDDIT_RE.fullmatch(subreddit) is None
+        or not _safe_wiki_parts(page.split("/"))
+    ):
+        return None
+    soup = BeautifulSoup(html, "lxml")
+    app = _is_new_reddit_route(
+        soup, "subreddit_wiki", f"/r/{subreddit}/wiki/{page}/"
+    )
+    main = app.select_one("main#main-content") if app else None
+    if main is None:
+        return None
+    bodies = main.select("div.md.wiki")
+    if not bodies:
+        text = " ".join(main.get_text(" ", strip=True).split()).casefold()
+        if f'"{page}" does not exist'.casefold() in text:
+            return {"missing": True}
+        if "this wiki has been disabled" in text:
+            # r/BambuLab, 2026-11-22: "The mods of this community have
+            # disabled their wiki".
+            return {"disabled": True}
+        return None
+    if len(bodies) != 1:
+        return None
+    body = bodies[0]
+    for anchor in body.find_all("a", href=True):
+        href = str(anchor.get("href") or "")
+        if href.startswith("/") and not href.startswith("//"):
+            anchor["href"] = f"https://www.reddit.com{href}"
+    for tag in body.find_all(["script", "style", "template"]):
+        tag.decompose()
+    content = markdownify(
+        str(body),
+        heading_style="ATX",
+        bullets="-",
+        escape_asterisks=False,
+        escape_underscores=False,
+    )
+    content = re.sub(r"\n{3,}", "\n\n", content).strip()
+    if not content:
+        return None
+    data: dict[str, object] = {
+        "content_md": content,
+        "_fetchaller_wiki_source": "html",
+    }
+    for marker in main.find_all(string=lambda text: text and "Last revised by" in text):
+        container = marker.parent
+        if container is None or body in container.parents:
+            continue
+        reviser = container.find("a", href=_WIKI_REVISER_HREF_RE)
+        stamp = container.find("faceplate-timeago")
+        if reviser is not None:
+            name = _WIKI_REVISER_HREF_RE.fullmatch(str(reviser.get("href")))
+            if name:
+                data["revision_by"] = {"data": {"name": name.group(1)}}
+        when = _wiki_timestamp(stamp.get("ts") if stamp is not None else None)
+        if when is not None:
+            data["revision_date"] = when
+        break
+    return {"kind": "wikipage", "data": data}
+
+
 def parse_reddit_wiki_pages_html(
     html: str,
     subreddit: str,
@@ -2307,6 +2568,98 @@ def parse_reddit_wiki_pages_html(
         seen.add(page_key)
         pages.append(page)
     return pages or None
+
+
+_WIKI_GRAPHQL_REVISION_RE = re.compile(r"WikiRevision_[A-Fa-f0-9-]{16,64}\Z")
+_WIKI_GRAPHQL_CURSOR_RE = re.compile(
+    r"WikiRevision_[A-Fa-f0-9-]{16,64}:\d{1,6}\Z"
+)
+_MAX_WIKI_REVISIONS = 1000
+
+
+def valid_wiki_revision_cursor(value: object) -> bool:
+    """A ``WikiPageRevisionsV2`` cursor: base64 of ``WikiRevision_<id>:<n>``."""
+
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[A-Za-z0-9+/]{4,200}={0,2}", value
+    ):
+        return False
+    try:
+        decoded = base64.b64decode(value, validate=True).decode("ascii")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return _WIKI_GRAPHQL_CURSOR_RE.fullmatch(decoded) is not None
+
+
+def parse_reddit_wiki_revisions(
+    payload: object,
+    subreddit: str,
+    page: str,
+) -> dict | None:
+    """One page's ``WikiPageRevisionsV2`` history as a REST revision listing.
+
+    ``/r/<sub>/wiki/revisions/<page>.json`` is refused to logged-out clients
+    (2026-11-22). The wiki UI reads the same history from this operation,
+    which pages it with ``after``. Every revision must belong to the asked
+    page and community; anything else rejects the whole answer.
+    """
+
+    if not isinstance(payload, dict) or payload.get("errors"):
+        return None
+    data = payload.get("data")
+    community = data.get("subreddit") if isinstance(data, dict) else None
+    if (
+        not isinstance(community, dict)
+        or community.get("__typename") != "Subreddit"
+        or not isinstance(community.get("name"), str)
+        or community["name"].casefold() != subreddit.casefold()
+    ):
+        return None
+    wiki = community.get("wiki")
+    revisions = wiki.get("recentRevisions") if isinstance(wiki, dict) else None
+    edges = revisions.get("edges") if isinstance(revisions, dict) else None
+    if not isinstance(edges, list) or len(edges) > _MAX_WIKI_REVISIONS:
+        return None
+    children: list[dict] = []
+    for edge in edges:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        if not isinstance(node, dict):
+            return None
+        revision_id = node.get("id")
+        node_page = node.get("page")
+        page_name = node_page.get("name") if isinstance(node_page, dict) else None
+        if (
+            not isinstance(revision_id, str)
+            or not _WIKI_GRAPHQL_REVISION_RE.fullmatch(revision_id)
+            or not isinstance(page_name, str)
+            or page_name.casefold() != page.casefold()
+        ):
+            return None
+        revision: dict[str, object] = {"id": revision_id, "page": page_name}
+        author = node.get("authorInfo")
+        name = author.get("name") if isinstance(author, dict) else None
+        if isinstance(name, str) and _USERNAME_RE.fullmatch(name):
+            revision["author"] = {"data": {"name": name}}
+        when = _wiki_timestamp(node.get("revisedAt"))
+        if when is not None:
+            revision["timestamp"] = when
+        reason = node.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            revision["reason"] = " ".join(reason.split())[:1000]
+        if node.get("isHidden") is True:
+            revision["revision_hidden"] = True
+        children.append({"kind": "WikiRevision", "data": revision})
+    page_info = revisions.get("pageInfo")
+    after = None
+    if isinstance(page_info, dict) and page_info.get("hasNextPage") is True:
+        cursor = page_info.get("endCursor")
+        if not valid_wiki_revision_cursor(cursor):
+            return None
+        after = cursor
+    return {
+        "kind": "Listing",
+        "data": {"children": children, "after": after, "before": None},
+    }
 
 
 def parse_reddit_wiki_page_tree(
@@ -2891,7 +3244,11 @@ def _render_listing(payload: object, route: RedditRoute, max_chars: int) -> str:
                     1,
                 )
             )
-    pagination = _pagination_sections(payload, route.canonical_url)
+    pagination = _pagination_sections(
+        payload,
+        route.canonical_url,
+        cursor_pattern=_SEARCH_PAGE_CURSOR_RE if route.kind == "search" else _CURSOR_RE,
+    )
     return _fit_sections(
         prefix,
         sections,
@@ -3207,6 +3564,8 @@ def _render_wiki(payload: object, route: RedditRoute) -> str:
         lines.extend(["", f"**Revision:** {data['revision_id']}"])
     if data.get("reason"):
         lines.extend(["", f"**Edit reason:** {data['reason']}"])
+    if data.get("_fetchaller_wiki_source") == "html":
+        lines.extend(["", f"_{WIKI_HTML_SOURCE_NOTE}_"])
     content = data.get("content_md")
     lines.extend(["", str(content or "No wiki content returned.")])
     return "\n".join(lines)
@@ -4062,6 +4421,8 @@ def _render_wiki_revisions(payload: object, route: RedditRoute, max_chars: int) 
         )
         if author:
             line += f" · u/{author}"
+        if revision.get("revision_hidden") is True:
+            line += " · hidden"
         if revision_id:
             line += f"\n   revision: {revision_id}"
         reason = revision.get("reason")
@@ -4071,7 +4432,7 @@ def _render_wiki_revisions(payload: object, route: RedditRoute, max_chars: int) 
     pagination = _pagination_sections(
         payload,
         route.canonical_url,
-        cursor_pattern=_WIKI_CURSOR_RE,
+        cursor_pattern=_WIKI_PAGE_CURSOR_RE,
     )
     return _fit_sections(
         f"# Wiki revisions for r/{route.subreddit or '?'} · {route.label or 'all pages'}"
