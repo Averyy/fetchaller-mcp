@@ -51,11 +51,19 @@ reads the Reddit app and New Reddit make themselves:
   operation needs a page name). The parity corpus marks these fixture-only.
 - Threads, comments, permalinks, `by_id`, profiles and every other mapped
   route were re-swept live on 2026-11-22 and still read.
-- **Brave search** now cloaks every result link behind a session-bound
-  `/go/v1/` redirect, with the destination nowhere in the page, so it has
-  no usable results. A `brave` search says that plainly instead of
-  "Unexpected Brave response shape"; Google's fallback and `all` carry on
-  with Google and DDG. CI waives the Brave gate (`SMOKE_SKIP_BRAVE`).
+- **Brave search works with Brave's cloaked links.** Brave began hiding result
+  URLs behind `/go/v1/` redirects this week (rolling out), with the
+  destination nowhere in the page, so `brave` searches failed with
+  "Unexpected Brave response shape". A cloaked result now shows Brave's link
+  and Brave's display of the destination ("Brave shows: docs.python.org › 3 ›
+  library › asyncio.html"), and `fetch` of the link opens the destination:
+  one Brave request, made in the session that searched (Brave resolves a
+  link for nobody else), then the page through fetch's usual checks, with
+  the destination named; caller headers other than `Accept` and
+  `Accept-Language` are not sent on, as for any cross-origin redirect.
+  Links are resolved only when opened, never all at
+  once (Brave counts that against scrapers). In `all`, a Brave result another
+  engine already returned is dropped. The smoke suite opens one Brave link.
 
 ## 3.8.12 (2026-11-06)
 

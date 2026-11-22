@@ -37,11 +37,17 @@ so Google's fallback goes on to Brave: on 2026-11-05 it sent that block to every
 query for minutes, from macOS and the image, to a GET and its form's POST. A 429 holds that provider for 60 seconds; a 403
 (or DDG's blocking 202) holds it for 300 seconds, extended by longer Retry-After.
 Do not bypass the provider gate for `all` or Google fallback. Since 2026-11-22
-Brave cloaks every result link behind a session-bound `/go/v1/<token>` redirect
-and the destination is nowhere in the page (a token resolves only by another
-request in the session that got the page): report that as Brave's error
-(`BRAVE_CLOAKED_ERROR`), never render the display `cite` as a URL. CI waives
-the Brave gate with `SMOKE_SKIP_BRAVE`; `all` must still carry Google and DDG.
+Brave cloaks result links (rolling out, so some pages still carry real URLs)
+behind `/go/v1/<token>` redirects; the destination is nowhere in the page and
+Brave resolves a token only for the client that searched (Brave's blog,
+2026-11-11: it counts resolutions per results page against scrapers). Return
+Brave's link with "Brave shows: <its display>" -- display text, never a URL --
+and resolve it only when `fetch` opens it: one `?r=1` GET in the Brave session
+(which therefore never follows redirects) on the same lock, limiter and
+backoff, then the destination goes through fetch's own guarded path. Never
+resolve every link of a page. In `all`, a Brave result whose display spells
+out a URL another engine returned is that result and is dropped. The smoke
+suite opens one Brave link; `SMOKE_SKIP_BRAVE` can waive the Brave gates.
 Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider

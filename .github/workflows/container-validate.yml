@@ -57,19 +57,14 @@ jobs:
       # run so a green build can never be mistaken for validated AliExpress.
       # Set this to '0' to re-arm the live AliExpress gates.
       SMOKE_SKIP_ALIEXPRESS: '1'
-      # WAIVED EVERYWHERE, NOT AN ENVIRONMENT BLOCK. On 2026-11-22 Brave began
-      # cloaking every organic result link behind a session-bound redirect
-      # (/go/v1/<token>); the destination URL is nowhere in the page, and a
-      # token resolves only by one more request in the session that got the
-      # page (a fresh session gets an app shell). Run 45040517521 failed the
-      # brave and all gates with that page, and macOS reproduced it. fetchaller
-      # now names the cloak as Brave's error; Google and DDG still pass, and
-      # `all` must still carry both of theirs. The offline Brave tests still run.
-      #
-      # This is a deliberate, visible waiver: the step below annotates every
-      # run. Set this to '0' to re-arm the Brave gates once Brave results
-      # carry URLs again.
-      SMOKE_SKIP_BRAVE: '1'
+      # ARMED. On 2026-11-22 Brave began cloaking result links behind
+      # session-bound /go/v1/<token> redirects (run 45040517521 failed on it).
+      # fetchaller now returns Brave's links with Brave's display of each
+      # destination and resolves a link when it is fetched, and the smoke suite
+      # opens one, so the brave and all gates validate that whole path. Set
+      # this to '1' only to waive them visibly (the step below annotates the
+      # run); `all` must then still carry Google's and DDG's results.
+      SMOKE_SKIP_BRAVE: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -127,11 +122,9 @@ jobs:
         if: env.SMOKE_SKIP_BRAVE == '1'
         run: |
           echo "::warning title=Live Brave search gate waived::This build did \
-          NOT validate Brave search. Brave cloaks its result links behind \
-          session-bound /go/v1/ redirects with no destination in the page, so \
-          Brave returns no usable results; fetchaller names that as Brave's \
-          error. Google and DDG were gated, and all still had to carry both. \
-          Set SMOKE_SKIP_BRAVE to '0' in container-validate.yml to re-arm."
+          NOT validate Brave search or opening a Brave result link. Google and \
+          DDG were gated, and all still had to carry both. Set \
+          SMOKE_SKIP_BRAVE to '0' in container-validate.yml to re-arm."
 
       - name: Verify offline Reddit legacy contract and fixtures
         run: |

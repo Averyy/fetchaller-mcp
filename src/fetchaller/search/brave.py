@@ -1,6 +1,7 @@
 """Brave Search HTML scraper (search.brave.com)."""
 
 import asyncio
+import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -23,6 +24,22 @@ _PARSER_TIMEOUT = 10.0
 REQUEST_TIMEOUT = 150.0
 BROWSER_SOLVE_TIMEOUT = 120.0
 _ENDPOINT = "https://search.brave.com/search"
+# Brave's cloaked result links (2026-11-22): /go/v1/<token>, the destination
+# encrypted in the token. LINK_PREFIX + token is what a result carries.
+LINK_PREFIX = "https://search.brave.com/go/v1/"
+_TOKEN = r"[A-Za-z0-9_-]{40,2048}"
+_HREF_TOKEN_RE = re.compile(rf"/go/v1/({_TOKEN})\Z")
+_RESULT_LINK_RE = re.compile(
+    rf"https://search\.brave\.com/go/v1(?:/|#)({_TOKEN})(?:\?(?:confirm&)?r=\d)?\Z"
+)
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_LINK_TIMEOUT = 30.0
+_MAX_LINK_RESPONSE_BYTES = 1024 * 1024
+LINK_UNRESOLVED_ERROR = (
+    "Brave did not resolve this result link (Brave resolves a link only for "
+    "the session that searched, and only for a while); search again and open "
+    "the new link"
+)
 
 Pace = Callable[[], Awaitable[None]]
 
@@ -39,13 +56,6 @@ def _log(msg: str) -> None:
     )
     safe = sanitize_for_log(redact_secrets_for_log(bounded), max_length=500)
     print(f"[{datetime.now(UTC).isoformat()}] {safe}", file=sys.stderr)
-
-
-BRAVE_CLOAKED_ERROR = (
-    "Brave now cloaks its result links behind session-bound redirects "
-    "(/go/v1/...) and the destination URLs are not in the page, so Brave "
-    "cannot supply results; use provider google or ddg"
-)
 
 
 def _error_detail(error: Exception) -> str:
@@ -70,9 +80,20 @@ def extract_results(html: str) -> list[SearchResult]:
 
     for snippet in soup.select("div.snippet[data-type='web']"):
         link = snippet.select_one("a[href^='http']")
-        if link is None:
-            continue
-        url = link["href"]
+        display = ""
+        if link is not None:
+            url = link["href"]
+        else:
+            # Cloaked: the destination is encrypted in Brave's own redirect,
+            # and the page shows only a display of it (a ``cite`` such as
+            # "https:// docs.python.org › 3 › library › asyncio.html").
+            cloaked = snippet.select_one("a[href^='/go/v1/']")
+            match = _HREF_TOKEN_RE.fullmatch(str(cloaked.get("href") or "")) if cloaked else None
+            if match is None:
+                continue
+            url = LINK_PREFIX + match.group(1)
+            cite = snippet.select_one("cite")
+            display = _display(cite.get_text(" ") if cite else "")
         if len(url) > _MAX_URL_CHARS:
             continue
 
@@ -92,6 +113,7 @@ def extract_results(html: str) -> list[SearchResult]:
                 title=title[:_MAX_TITLE_CHARS],
                 url=url,
                 snippet=description[:_MAX_SNIPPET_CHARS],
+                display=display,
             )
         )
         if len(results) >= _MAX_RESULTS:
@@ -109,29 +131,36 @@ def is_explicit_no_results(html: str) -> bool:
     return BeautifulSoup(html, "html.parser").select_one("#bad-results-info-banner") is not None
 
 
-def has_cloaked_results(html: str) -> bool:
-    """Recognize result links Brave cloaks behind ``/go/v1/<token>``.
+def _display(text: str) -> str:
+    """Brave's display of a cloaked destination, tidied ("https:// a.org › x"
+    becomes "a.org › x"). Display text only: Brave elides and reorders it."""
 
-    Seen from 2026-11-22: every organic result links to an opaque, session-bound
-    redirect, and the destination appears nowhere in the page (only a display
-    ``cite``, which is not a URL: one read ``docs.python.org › 3.11 › ›
-    library``). The token resolves only by one more request in the session that
-    received the page, and Brave's server decides, so nothing here can read it.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    snippets = soup.select("div.snippet[data-type='web']")
-    return bool(snippets) and all(
-        snippet.select_one("a[href^='/go/v1/']") is not None
-        and snippet.select_one("a[href^='http']") is None
-        for snippet in snippets
-    )
+    shown = " ".join(str(text).split())
+    for scheme in ("https:// ", "http:// ", "https://", "http://"):
+        if shown.startswith(scheme):
+            shown = shown[len(scheme):]
+            break
+    return shown[:300]
 
 
-def _parse_response(html: str) -> tuple[list[SearchResult], bool, bool]:
+def display_url(display: str) -> str | None:
+    """The URL a display spells out, only to match it against a real URL from
+    another engine (never shown): ``a.org › x › y.html`` is
+    ``https://a.org/x/y.html``. None when the display is elided or odd."""
+
+    parts = [part.strip() for part in display.split("›")]
+    if not parts or not parts[0] or any(not part for part in parts) or "…" in display:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", parts[0]) or any(
+        " " in part for part in parts
+    ):
+        return None
+    return "https://" + "/".join(parts)
+
+
+def _parse_response(html: str) -> tuple[list[SearchResult], bool]:
     results = extract_results(html)
-    if results:
-        return results, False, False
-    return results, is_explicit_no_results(html), has_cloaked_results(html)
+    return results, not results and is_explicit_no_results(html)
 
 
 async def fetch_brave(
@@ -216,7 +245,7 @@ async def fetch_brave(
     if len(html) > _MAX_SEARCH_HTML_CHARS:
         return [], "Brave response exceeded the safe HTML size limit"
     try:
-        results, explicit_no_results, cloaked = await run_isolated(
+        results, explicit_no_results = await run_isolated(
             _parse_response,
             html,
             timeout=_PARSER_TIMEOUT,
@@ -228,10 +257,98 @@ async def fetch_brave(
         if explicit_no_results:
             _log("brave explicit zero-results response")
             return [], None
-        if cloaked:
-            _log("brave cloaked result links (session-bound /go/v1/ redirects)")
-            return [], BRAVE_CLOAKED_ERROR
         _log(f"brave unexpected 200 response shape (response_chars={len(html)})")
         return [], "Unexpected Brave response shape (HTTP 200)"
 
     return results, None
+
+
+def result_link_token(url: object) -> str | None:
+    """The token of a Brave result link (``LINK_PREFIX`` + token, optionally
+    with Brave's own ``?r=`` or ``#`` form), else None."""
+
+    if not isinstance(url, str) or len(url) > _MAX_URL_CHARS:
+        return None
+    match = _RESULT_LINK_RE.fullmatch(url)
+    return match.group(1) if match else None
+
+
+def _destination(location: object) -> str | None:
+    if not isinstance(location, str) or len(location) > _MAX_URL_CHARS:
+        return None
+    if any(ord(character) <= 0x20 or ord(character) == 0x7F for character in location):
+        return None
+    if not location.startswith(("https://", "http://")):
+        return None
+    host = location.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    host = host.rsplit("@", 1)[-1].split(":", 1)[0].lower().rstrip(".")
+    if not host or host == "search.brave.com" or host.endswith(".brave.com") and host.startswith("search."):
+        return None
+    return location
+
+
+async def resolve_result_link(session, token: str) -> tuple[str | None, str | None]:
+    """Where one cloaked result link leads: ``(url, None)`` or ``(None, error)``.
+
+    One GET of Brave's conventional redirect (``?r=1``, the path Brave keeps
+    for clients without JavaScript) in the session that searched: Brave binds
+    a link to that client and answers anyone else with its app shell. The
+    session must not follow redirects, so the destination is read here and
+    fetched by the caller through its own guarded path. It is one request,
+    made only when a link is opened, on the same gate, limiter and backoff as
+    a search: Brave counts link resolutions per results page against bulk
+    scraping, which a person opening a link does not resemble.
+    """
+
+    global _backoff_until
+    if not re.fullmatch(_TOKEN, token):
+        return None, "invalid Brave result link"
+    async with _request_lock:
+        now = time.monotonic()
+        if now < _backoff_until:
+            return None, f"Brave rate-limit backoff ({_backoff_until - now:.0f}s remaining)"
+        await brave_search_limiter.wait()
+        cancelled = False
+        try:
+            request = asyncio.create_task(
+                session.get(
+                    f"{LINK_PREFIX}{token}?r=1",
+                    headers={"Accept": "text/html"},
+                    timeout=_LINK_TIMEOUT,
+                    max_response_size=_MAX_LINK_RESPONSE_BYTES,
+                ),
+                name="fetchaller-brave-link",
+            )
+            while True:
+                try:
+                    response = await asyncio.shield(request)
+                    break
+                except asyncio.CancelledError:
+                    if request.cancelled():
+                        raise
+                    # As in fetch_brave: browser work can outlive its async
+                    # wrapper, so keep the gate until the bounded wafer call
+                    # completes and record any cooldown it earned.
+                    cancelled = True
+        except Exception as e:
+            _log(f"brave link request error: {type(e).__name__}")
+            return None, _error_detail(e)
+        challenge = getattr(response, "challenge_type", None)
+        if response.status_code in {403, 429} or challenge:
+            duration = max(
+                retry_after_seconds(response.headers.get("retry-after")),
+                60.0 if response.status_code == 429 else 300.0,
+            )
+            _backoff_until = time.monotonic() + duration
+            _log(f"WARNING brave link HTTP {response.status_code}; backing off {duration:.0f}s")
+            return None, f"HTTP {response.status_code}; Brave rate-limit/block backoff ({duration:.0f}s)"
+        if cancelled:
+            raise asyncio.CancelledError
+        if response.status_code in _REDIRECT_STATUSES:
+            destination = _destination(response.headers.get("location"))
+            if destination is None:
+                return None, "Brave redirected this result link somewhere it cannot be followed"
+            return destination, None
+        if response.status_code == 200:
+            return None, LINK_UNRESOLVED_ERROR
+        return None, f"HTTP {response.status_code}"

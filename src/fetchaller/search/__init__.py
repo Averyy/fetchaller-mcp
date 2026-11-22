@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from ..config import get_wafer_cache_dir
 from ..content.url import normalize_url
 from ..security.xss import redact_secrets_for_log, sanitize_for_log
-from .brave import fetch_brave
+from .brave import display_url, fetch_brave, resolve_result_link, result_link_token
 from .ddg import MAX_DDG_PAGE, search_ddg
 from .google import search_google
 from .models import SearchResult
@@ -93,6 +93,8 @@ def _format_results(results: list[SearchResult]) -> str:
             f"{prefix} {r.title[:_MAX_RESULT_TITLE_CHARS]}" + (f" [{r.source}]" if r.source else ""),
             f"{indent}{r.url}",
         ]
+        if r.display:
+            lines.append(f"{indent}Brave shows: {r.display}")
         if r.snippet:
             lines.append(f"{indent}{r.snippet[:_MAX_RESULT_SNIPPET_CHARS]}")
         block = "\n".join(lines)
@@ -140,10 +142,37 @@ async def _get_session(provider: str, *, browser_solver=None):
                 options.update(cache_dir=get_wafer_cache_dir(), rate_limit=6.0)
             if provider == "brave":
                 options["browser_solver"] = browser_solver
+                # A cloaked result link is resolved by reading Brave's 302 in
+                # this very session (Brave binds links to it); the destination
+                # is then fetched by fetch's own guarded path, never here.
+                # Challenges are cleared in the browser, which redirects itself.
+                options["follow_redirects"] = False
             _sessions[provider] = AsyncSession(**options)
             if provider == "brave":
                 _session_solvers[provider] = browser_solver
         return _sessions[provider]
+
+
+def is_brave_result_link(url: object) -> bool:
+    """Whether ``url`` is a Brave result link a search returned."""
+    return result_link_token(url) is not None
+
+
+async def resolve_brave_link(url: str, *, browser_solver=None) -> dict:
+    """Where a Brave result link leads: ``{"url"}`` or ``{"error"}``.
+
+    Resolved in the same Brave session that searched, which is the only one
+    Brave resolves it for; the destination is returned, not fetched.
+    """
+    token = result_link_token(url)
+    if token is None:
+        return {"error": "Not a Brave result link."}
+    session = await _get_session("brave", browser_solver=browser_solver)
+    destination, error = await resolve_result_link(session, token)
+    if destination is None:
+        _log(f"brave link unresolved: {error}")
+        return {"error": f"Brave result link: {error}."}
+    return {"url": destination}
 
 
 async def close_session() -> None:
@@ -209,10 +238,23 @@ def _render(query: str, page: int, provider: str, outcomes: dict) -> dict:
             answered = True
         for result in results:
             key = _dedup_key(result.url)
+            # A cloaked Brave result whose display spells out a URL another
+            # engine already returned is that result: keep the real URL.
+            shown = display_url(result.display) if result.display else None
+            if shown is not None and _dedup_key(shown) in seen:
+                continue
             if key not in seen:
                 seen.add(key)
                 # Preserve the actual source after merging or fallback.
-                merged.append(SearchResult(result.title, result.url, result.snippet, source=name))
+                merged.append(
+                    SearchResult(
+                        result.title,
+                        result.url,
+                        result.snippet,
+                        source=name,
+                        display=result.display,
+                    )
+                )
     summary = f"Search: {json.dumps(query, ensure_ascii=False)} | requested: {provider} | page {page} | {' | '.join(columns)} | {len(merged)} total"
     notices = []
     if "ddg" in outcomes and page > MAX_DDG_PAGE:
@@ -224,6 +266,12 @@ def _render(query: str, page: int, provider: str, outcomes: dict) -> dict:
         )
     if errors:
         notices.append("Provider failures:\n" + "\n".join(errors))
+    if any(result.display for result in merged):
+        notices.append(
+            "Brave hides its result URLs behind its own links: fetch a Brave link "
+            "to open it (Brave resolves it then, one request). \"Brave shows\" is "
+            "Brave's display of the destination, not a URL."
+        )
     if merged:
         content = _format_results(merged)
     elif answered:

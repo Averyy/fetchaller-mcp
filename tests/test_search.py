@@ -428,20 +428,51 @@ class TestBrave:
         results, error = await fetch_brave(session, "q", 1)
         assert results == [] and "Unexpected Brave response shape" in error
 
-    async def test_cloaked_result_links_are_named_not_rendered(self):
-        """Brave's /go/v1/ links carry no destination (2026-11-22)."""
-        cloaked = (
-            '<div class="snippet" data-type="web">'
-            '<a href="/go/v1/AQq94xNGtPKKawMQzAGdj9Tvqapofgjww" class="l1">'
-            '<div class="title">asyncio docs</div></a>'
-            "<cite>https:// docs.python.org › 3 › library › asyncio.html</cite>"
+    _TOKEN = "AQq94xNGtPKKawMQzAGdj9Tvqapofgjww_OC8rkbgLIr6K658A7FQZr2PKMqfBxi"
+
+    def _cloaked(self, cite="https:// docs.python.org › 3 › library › asyncio.html"):
+        return (
+            '<div class="snippet svelte-x" data-type="web">'
+            f'<a href="/go/v1/{self._TOKEN}" class="l1"><div class="title">asyncio docs</div></a>'
+            f"<cite>{cite}</cite>"
             '<div class="generic-snippet">About asyncio</div></div>'
         )
-        session = self._session(f"<html><body>{cloaked * 3}</body></html>")
+
+    async def test_cloaked_results_carry_braves_link_and_its_display(self):
+        """Brave's /go/v1/ links carry no destination in the page (2026-11-22)."""
+        session = self._session(f"<html><body>{self._cloaked()}</body></html>")
         results, error = await fetch_brave(session, "q", 1)
-        assert results == []
-        assert "cloaks its result links" in error
-        assert "docs.python.org" not in error
+        assert error is None
+        [result] = results
+        assert result.url == f"https://search.brave.com/go/v1/{self._TOKEN}"
+        assert result.display == "docs.python.org › 3 › library › asyncio.html"
+        assert result.title == "asyncio docs" and result.snippet == "About asyncio"
+
+    def test_display_url_only_spells_out_a_plain_display(self):
+        from src.fetchaller.search.brave import display_url
+
+        assert display_url("docs.python.org › 3 › library › asyncio.html") == (
+            "https://docs.python.org/3/library/asyncio.html"
+        )
+        # Brave's displays are not always URLs: an empty segment, an elision.
+        assert display_url("docs.python.org › 3.11 › › library › asyncio.html") is None
+        assert display_url("example.org › very › … › page") is None
+        assert display_url("") is None
+
+    def test_result_link_tokens_are_braves_own_forms_only(self):
+        from src.fetchaller.search.brave import result_link_token
+
+        base = f"https://search.brave.com/go/v1/{self._TOKEN}"
+        for url in (base, base + "?r=1", base + "?confirm&r=2", base.replace("/go/v1/", "/go/v1#")):
+            assert result_link_token(url) == self._TOKEN, url
+        for url in (
+            "https://search.brave.com/go/v1/short",
+            "http://search.brave.com/go/v1/" + self._TOKEN,
+            "https://evil.example/go/v1/" + self._TOKEN,
+            base + "?r=1&next=https://evil.example",
+            None,
+        ):
+            assert result_link_token(url) is None, url
 
     async def test_non_200_is_an_error(self):
         results, error = await fetch_brave(self._session("", status=429), "q", 1)
@@ -1052,6 +1083,128 @@ async def test_provider_retry_after_extends_cooldown(provider, provider_clock):
     clock[0] += 301
     assert "backoff" in (await function(session, "another query"))[1]
     assert session.get.await_count == 1
+
+
+def _link_response(status, location=None):
+    response = MagicMock()
+    response.status_code = status
+    response.challenge_type = None
+    response.headers = {"location": location} if location else {}
+    return response
+
+
+_LINK_TOKEN = "AQq94xNGtPKKawMQzAGdj9Tvqapofgjww_OC8rkbgLIr6K658A7FQZr2PKMqfBxi"
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (_link_response(302, "https://docs.python.org/3/library/asyncio.html"), ("https://docs.python.org/3/library/asyncio.html", None)),
+        (_link_response(200), (None, brave_mod.LINK_UNRESOLVED_ERROR)),
+        (_link_response(302, "https://search.brave.com/go/v1/other"), (None, "Brave redirected this result link somewhere it cannot be followed")),
+        (_link_response(302, "javascript:alert(1)"), (None, "Brave redirected this result link somewhere it cannot be followed")),
+        (_link_response(302, "https://ok.example/\x00x"), (None, "Brave redirected this result link somewhere it cannot be followed")),
+        (_link_response(500), (None, "HTTP 500")),
+    ],
+)
+async def test_resolve_result_link_reads_only_braves_redirect(search_state, response, expected):
+    session = SimpleNamespace(get=AsyncMock(return_value=response))
+    with patch.object(brave_mod.brave_search_limiter, "wait", AsyncMock()):
+        assert await brave_mod.resolve_result_link(session, _LINK_TOKEN) == expected
+    url = session.get.await_args.args[0]
+    # Brave's conventional redirect, asked of the session that searched.
+    assert url == f"https://search.brave.com/go/v1/{_LINK_TOKEN}?r=1"
+
+
+async def test_resolve_result_link_shares_braves_backoff(search_state, monkeypatch):
+    monkeypatch.setattr(brave_mod, "_backoff_until", 0.0)
+    session = SimpleNamespace(get=AsyncMock(return_value=_link_response(429)))
+    with patch.object(brave_mod.brave_search_limiter, "wait", AsyncMock()):
+        destination, error = await brave_mod.resolve_result_link(session, _LINK_TOKEN)
+        assert destination is None and "backoff" in error
+        # The next link, or search, waits out the same backoff without a request.
+        assert "backoff" in (await brave_mod.resolve_result_link(session, _LINK_TOKEN))[1]
+    assert session.get.await_count == 1
+    monkeypatch.setattr(brave_mod, "_backoff_until", 0.0)
+
+
+async def test_resolve_result_link_keeps_the_gate_through_cancellation(search_state, monkeypatch):
+    monkeypatch.setattr(brave_mod, "_backoff_until", 0.0)
+    release = asyncio.Event()
+
+    async def slow_get(*_args, **_kwargs):
+        await release.wait()
+        return _link_response(429)
+
+    session = SimpleNamespace(get=slow_get)
+    with patch.object(brave_mod.brave_search_limiter, "wait", AsyncMock()):
+        task = asyncio.create_task(brave_mod.resolve_result_link(session, _LINK_TOKEN))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        # The gate is still held while the in-flight request finishes.
+        assert brave_mod._request_lock.locked()
+        release.set()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    # The cooldown the cancelled request earned was recorded.
+    assert brave_mod._backoff_until > 0.0
+    assert not brave_mod._request_lock.locked()
+    monkeypatch.setattr(brave_mod, "_backoff_until", 0.0)
+
+
+async def test_brave_session_never_follows_redirects(search_state):
+    with patch("wafer.AsyncSession") as factory:
+        await search_mod._get_session("brave")
+    assert factory.call_args.kwargs["follow_redirects"] is False
+
+
+def test_brave_display_is_rendered_and_explained_once(search_state):
+    from src.fetchaller.search import _render
+    from src.fetchaller.search.models import SearchResult
+
+    link = f"https://search.brave.com/go/v1/{_LINK_TOKEN}"
+    outcome = _render(
+        "asyncio",
+        1,
+        "brave",
+        {"brave": ([SearchResult("asyncio docs", link, "About", display="docs.python.org › 3 › library › asyncio.html")], None)},
+    )
+    content = outcome["content"]
+    assert link in content
+    assert "Brave shows: docs.python.org › 3 › library › asyncio.html" in content
+    assert content.count("Brave hides its result URLs") == 1
+
+
+def test_all_drops_a_brave_result_another_engine_returned(search_state):
+    from src.fetchaller.search import _render
+    from src.fetchaller.search.models import SearchResult
+
+    real = SearchResult("asyncio docs", "https://docs.python.org/3/library/asyncio.html", "Google's")
+    cloaked = SearchResult(
+        "asyncio docs",
+        f"https://search.brave.com/go/v1/{_LINK_TOKEN}",
+        "DUPLICATE-SNIPPET",
+        display="docs.python.org › 3 › library › asyncio.html",
+    )
+    other = SearchResult(
+        "Real Python",
+        f"https://search.brave.com/go/v1/{_LINK_TOKEN}x",
+        "Brave only",
+        display="realpython.com › async-io-python",
+    )
+    content = _render(
+        "asyncio",
+        1,
+        "all",
+        {"google": ([real], None), "ddg": ([], None), "brave": ([cloaked, other], None)},
+    )["content"]
+    assert "https://docs.python.org/3/library/asyncio.html" in content
+    assert "Google's" in content and "DUPLICATE-SNIPPET" not in content
+    assert "Brave only" in content and "Brave shows: realpython.com › async-io-python" in content
 
 
 async def test_brave_sessions_reuse_only_the_same_guarded_solver(search_state):

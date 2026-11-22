@@ -171,7 +171,7 @@ its flag to `'0'`:
 | `SMOKE_SKIP_REDDIT` | `browse_reddit`, `search_reddit`, and the parity gate | Reddit answers the anonymous solve origin with 403 from hosted runners, to the HTTP client and a real headful Chrome alike |
 | `SMOKE_SKIP_ALIBABA` | `search_alibaba`, `get_alibaba_product` | Alibaba-group tmd gate |
 | `SMOKE_SKIP_ALIEXPRESS` | `search_aliexpress`, `get_aliexpress_product` | Same tmd gate, reached through AliExpress's MTop path |
-| `SMOKE_SKIP_BRAVE` | the `brave` web-search gate; `all` must still carry Google's and DDG's results | Brave cloaks every result link behind a session-bound `/go/v1/` redirect with no destination in the page (2026-11-22, every network) |
+| `SMOKE_SKIP_BRAVE` | the `brave` web-search gate and opening a Brave result link; `all` must still carry Google's and DDG's results | Armed (`'0'`). For a Brave outage: Brave cloaks result links behind session-bound `/go/v1/` redirects (2026-11-22), and the suite opens one to check fetchaller resolves it |
 
 The two tmd waivers are about *release blocking*, not capability. The gate is
 intermittent on a timescale of minutes and fails from ordinary networks too,

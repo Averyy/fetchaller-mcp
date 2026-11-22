@@ -642,3 +642,46 @@ async def test_live_suite_can_waive_the_brave_gate() -> None:
         await run_live_tool_suite(FakeSession(), skip_reddit=True, skip_brave=True)
 
     assert providers == ["google", "ddg", "all"]
+
+
+def test_brave_link_gate_requires_a_resolved_destination():
+    from scripts.smoke_test import _validate_brave_link_fetch
+
+    assert _validate_brave_link_fetch(
+        "[Brave result link resolved to https://docs.python.org/3/library/asyncio.html]\n\n# asyncio"
+    ) is None
+    assert _validate_brave_link_fetch("# some page")
+    assert _validate_brave_link_fetch(
+        "[Brave result link resolved to https://search.brave.com/go/v1/x]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_suite_opens_one_cloaked_brave_link() -> None:
+    class FakeSession:
+        async def initialize(self):
+            return SimpleNamespace(
+                serverInfo=SimpleNamespace(name="fetchaller", version=smoke_test.__version__)
+            )
+
+        async def list_tools(self):
+            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in EXPECTED_TOOLS])
+
+    link = "https://search.brave.com/go/v1/" + "A" * 48
+    fetched: list[str] = []
+
+    async def fake_call(session, name, arguments, **kwargs):
+        del session, kwargs
+        if name == "search" and arguments["provider"] == "brave":
+            return Result(name, True, "ok", f"1. asyncio [brave]\n   {link}\n")
+        if name == "fetch":
+            fetched.append(arguments["url"])
+        return Result(name, True, "ok", "semantic response")
+
+    with (
+        patch("scripts.smoke_test._call", side_effect=fake_call),
+        patch("scripts.smoke_test._pace_domain", new_callable=AsyncMock),
+    ):
+        await run_live_tool_suite(FakeSession(), skip_reddit=True, skip_brave=False)
+
+    assert link in fetched

@@ -3567,6 +3567,28 @@ async def fetch_url(
         }
     try:
         async with asyncio.timeout(float(timeout)):
+            brave_link = None
+            if method.upper() == "GET":
+                from ..search import is_brave_result_link, resolve_brave_link
+
+                if is_brave_result_link(url):
+                    # Brave's cloaked result link: Brave resolves it (one
+                    # request, in the session that searched); the destination
+                    # is then read like any URL, through this guarded path.
+                    resolved = await resolve_brave_link(url, browser_solver=browser_solver)
+                    if "error" in resolved:
+                        return {"error": resolved["error"]}
+                    brave_link, url = url, resolved["url"]
+                    # Brave chose the destination, as a redirect's server does:
+                    # keep only the representation headers a cross-origin
+                    # redirect keeps, never a credential the caller meant for
+                    # Brave.
+                    if headers:
+                        headers = {
+                            name: value
+                            for name, value in headers.items()
+                            if name.lower() in _CROSS_ORIGIN_REDIRECT_SAFE_HEADERS
+                        }
             result = await _fetch_url_impl(
                 url=url,
                 max_tokens=max_tokens,
@@ -3621,6 +3643,12 @@ async def fetch_url(
                         f"{result['content']}",
                         max_tokens,
                     )
+            if brave_link is not None and isinstance(result.get("content"), str):
+                mime = str(result.get("content_type") or "").lower().partition(";")[0].strip()
+                # A JSON destination stays valid JSON; anything else names
+                # where the link led.
+                if mime not in {"json", "application/json"} and not mime.endswith("+json"):
+                    result["content"] = f"[Brave result link resolved to {url}]\n\n{result['content']}"
             if isinstance(result.get("content"), str):
                 chars_per_token = config.chars_per_token if config else 4
                 result_mime = str(result.get("content_type") or "").lower().partition(";")[0].strip()

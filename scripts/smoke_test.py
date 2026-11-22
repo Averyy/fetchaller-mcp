@@ -298,6 +298,15 @@ def _validate_provider_web_search(
     return None
 
 
+def _validate_brave_link_fetch(text: str) -> str | None:
+    match = re.search(r"\[Brave result link resolved to (https?://\S+)\]", text)
+    if match is None:
+        return "Brave result link was not resolved to a destination"
+    if "search.brave.com" in match.group(1):
+        return "Brave result link resolved back to Brave"
+    return None
+
+
 def _validate_aliexpress_search(text: str) -> str | None:
     if not re.search(
         r'(?m)^Search: "usb c cable" \| page 1 \| [1-9][\d,]* results$',
@@ -615,17 +624,32 @@ async def run_live_tool_suite(
     providers.append(("all", "docs.google.com"))
     for provider, domain in providers:
         await _pace_domain(last_call, domain)
-        results.append(
-            await _call(
-                session,
-                "search",
-                {"query": "Python asyncio documentation", "provider": provider, "page": 1},
-                minimum_chars=100,
-                semantic_check=lambda text, selected=provider: _validate_provider_web_search(
-                    text, selected, require_brave=not skip_brave
-                ),
-            )
+        searched = await _call(
+            session,
+            "search",
+            {"query": "Python asyncio documentation", "provider": provider, "page": 1},
+            minimum_chars=100,
+            semantic_check=lambda text, selected=provider: _validate_provider_web_search(
+                text, selected, require_brave=not skip_brave
+            ),
         )
+        results.append(searched)
+        if provider != "brave":
+            continue
+        # Brave cloaks result links (2026-11-22): opening one resolves it in the
+        # session that searched. Gate that whole path when the page was cloaked.
+        link = re.search(r"https://search\.brave\.com/go/v1/[A-Za-z0-9_-]{40,}", searched.text)
+        if searched.passed and link is not None:
+            await _pace_domain(last_call, "search.brave.com")
+            results.append(
+                await _call(
+                    session,
+                    "fetch",
+                    {"url": link.group(0), "maxTokens": 2000, "timeout": 60},
+                    minimum_chars=100,
+                    semantic_check=_validate_brave_link_fetch,
+                )
+            )
 
     if not skip_aliexpress:
         await _pace_domain(last_call, "aliexpress.com")

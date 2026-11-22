@@ -3072,3 +3072,93 @@ class TestShopLocaleCookies:
         assert session.jar_at_render == [
             ("aep_usuc_f=site=glo&c_tp=GBP&region=GB&b_locale=en_US; Domain=.aliexpress.com; Path=/", url)
         ]
+
+
+
+class TestBraveResultLinks:
+    _LINK = (
+        "https://search.brave.com/go/v1/"
+        "AQq94xNGtPKKawMQzAGdj9Tvqapofgjww_OC8rkbgLIr6K658A7FQZr2PKMqfBxi"
+    )
+
+    async def test_a_brave_link_is_resolved_then_read_like_any_url(self):
+        from fetchaller.tools.fetch import fetch_url
+
+        resolved = AsyncMock(return_value={"url": "https://docs.python.org/3/library/asyncio.html"})
+        impl = AsyncMock(return_value={"content": "# asyncio", "content_type": "markdown"})
+        with (
+            patch("fetchaller.search.resolve_brave_link", resolved),
+            patch("fetchaller.tools.fetch._fetch_url_impl", impl),
+        ):
+            result = await fetch_url(self._LINK, timeout=30)
+
+        assert result["content"].startswith(
+            "[Brave result link resolved to https://docs.python.org/3/library/asyncio.html]"
+        )
+        assert impl.await_args.kwargs["url"] == "https://docs.python.org/3/library/asyncio.html"
+
+    async def test_an_unresolved_brave_link_is_an_error_and_fetches_nothing(self):
+        from fetchaller.tools.fetch import fetch_url
+
+        resolved = AsyncMock(return_value={"error": "Brave result link: expired."})
+        impl = AsyncMock()
+        with (
+            patch("fetchaller.search.resolve_brave_link", resolved),
+            patch("fetchaller.tools.fetch._fetch_url_impl", impl),
+        ):
+            result = await fetch_url(self._LINK, timeout=30)
+
+        assert result == {"error": "Brave result link: expired."}
+        impl.assert_not_awaited()
+
+    async def test_a_post_to_a_brave_link_is_not_resolved(self):
+        from fetchaller.tools.fetch import fetch_url
+
+        resolved = AsyncMock()
+        impl = AsyncMock(return_value={"content": "x", "content_type": "markdown"})
+        with (
+            patch("fetchaller.search.resolve_brave_link", resolved),
+            patch("fetchaller.tools.fetch._fetch_url_impl", impl),
+        ):
+            await fetch_url(self._LINK, timeout=30, method="POST", body="{}")
+
+        resolved.assert_not_awaited()
+
+
+    async def test_caller_credentials_never_follow_a_brave_link(self):
+        from fetchaller.tools.fetch import fetch_url
+
+        resolved = AsyncMock(return_value={"url": "https://elsewhere.example/data"})
+        impl = AsyncMock(return_value={"content": "# page", "content_type": "markdown"})
+        with (
+            patch("fetchaller.search.resolve_brave_link", resolved),
+            patch("fetchaller.tools.fetch._fetch_url_impl", impl),
+        ):
+            await fetch_url(
+                self._LINK,
+                timeout=30,
+                headers={"Authorization": "Bearer secret", "X-API-Key": "k", "Accept": "text/html"},
+            )
+
+        assert impl.await_args.kwargs["headers"] == {"Accept": "text/html"}
+
+    async def test_a_json_destination_stays_valid_json(self):
+        import json as json_module
+
+        from fetchaller.tools.fetch import fetch_url
+
+        resolved = AsyncMock(return_value={"url": "https://api.example/data.json"})
+        impl = AsyncMock(
+            return_value={
+                "content": '{"ok": true}',
+                "content_type": "application/json",
+                "_json_budget_applied": True,
+            }
+        )
+        with (
+            patch("fetchaller.search.resolve_brave_link", resolved),
+            patch("fetchaller.tools.fetch._fetch_url_impl", impl),
+        ):
+            result = await fetch_url(self._LINK, timeout=30)
+
+        assert json_module.loads(result["content"]) == {"ok": True}
