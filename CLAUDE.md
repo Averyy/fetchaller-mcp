@@ -36,7 +36,13 @@ for an ordinary query. Two such answers are DDG's failure, never an empty result
 so Google's fallback goes on to Brave: on 2026-11-05 it sent that block to every
 query for minutes, from macOS and the image, to a GET and its form's POST. A 429 holds that provider for 60 seconds; a 403
 (or DDG's blocking 202) holds it for 300 seconds, extended by longer Retry-After.
-Do not bypass the provider gate for `all` or Google fallback. Brave receives the
+Do not bypass the provider gate for `all` or Google fallback. Since 2026-11-22
+Brave cloaks every result link behind a session-bound `/go/v1/<token>` redirect
+and the destination is nowhere in the page (a token resolves only by another
+request in the session that got the page): report that as Brave's error
+(`BRAVE_CLOAKED_ERROR`), never render the display `cite` as a URL. CI waives
+the Brave gate with `SMOKE_SKIP_BRAVE`; `all` must still carry Google and DDG.
+Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.

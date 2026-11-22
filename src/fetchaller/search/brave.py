@@ -41,6 +41,13 @@ def _log(msg: str) -> None:
     print(f"[{datetime.now(UTC).isoformat()}] {safe}", file=sys.stderr)
 
 
+BRAVE_CLOAKED_ERROR = (
+    "Brave now cloaks its result links behind session-bound redirects "
+    "(/go/v1/...) and the destination URLs are not in the page, so Brave "
+    "cannot supply results; use provider google or ddg"
+)
+
+
 def _error_detail(error: Exception) -> str:
     """Build a bounded diagnostic safe for returned output and logs."""
     bounded = sanitize_for_log(
@@ -102,9 +109,29 @@ def is_explicit_no_results(html: str) -> bool:
     return BeautifulSoup(html, "html.parser").select_one("#bad-results-info-banner") is not None
 
 
-def _parse_response(html: str) -> tuple[list[SearchResult], bool]:
+def has_cloaked_results(html: str) -> bool:
+    """Recognize result links Brave cloaks behind ``/go/v1/<token>``.
+
+    Seen from 2026-11-22: every organic result links to an opaque, session-bound
+    redirect, and the destination appears nowhere in the page (only a display
+    ``cite``, which is not a URL: one read ``docs.python.org › 3.11 › ›
+    library``). The token resolves only by one more request in the session that
+    received the page, and Brave's server decides, so nothing here can read it.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    snippets = soup.select("div.snippet[data-type='web']")
+    return bool(snippets) and all(
+        snippet.select_one("a[href^='/go/v1/']") is not None
+        and snippet.select_one("a[href^='http']") is None
+        for snippet in snippets
+    )
+
+
+def _parse_response(html: str) -> tuple[list[SearchResult], bool, bool]:
     results = extract_results(html)
-    return results, not results and is_explicit_no_results(html)
+    if results:
+        return results, False, False
+    return results, is_explicit_no_results(html), has_cloaked_results(html)
 
 
 async def fetch_brave(
@@ -189,7 +216,7 @@ async def fetch_brave(
     if len(html) > _MAX_SEARCH_HTML_CHARS:
         return [], "Brave response exceeded the safe HTML size limit"
     try:
-        results, explicit_no_results = await run_isolated(
+        results, explicit_no_results, cloaked = await run_isolated(
             _parse_response,
             html,
             timeout=_PARSER_TIMEOUT,
@@ -201,6 +228,9 @@ async def fetch_brave(
         if explicit_no_results:
             _log("brave explicit zero-results response")
             return [], None
+        if cloaked:
+            _log("brave cloaked result links (session-bound /go/v1/ redirects)")
+            return [], BRAVE_CLOAKED_ERROR
         _log(f"brave unexpected 200 response shape (response_chars={len(html)})")
         return [], "Unexpected Brave response shape (HTTP 200)"
 

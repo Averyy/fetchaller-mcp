@@ -428,6 +428,21 @@ class TestBrave:
         results, error = await fetch_brave(session, "q", 1)
         assert results == [] and "Unexpected Brave response shape" in error
 
+    async def test_cloaked_result_links_are_named_not_rendered(self):
+        """Brave's /go/v1/ links carry no destination (2026-11-22)."""
+        cloaked = (
+            '<div class="snippet" data-type="web">'
+            '<a href="/go/v1/AQq94xNGtPKKawMQzAGdj9Tvqapofgjww" class="l1">'
+            '<div class="title">asyncio docs</div></a>'
+            "<cite>https:// docs.python.org › 3 › library › asyncio.html</cite>"
+            '<div class="generic-snippet">About asyncio</div></div>'
+        )
+        session = self._session(f"<html><body>{cloaked * 3}</body></html>")
+        results, error = await fetch_brave(session, "q", 1)
+        assert results == []
+        assert "cloaks its result links" in error
+        assert "docs.python.org" not in error
+
     async def test_non_200_is_an_error(self):
         results, error = await fetch_brave(self._session("", status=429), "q", 1)
         assert results == [] and "HTTP 429" in error and "backoff" in error

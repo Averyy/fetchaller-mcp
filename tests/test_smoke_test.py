@@ -597,3 +597,48 @@ def test_web_provider_gate_rejects_fallback_but_accepts_deduplicated_all():
     assert _validate_provider_web_search(fallback, "google")
     all_sources = fallback.replace("google: ERROR | ddg: 1", "google: 1 | ddg: 1 | brave: 1").replace("[ddg]", "[google]")
     assert _validate_provider_web_search(all_sources, "all") is None
+
+
+def test_web_provider_gate_without_brave_still_requires_google_and_ddg():
+    from scripts.smoke_test import _validate_provider_web_search
+
+    google_ddg = (
+        'Search: "Python asyncio documentation" | requested: all | page 1 | '
+        "google: 1 | ddg: 1 | brave: ERROR | 2 total\n\n"
+        "1. asyncio [google]\n   https://docs.python.org/3/library/asyncio.html\n"
+    )
+    # Brave waived: `all` passes on Google's and DDG's results alone.
+    assert _validate_provider_web_search(google_ddg, "all", require_brave=False) is None
+    # Not waived: Brave's failure still fails the gate.
+    assert _validate_provider_web_search(google_ddg, "all")
+    # Waiving Brave never waives DDG.
+    no_ddg = google_ddg.replace("ddg: 1", "ddg: ERROR")
+    assert _validate_provider_web_search(no_ddg, "all", require_brave=False)
+
+
+@pytest.mark.asyncio
+async def test_live_suite_can_waive_the_brave_gate() -> None:
+    class FakeSession:
+        async def initialize(self):
+            return SimpleNamespace(
+                serverInfo=SimpleNamespace(name="fetchaller", version=smoke_test.__version__)
+            )
+
+        async def list_tools(self):
+            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in EXPECTED_TOOLS])
+
+    providers: list[str] = []
+
+    async def fake_call(session, name, arguments, **kwargs):
+        del session, kwargs
+        if name == "search":
+            providers.append(arguments["provider"])
+        return Result(name, True, "ok", "semantic response")
+
+    with (
+        patch("scripts.smoke_test._call", side_effect=fake_call),
+        patch("scripts.smoke_test._pace_domain", new_callable=AsyncMock),
+    ):
+        await run_live_tool_suite(FakeSession(), skip_reddit=True, skip_brave=True)
+
+    assert providers == ["google", "ddg", "all"]

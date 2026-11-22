@@ -51,6 +51,11 @@ reads the Reddit app and New Reddit make themselves:
   operation needs a page name). The parity corpus marks these fixture-only.
 - Threads, comments, permalinks, `by_id`, profiles and every other mapped
   route were re-swept live on 2026-11-22 and still read.
+- **Brave search** now cloaks every result link behind a session-bound
+  `/go/v1/` redirect, with the destination nowhere in the page, so it has
+  no usable results. A `brave` search says that plainly instead of
+  "Unexpected Brave response shape"; Google's fallback and `all` carry on
+  with Google and DDG. CI waives the Brave gate (`SMOKE_SKIP_BRAVE`).
 
 ## 3.8.12 (2026-11-06)
 

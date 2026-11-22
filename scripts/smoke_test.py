@@ -282,11 +282,16 @@ def _validate_web_search(text: str) -> str | None:
     return None
 
 
-def _validate_provider_web_search(text: str, provider: str) -> str | None:
+def _validate_provider_web_search(
+    text: str, provider: str, *, require_brave: bool = True
+) -> str | None:
     error = _validate_web_search(text)
     if error:
         return error
-    required = ("google", "ddg", "brave") if provider == "all" else (provider,)
+    if provider == "all":
+        required: tuple[str, ...] = ("google", "ddg", "brave") if require_brave else ("google", "ddg")
+    else:
+        required = (provider,)
     for name in required:
         if (provider != "all" and f"[{name}]" not in text) or not re.search(rf"\b{name}: [1-9]\d*\b", text):
             return f"missing successful {name} results (fallback does not satisfy this gate)"
@@ -500,6 +505,7 @@ async def run_live_tool_suite(
     skip_reddit: bool | None = None,
     skip_alibaba: bool | None = None,
     skip_aliexpress: bool | None = None,
+    skip_brave: bool | None = None,
 ) -> list[Result]:
     """Exercise the exact public tool surface with semantic live assertions."""
 
@@ -509,6 +515,8 @@ async def run_live_tool_suite(
         skip_alibaba = os.environ.get("SMOKE_SKIP_ALIBABA") == "1"
     if skip_aliexpress is None:
         skip_aliexpress = os.environ.get("SMOKE_SKIP_ALIEXPRESS") == "1"
+    if skip_brave is None:
+        skip_brave = os.environ.get("SMOKE_SKIP_BRAVE") == "1"
     results: list[Result] = []
     last_call: dict[str, float] = {}
     initialized = await session.initialize()
@@ -599,8 +607,13 @@ async def run_live_tool_suite(
             )
         )
     # Every provider is gated explicitly; Google fallback cannot mask a failure.
-    for provider, domain in (("google", "docs.google.com"), ("ddg", "duckduckgo.com"),
-                             ("brave", "search.brave.com"), ("all", "docs.google.com")):
+    # With SMOKE_SKIP_BRAVE the Brave gate is waived and `all` must still
+    # carry Google's and DDG's results (Brave's failure stays disclosed there).
+    providers = [("google", "docs.google.com"), ("ddg", "duckduckgo.com")]
+    if not skip_brave:
+        providers.append(("brave", "search.brave.com"))
+    providers.append(("all", "docs.google.com"))
+    for provider, domain in providers:
         await _pace_domain(last_call, domain)
         results.append(
             await _call(
@@ -608,7 +621,9 @@ async def run_live_tool_suite(
                 "search",
                 {"query": "Python asyncio documentation", "provider": provider, "page": 1},
                 minimum_chars=100,
-                semantic_check=lambda text, selected=provider: _validate_provider_web_search(text, selected),
+                semantic_check=lambda text, selected=provider: _validate_provider_web_search(
+                    text, selected, require_brave=not skip_brave
+                ),
             )
         )
 
