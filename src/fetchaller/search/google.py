@@ -129,11 +129,35 @@ def parse_response(body: str) -> tuple[list[SearchResult], str | None]:
     return results, cursor or None
 
 
-async def search_google(session, query: str, page: int = 1) -> tuple[list[SearchResult], bool, str | None]:
+def _is_timeout(error: BaseException) -> bool:
+    """A request that ran out its time (wafer's WaferTimeout)."""
+    try:
+        from wafer import WaferTimeout
+    except ImportError:  # pragma: no cover - wafer is a hard dependency
+        return False
+    return isinstance(error, WaferTimeout)
+
+
+async def search_google(
+    session,
+    query: str,
+    page: int = 1,
+    *,
+    renew_session=None,
+) -> tuple[list[SearchResult], bool, str | None]:
     """One globally paced Google search, with bounded document/transient failover.
 
     The bool indicates Google-wide throttling/backoff. No redirects, cookies,
     CAPTCHA solving or HTML SERP fallback are used.
+
+    ``renew_session`` (an async callable returning a new session) replaces the
+    session before the retry of a request that timed out. Google's session runs
+    with wafer's own retries and rotations off, so a request that hangs on a
+    dead pooled connection runs out its whole timeout and nothing replaces the
+    connection: retrying on the same session sent the retry down the same dead
+    connection, and it hung the same ten seconds (CI run 45059785776,
+    2026-11-22: two consecutive 10.0 s WaferTimeouts eight seconds after a
+    0.5 s answer). The session holds no cookies, so a new one loses nothing.
     """
     global _last_request, _last_document, _backoff_until, _throttle_count
     async with _lock:
@@ -186,6 +210,10 @@ async def search_google(session, query: str, page: int = 1) -> tuple[list[Search
                 error = f"Google request failed ({type(exc).__name__})"
                 _log(f"WARNING {error}; attempt={attempt + 1}")
                 if attempt == 0:
+                    if renew_session is not None and _is_timeout(exc):
+                        # A hung connection: retry on a fresh one.
+                        session = await renew_session()
+                        _log("Google session renewed after a timed-out request")
                     continue  # At most one transient retry, same document/cursor.
                 return [], False, error
             status = response.status_code

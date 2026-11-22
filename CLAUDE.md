@@ -27,7 +27,7 @@ Google uses the Google Docs research-search JSON endpoint with the verified pool
 in `src/fetchaller/search/google_documents.json`, randomized healthy IDs, shared
 six-second pacing and document cooldowns. No Opera Mini, ordinary Google SERP,
 account cookies or browser. Do not rotate IDs after HTTP 429; honor Google-wide
-backoff and Retry-After. Search engines match Reddit's default ten-request-per-minute
+backoff and Retry-After. Retry a timed-out Google request on a fresh session. Search engines match Reddit's default ten-request-per-minute
 budget per provider with at least six-second spacing. DDG/Brave add jitter,
 serialize the full HTTP exchange, disable hidden wafer retries, and enable
 wafer's own six-second limiter. DDG's page 1 is asked once more, through the
@@ -36,23 +36,16 @@ for an ordinary query. Two such answers are DDG's failure, never an empty result
 so Google's fallback goes on to Brave: on 2026-11-05 it sent that block to every
 query for minutes, from macOS and the image, to a GET and its form's POST. A 429 holds that provider for 60 seconds; a 403
 (or DDG's blocking 202) holds it for 300 seconds, extended by longer Retry-After.
-Do not bypass the provider gate for `all` or Google fallback. Since 2026-11-22
-Brave cloaks result links (rolling out, so some pages still carry real URLs)
-behind `/go/v1/<token>` redirects; the destination is nowhere in the page and
-Brave resolves a token only for the client that searched (Brave's blog,
-2026-11-11: it counts resolutions per results page against scrapers). Return
-Brave's link with "Brave shows: <its display>" -- display text, never a URL --
-and resolve it only when `fetch` opens it: one `?r=1` GET in the Brave session
-(which therefore never follows redirects) on the same lock, limiter and
-backoff, then the destination goes through fetch's own guarded path. Never
-resolve every link of a page. In `all`, a Brave result whose display spells
-out a URL another engine returned is that result and is dropped. The smoke
-suite opens one Brave link; `SMOKE_SKIP_BRAVE` can waive the Brave gates.
+Do not bypass the provider gate for `all` or Google fallback. Brave cloaks
+result links as `/go/v1/<token>` (resolvable only by the session that searched):
+show Brave's link plus "Brave shows: <display>" (never as a URL), and resolve
+one only when `fetch` opens it, through the Brave session (no redirect
+following) and its lock and backoff. Never resolve a whole page of links.
 Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.13 pins published
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.14 pins published
 wafer 0.7.15 (TMD reCAPTCHA punishments routed whatever the action's case;
 0.7.14 recovered Akamai's 206 API refusals; 0.7.13 Linux and Windows
 `platformVersion` as Chrome reports it; 0.7.12 added Kasada-signed calls for costco.com and Chrome 157; 0.7.11
@@ -127,29 +120,14 @@ Comment streams have no logged-out equivalent: report Reddit's refusal, never
 an empty stream. See `docs/architecture.md` ("Reads Reddit serves logged-out
 clients only over GraphQL").
 
-**Search, a community's new/rising feed and the wiki moved too (2026-11-22).**
-Reddit refuses `/search.json` (every `type=`, with `restrict_sr` too),
-`/r/<sub>/new` and `/rising`, and the wiki JSON to logged-out clients, while
-`/hot`, `/top`, `/controversial`, multireddit, domain and sitewide listings are
-still REST. Post search is the app's `SearchPosts` (`productSurface:
-"android"`; time, community and `nsfw: "0"` as `FilterInput` pairs;
-`subreddit_names` takes `a,b`); a restricted search must come back with that
-filter among Reddit's `appliedFilters` or it is an error, never sitewide
-results under a community's name. Its cursor is opaque base64. Community and
-account search are `/subreddits/search.json` and `/users/search.json`, still
-served; a mixed `type=` is one read per kind and says it cannot share a cursor.
-`/r/<sub>/new` and `/rising` are `SubredditFeedSdui` for the ordered post ids
-(server-driven cells: never render them) hydrated by `PostsByIds`. The feed
-serves about seven elements a read and takes no page size, and reads are 6 s
-apart, so it follows pages only while one more page and the hydration fit the
-caller's timeout, and says when a page is short. Its `endCursor` is the base64
-of the last post's fullname, so `after=t3_...` carries over both ways. A
-subreddit's `randomrising` (a shuffle of the rising pool), `r/a+b` combos, wiki
-discussions, an earlier wiki revision (`?v=`, so diffs) and all-pages
-revisions have no logged-out source: report the refusal and name what is
-still readable. A wiki page is its server-rendered New Reddit document (`main
-div.md.wiki`, "Last revised by"), converted from HTML and labelled so; a
-page's revisions are New Reddit's own `WikiPageRevisionsV2`, paged by `after`.
+**Search, new/rising and the wiki (2026-11-22).** Post search is the app's
+`SearchPosts`; a subreddit-limited search must appear in Reddit's
+`appliedFilters` or it errors. Community/user search use the directory
+endpoints. `/r/<sub>/new` and `/rising` are `SubredditFeedSdui` post ids
+hydrated by `PostsByIds` (never render its cells). Wiki pages are the rendered
+New Reddit page; revisions are `WikiPageRevisionsV2`. A subreddit's
+`randomrising`, `r/a+b`, wiki discussions and old revisions have no logged-out
+source: report the refusal.
 **Gilded listings** (`/gilded/`,
 `/comments/gilded/`, `/r/<sub>[/comments]/gilded/`, `/user/<name>/gilded/`)
 were retired by Reddit, which answers them with 400, a structured 403, 404, or

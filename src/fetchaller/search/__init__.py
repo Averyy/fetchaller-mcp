@@ -175,6 +175,19 @@ async def resolve_brave_link(url: str, *, browser_solver=None) -> dict:
     return {"url": destination}
 
 
+async def _renew_session(provider: str):
+    """Drop a provider's session and build its replacement (fresh connections).
+
+    Only for a provider whose session holds no state worth keeping: Google's
+    has no cookie cache. Brave's is never renewed this way, because Brave
+    resolves its result links only for the session that searched.
+    """
+    async with _session_lock:
+        _sessions.pop(provider, None)
+        _session_solvers.pop(provider, None)
+    return await _get_session(provider)
+
+
 async def close_session() -> None:
     _sessions.clear()
     _session_solvers.clear()  # The server owns and closes the injected solver.
@@ -187,7 +200,9 @@ async def _run_engine(
         return [], f"DuckDuckGo supports pages 1-{MAX_DDG_PAGE}; skipped page {page}"
     session = await _get_session(provider, browser_solver=browser_solver)
     if provider == "google":
-        coroutine = search_google(session, query, page)
+        coroutine = search_google(
+            session, query, page, renew_session=lambda: _renew_session("google")
+        )
     elif provider == "ddg":
         coroutine = search_ddg(session, query, page)
     else:

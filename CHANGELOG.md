@@ -1,69 +1,32 @@
 # Changelog
 
+## 3.8.14 (2026-11-22)
+
+- A Google request that times out is retried on a fresh connection instead of
+  the hung one.
+
 ## 3.8.13 (2026-11-22)
 
-Reddit search, a community's new and rising posts, and its wiki work again.
-Pins published wafer 0.7.15, which routes an Alibaba/AliExpress TMD reCAPTCHA
-punishment to the reCAPTCHA solver whatever the case of its action (a
-`captchaRecaptcha` spelling fell to the slider solver for its whole budget).
-Reddit began refusing more REST reads to every
-logged-out client with its network-security 403 (measured 2026-11-22 on the
-app's anonymous token, which still serves the rest), so these now take the
-reads the Reddit app and New Reddit make themselves:
+Reddit refused more logged-out REST reads, and Brave began cloaking its
+result links. Pins wafer 0.7.15.
 
-- **Post search** (`search_reddit`, and `fetch` of `/search/` and
-  `/r/<sub>/search/`) was refused for every query: `/search.json` is refused
-  for every `type=` and with `restrict_sr`. It is now the app's `SearchPosts`
-  GraphQL read (app 2026.47.0). A search limited to a community must come back
-  with that restriction among the filters Reddit says it applied, or it is an
-  error rather than all of Reddit's results under the community's name.
-  `r/a+b/search` is supported. Search page cursors are now opaque base64
-  (`OQ==`); an old `t3_` search cursor is rejected as invalid.
-- **Community and account search** (`type=sr`, `type=user`) read
-  `/subreddits/search.json` and `/users/search.json`, which Reddit still
-  serves. A mixed `type=` is one read per kind and says it cannot share one
-  page cursor.
-- **`/r/<sub>/new` and `/rising`** (`fetch` and `browse_reddit`) were refused.
-  They are the app's community feed (`SubredditFeedSdui`) for the ordered post
-  ids, then one `PostsByIds` read for the posts. Reddit serves about seven
-  feed elements a read with no page size to ask for, and reads are six
-  seconds apart, so `browse_reddit` gives these two sorts a 30 s default
-  timeout (10 s for the rest) and a short page says why; a longer timeout
-  follows up to five pages, and a timeout says how long to allow.
-  `after=t3_...` cursors are unchanged. A banned, private or missing community
-  is named as Reddit names it. Hot, top, controversial, multireddit, domain
-  and sitewide listings (`r/all`, `r/popular`) stay on REST.
-- A page cursor a read cannot follow (a REST cursor on post search, `before`
-  on a forward-only read, any cursor on a mixed search) is an error that says
-  why, never page one read in its place; a null result or a GraphQL error
-  under the results is an error, never an empty page.
-- **Wiki pages** are read from New Reddit's rendered page (the JSON and the
-  Markdown source are refused), converted from its HTML and labelled so;
-  a page Reddit says does not exist, or a wiki its moderators disabled, is
-  an error saying so. **A page's revision
-  history** is New Reddit's own `WikiPageRevisionsV2`, paged by `after`; it
-  returned all five revisions of r/Python's index, where the HTML lists three.
-- **No logged-out source, reported as Reddit's refusal** with what is still
-  readable: a community's `randomrising` (the feed has no random order; read
-  `/rising/`), combined `r/a+b` listings (refused, or redirected home; the feed
-  rejects `a+b`), wiki discussions, an earlier wiki revision (`?v=`, so diffs:
-  the rendered page ignores `?v=`) and revisions across all pages (the
-  operation needs a page name). The parity corpus marks these fixture-only.
-- Threads, comments, permalinks, `by_id`, profiles and every other mapped
-  route were re-swept live on 2026-11-22 and still read.
-- **Brave search works with Brave's cloaked links.** Brave began hiding result
-  URLs behind `/go/v1/` redirects this week (rolling out), with the
-  destination nowhere in the page, so `brave` searches failed with
-  "Unexpected Brave response shape". A cloaked result now shows Brave's link
-  and Brave's display of the destination ("Brave shows: docs.python.org › 3 ›
-  library › asyncio.html"), and `fetch` of the link opens the destination:
-  one Brave request, made in the session that searched (Brave resolves a
-  link for nobody else), then the page through fetch's usual checks, with
-  the destination named; caller headers other than `Accept` and
-  `Accept-Language` are not sent on, as for any cross-origin redirect.
-  Links are resolved only when opened, never all at
-  once (Brave counts that against scrapers). In `all`, a Brave result another
-  engine already returned is dropped. The smoke suite opens one Brave link.
+- **Reddit post search** (`search_reddit`, `/search/`, `/r/<sub>/search/`)
+  uses the app's `SearchPosts`. A subreddit-limited search must be confirmed
+  by Reddit or it errors. Search cursors are now opaque (`OQ==`).
+- **Community and user search** use the directory endpoints; a mixed `type=`
+  reads each kind separately.
+- **`/r/<sub>/new` and `/rising`** use the app's community feed, a few posts
+  per read; `browse_reddit` gives them a 30 s default timeout.
+- **Wiki pages** come from New Reddit's rendered page, and a page's revisions
+  from `WikiPageRevisionsV2`.
+- **No logged-out source** (reported as Reddit's refusal): a subreddit's
+  `randomrising`, `r/a+b` listings, wiki discussions, old wiki revisions and
+  diffs.
+- Unfollowable cursors and malformed answers are errors, never page one or an
+  empty page.
+- **Brave search** returns Brave's link plus its display of the destination;
+  `fetch` of the link opens it (one Brave request). Caller headers other than
+  `Accept`/`Accept-Language` are not passed to the destination.
 
 ## 3.8.12 (2026-11-06)
 

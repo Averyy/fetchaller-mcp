@@ -1334,3 +1334,33 @@ async def test_cancelled_browser_exchange_keeps_gate_until_completion(search_sta
         finally:
             finished.set()
             await asyncio.sleep(0)
+
+
+
+async def test_google_retries_a_timed_out_request_on_a_fresh_session(search_state, monkeypatch):
+    """A hung pooled connection is not reused for the retry (CI 2026-11-22)."""
+    from wafer import WaferTimeout
+
+    monkeypatch.setattr(google, "_MIN_INTERVAL", 0.0)
+    hung = SimpleNamespace(post=AsyncMock(side_effect=WaferTimeout("https://docs.google.com/", 10)))
+    good_response = SimpleNamespace(status_code=200, text="{}", headers={})
+    fresh = SimpleNamespace(post=AsyncMock(return_value=good_response))
+    renew = AsyncMock(return_value=fresh)
+    with patch.object(google, "run_isolated", AsyncMock(return_value=([], None))):
+        results, throttled, error = await google.search_google(hung, "query", renew_session=renew)
+
+    renew.assert_awaited_once()
+    assert hung.post.await_count == 1
+    assert fresh.post.await_count == 1
+    assert error is None and throttled is False
+
+
+async def test_google_does_not_renew_for_an_ordinary_failure(search_state, monkeypatch):
+    monkeypatch.setattr(google, "_MIN_INTERVAL", 0.0)
+    broken = SimpleNamespace(post=AsyncMock(side_effect=ConnectionError("reset")))
+    renew = AsyncMock()
+    results, throttled, error = await google.search_google(broken, "query", renew_session=renew)
+
+    renew.assert_not_awaited()
+    assert broken.post.await_count == 2
+    assert results == [] and "ConnectionError" in error

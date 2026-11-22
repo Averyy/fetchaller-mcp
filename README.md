@@ -220,7 +220,7 @@ search({query: "Python asyncio documentation", provider: "google"})
 search({query: "Python asyncio documentation", provider: "all", page: 2})
 ```
 
-Google is the default choice, but `provider` must be included in every MCP call. A Google failure automatically falls back to DuckDuckGo, then Brave if needed. The output states why Google failed and which provider answered, and every result carries its source. An honest zero-result response does not trigger fallback. Explicit `ddg` and `brave` calls use only that provider. Brave hides some result URLs behind its own links: such a result shows Brave's link with Brave's display of the destination ("Brave shows: …", not a URL), and `fetch` of the link opens the destination, which costs one Brave request. `all` queries all three concurrently and deduplicates URLs, keeping Google ranking first. Beyond page 10, DDG is explicitly skipped in `all` and Google fallback.
+Google is the default choice, but `provider` must be included in every MCP call. A Google failure automatically falls back to DuckDuckGo, then Brave if needed. The output states why Google failed and which provider answered, and every result carries its source. An honest zero-result response does not trigger fallback. Explicit `ddg` and `brave` calls use only that provider. A Brave result may be Brave's own link with "Brave shows: …" (a display, not a URL); `fetch` the link to open it. `all` queries all three concurrently and deduplicates URLs, keeping Google ranking first. Beyond page 10, DDG is explicitly skipped in `all` and Google fallback.
 
 Google returns ten requested results per page through the Google Docs research-search JSON endpoint, using eligible public document IDs as request context; it searches the web, not those documents. No API key, login, browser or Opera Mini profile is used. All verified IDs are indexed in `src/fetchaller/search/google_documents.json`; each uncached Google request starts with a random healthy ID, avoiding consecutive reuse when alternatives exist. Document-specific failures are logged, cooled down for 15 minutes and skipped within a three-attempt total budget. HTTP 429 respects `Retry-After` and Google-wide backoff without rotating IDs. Requests across the entire Google pool are spaced at least six seconds apart. Pagination prefers server cursors and otherwise encodes the requested offset as a protobuf varint.
 
@@ -268,12 +268,10 @@ error. Page with the returned `after` cursor (an opaque string such as `OQ==`).
 ### Compact New Reddit Fetching
 
 Normal Reddit URLs and emitted links are canonicalized to `www.reddit.com`
-and rendered as compact Markdown. Every read is anonymous: logged-out JSON
-where Reddit serves it, and otherwise the reads the Reddit app and New Reddit
-make themselves -- the app's GraphQL on `gql-fed.reddit.com` for threads,
-comments, profiles, post search and a community's `new` and `rising` posts,
-and New Reddit's own pages and GraphQL for wiki pages, the wiki page index and a page's
-revision history. No read needs a browser, an account or an OAuth scope.
+and rendered as compact Markdown. Reads are anonymous: logged-out JSON where
+Reddit serves it, otherwise the Reddit app's GraphQL (threads, comments,
+profiles, search, new/rising) or New Reddit's own pages (wiki). No browser,
+account or OAuth scope.
 
 Reddit returns at most 200 comments per read: by default
 (`redditComments: "fast"`) a thread is one read with "Load more" links carrying
@@ -284,19 +282,10 @@ sets the comment order: `best` (default, Reddit's own ranking), `top`, `new`,
 `old`, `controversial` or `qa`; a thread URL's own `?sort=` works too. Several
 posts at once (a `/by_id` list, related-post details) are one batch read.
 
-A search limited to a community is confirmed by Reddit or reported as an
-error, never shown as results from all of Reddit; `r/a+b/search` works.
-A community's `new` and `rising` posts arrive a few per read, so a short page
-says so and a longer `timeout` reads more at once. A wiki page is converted
-from its rendered page and says so.
-
-Reads Reddit serves no logged-out client are reported as Reddit's answer, never
-shown as empty: comment streams (`/r/{subreddit}/comments/` and the sitewide
-one), a community's `randomrising`, combined `r/a+b` listings, wiki
-discussions, earlier wiki revisions, and the retired post collections, gilded
-listings and gold-only community directory (HTTP 500, 400/403/404, or a
-redirect), which are never rebuilt from an archive. Where something related is
-still readable, the error names it.
+Reads Reddit refuses to logged-out clients (comment streams, a subreddit's
+`randomrising`, `r/a+b` listings, wiki discussions, old wiki revisions) and
+retired surfaces (post collections, gilded listings, the gold-only directory)
+are reported as Reddit's answer, never shown as empty or rebuilt.
 
 Thread output includes the public vote score and upvote ratio returned by
 Reddit, comment count and nested comments, outbound/discussion links, and
