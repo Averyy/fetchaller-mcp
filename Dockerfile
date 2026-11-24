@@ -1,8 +1,8 @@
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
 
 ARG TARGETARCH
-ARG CHROME_VERSION=157.0.8103.38
-ARG CHROME_SHA256=8cdeb344e9b2cefe59f4aea8d1d93d5d93054c03cde217665c16fc1f62e72a66
+ARG CHROME_VERSION=158.0.8127.88
+ARG CHROME_SHA256=59e3b43f8b3aaa292238fbdcfb36a93127debd53e212510dcdc2cc8812b4b57e
 
 WORKDIR /app
 
@@ -39,9 +39,10 @@ ENV HF_HOME=/app/model-cache
 #
 # A session that solves anything in the browser takes on the browser's own
 # version, so the browser and the plain client must name the same Chrome.
-# wreq's newest TLS profile is 154; wafer claims current stable (157) over it,
-# because eBay's Akamai refused Linux clients claiming 154 where it served ones
-# claiming 157 with identical TLS and HTTP/2 (alternating runs, 2026-11-03).
+# wreq's newest TLS profile is 154; wafer claims current stable over it (158
+# since wafer 0.7.17), because eBay's Akamai refused Linux clients claiming 154
+# where it served ones claiming 157 with identical TLS and HTTP/2 (alternating
+# runs, 2026-11-03).
 # With this image's browser on 154, every cold eBay search failed fetch's 10 s
 # default (0 of 6); on 157, 5 of 6 passed in 5-8 s. Later that day eBay's
 # verdict moved for both versions, so the version is one input to it, not all

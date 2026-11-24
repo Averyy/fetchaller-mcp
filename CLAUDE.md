@@ -45,9 +45,14 @@ Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.15 pins published
-wafer 0.7.15 (TMD reCAPTCHA punishments routed whatever the action's case;
-0.7.14 recovered Akamai's 206 API refusals; 0.7.13 Linux and Windows
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.16 pins published
+wafer 0.7.17 (Chrome 158, which the image's Chrome-for-Testing pin matches;
+Akamai's explicit denial page as `akamai_denied`; malformed caller URLs no
+longer fail requests; sessions with a launched browser rotate again; 0.7.16
+told Cloudflare block pages and origin 403s apart from JS challenges, and
+cleared them through a same-site page named as `Referer` that runs
+Turnstile, within the session's pins; 0.7.15 routed TMD reCAPTCHA punishments
+whatever the action's case; 0.7.14 recovered Akamai's 206 API refusals; 0.7.13 Linux and Windows
 `platformVersion` as Chrome reports it; 0.7.12 added Kasada-signed calls for costco.com and Chrome 157; 0.7.11
 carried `add_cookie()` cookies into the browser; 0.7.10 added Reddit's refused
 reads and GraphQL on the app route; 0.7.9 first carried the Brave handler),

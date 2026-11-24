@@ -17,7 +17,7 @@ Reddit context behavior: request size and nesting scale with the caller's token 
 | timeout | integer | 10 | Request timeout in seconds |
 | raw | boolean | false | Return raw HTML instead of markdown |
 | method | string | GET | `GET` or `POST` |
-| headers | object | — | Extra request headers (max 32; connection/framing headers refused) |
+| headers | object | — | Extra request headers (max 32; connection/framing headers refused). For an API a site's own page calls, pass that page as `Referer`: a Cloudflare block that the page clears with Turnstile is then cleared on it. |
 | body | string | — | Request body, POST only (max 1MB; Content-Type defaults to application/json for JSON bodies) |
 | redditComments | string | fast | Reddit threads only. Reddit returns at most 200 comments per read: `fast` makes one read and links the rest; `more` follows those links automatically (top-level comments first, up to 5 extra reads, ~6s each) until `maxTokens` is full or the timeout is near. Raise `maxTokens` and `timeout` (e.g. 60) with `more`. |
 | redditSort | string | best | Reddit threads only, optional. Comment order: `best` (Reddit's own ranking), `top` (highest score), `new`, `old`, `controversial`, or `qa` (comments the poster answered first, for AMAs). Same as `?sort=` on the thread URL and wins over it; "load more" links keep it. Listings are never re-sorted by it. |

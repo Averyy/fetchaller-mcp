@@ -18,6 +18,15 @@ from fetchaller.tools.fetch import (
 )
 
 
+@pytest.fixture(autouse=True)
+async def _close_the_reddit_session_after():
+    """A Reddit read here leaves a real wafer session in browse_reddit's
+    module cache. A later file's test that mocks only the session constructor
+    then used it and fetched the real r/homelab page."""
+    yield
+    await close_reddit_session()
+
+
 class TestMethodValidation:
     def test_default_is_get(self):
         assert validate_request_method(None) == ("GET", None)
@@ -698,8 +707,15 @@ class TestPostRedirectsAreStillSsrfChecked:
 
         assert "elsewhere.example" in seen
 
+    @pytest.mark.parametrize("location", ["http://[bad/", "//[::1/x", "https://elsewhere.example:99999/"])
+    async def test_an_unparseable_redirect_target_is_reported(self, monkeypatch, location):
+        """wafer >= 0.7.17 returns such a 3xx unfollowed; urljoin raised on an
+        unclosed "[" before the target check, so the caller got a bare
+        ValueError instead of the reason."""
+        seen, result = await self._redirect_to(monkeypatch, location, method="GET")
 
-class TestTerminalChallengeAdvice:
+        assert result == {"error": "Redirect target is not a valid HTTP(S) URL."}
+        assert set(seen) == {"api.example.com"}  # the target was never resolved
     """A firewall rule denying the request is not a state to wait out.
 
     wafer reported a Cloudflare WAF block (Error 1020) as `generic_js`, a
@@ -753,6 +769,116 @@ class TestTerminalChallengeAdvice:
 
         assert "Try again" not in result["error"]
         assert "cloudflare_block" in result["error"]
+
+    def test_terminal_block_suggests_the_calling_page_as_referer(self):
+        """A zone can refuse its API until one of its pages has run Turnstile,
+        which wafer clears only on a page the request names as its Referer."""
+        from fetchaller.tools.fetch import describe_challenge
+
+        assert "as the Referer header" in describe_challenge("cloudflare_block")
+
+    def test_no_referer_hint_when_the_request_named_a_page(self):
+        from fetchaller.tools.fetch import describe_challenge
+
+        message = describe_challenge("cloudflare_block", caller_page=True)
+
+        assert "Referer" not in message
+        assert "not a challenge to solve" in message
+
+    @pytest.mark.parametrize("challenge", ["generic_js", "akamai", None])
+    def test_solvable_challenges_carry_no_referer_hint(self, challenge):
+        from fetchaller.tools.fetch import describe_challenge
+
+        assert "Referer" not in describe_challenge(challenge)
+
+    @pytest.mark.parametrize("raised", ["RequestBlocked", "ChallengeDetected"])
+    async def test_a_block_never_reaches_the_browser(self, monkeypatch, raised):
+        """A render of a blocked URL lands on the same block page: on
+        2026-11-24 it cost a browser launch and one more request to the site.
+        Matched on the type too, for a wafer that raises the plain class."""
+        from unittest.mock import AsyncMock
+
+        import wafer
+
+        from fetchaller.tools.fetch import _fetch_url_impl
+
+        async def _blocked(self, target, **kwargs):
+            raise getattr(wafer, raised)("cloudflare_block", target, 403)
+
+        render = AsyncMock(return_value=None)
+        monkeypatch.setattr("wafer.AsyncSession.get", _blocked)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+        monkeypatch.setattr("fetchaller.tools.fetch._render_after_challenge", render)
+
+        result = await _fetch_url_impl("https://blocked.example/api/x", timeout=10, browser_solver=object())
+
+        render.assert_not_awaited()
+        assert "cloudflare_block" in result["error"]
+        assert "as the Referer header" in result["error"]
+
+    async def test_an_akamai_denial_never_reaches_the_browser_twice(self, monkeypatch):
+        """wafer's own solve already took Akamai's denial page through the
+        browser; a render would be one more request to a site whose budget is
+        tight, landing on the same denial."""
+        from unittest.mock import AsyncMock
+
+        import wafer
+
+        from fetchaller.tools.fetch import _fetch_url_impl
+
+        async def _denied(self, target, **kwargs):
+            raise wafer.ChallengeDetected("akamai_denied", target, 403)
+
+        render = AsyncMock(return_value=None)
+        monkeypatch.setattr("wafer.AsyncSession.get", _denied)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+        monkeypatch.setattr("fetchaller.tools.fetch._render_after_challenge", render)
+
+        result = await _fetch_url_impl("https://denied.example/p/1", timeout=10, browser_solver=object())
+
+        render.assert_not_awaited()
+        assert "akamai_denied" in result["error"]
+        assert "Referer" not in result["error"]
+
+    async def test_a_block_with_a_referer_drops_the_hint(self, monkeypatch):
+        import wafer
+
+        from fetchaller.tools.fetch import _fetch_url_impl
+
+        async def _blocked(self, target, **kwargs):
+            raise wafer.RequestBlocked("cloudflare_block", target, 403)
+
+        monkeypatch.setattr("wafer.AsyncSession.get", _blocked)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+
+        result = await _fetch_url_impl(
+            "https://blocked.example/api/x",
+            timeout=10,
+            headers={"referer": "https://blocked.example/map"},
+        )
+
+        assert "cloudflare_block" in result["error"]
+        assert "Referer" not in result["error"]
+
+    async def test_a_solvable_challenge_still_tries_the_render(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        import wafer
+
+        from fetchaller.tools.fetch import _fetch_url_impl
+
+        async def _challenged(self, target, **kwargs):
+            raise wafer.ChallengeDetected("imperva", target, 403)
+
+        render = AsyncMock(return_value=None)
+        monkeypatch.setattr("wafer.AsyncSession.get", _challenged)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+        monkeypatch.setattr("fetchaller.tools.fetch._render_after_challenge", render)
+
+        result = await _fetch_url_impl("https://challenged.example/", timeout=10, browser_solver=object())
+
+        render.assert_awaited_once()
+        assert "imperva" in result["error"]
 
 
 class TestSharedCacheIsolation:

@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.8.16 (2026-11-24)
+
+Pins wafer 0.7.17. The image's browser moves to Chrome for Testing
+158.0.8127.88, the version wafer now presents.
+
+- In the image, eBay searches read again: a session with a launched browser
+  can fall back to another browser identity before solving.
+- A malformed `Referer` or `Origin` header no longer fails the request.
+- Akamai's explicit denial page is reported as `akamai_denied`.
+- A Cloudflare block page is reported as a block. It is no longer called a
+  solvable JS challenge with advice to try again. An origin's plain 403 behind
+  Cloudflare is reported as HTTP 403.
+- A Cloudflare refusal that the site's own pages clear with Turnstile is
+  recovered when the `fetch` passes such a page on the same host as `Referer`.
+- A Cloudflare block no longer opens a browser to retry the URL, which only
+  reached the same block. Nor does Akamai's denial page, which wafer has
+  already tried in the browser. Without a `Referer` or `Origin`, a Cloudflare
+  block's error suggests passing the page that calls the URL.
+- A redirect whose `Location` cannot be parsed is reported as an invalid
+  redirect target, not as a bare `ValueError`.
+
 ## 3.8.15 (2026-11-22)
 
 - `search_reddit` accepts its own page cursors (`after="OQ=="`); 3.8.14 rejected

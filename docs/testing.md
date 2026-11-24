@@ -2,7 +2,7 @@
 
 ## Home Depot gateway recovery
 
-Fetchaller 3.8.15 pins published wafer 0.7.15. Omit `--wafer-path` to test
+Fetchaller 3.8.16 pins published wafer 0.7.17. Omit `--wafer-path` to test
 the installed release; the override below is only for wafer development.
 
 ```bash
@@ -78,11 +78,13 @@ For each new site module:
 
 For a deployed HTTP server, run the protocol/readiness/OAuth smoke after every
 restart and use `--all-tools` for the release gate so each non-exempt tool must
-return semantically useful live data:
+return semantically useful live data. `--url` must be the server's
+`MCP_SERVER_URL` (`http://localhost:6000` in `docker-compose.local.yml`):
+OAuth refuses any other `resource` with HTTP 400.
 
 ```bash
 uv run python scripts/http_smoke_test.py \
-  --url http://127.0.0.1:6000 \
+  --url http://localhost:6000 \
   --api-key "$MCP_API_KEY" \
   --oauth-client-state /tmp/fetchaller-oauth-smoke.json \
   --all-tools

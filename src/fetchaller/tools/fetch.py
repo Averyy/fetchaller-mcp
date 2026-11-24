@@ -258,18 +258,38 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 # predate the constant instead of needing a floor bump to say something true.
 TERMINAL_CHALLENGE_TYPES = frozenset({"cloudflare_block"})
 
+# Challenges wafer has already taken as far as a browser can, so the render
+# fallback would only land on the same page: the terminal blocks, and Akamai's
+# explicit denial page (wafer >= 0.7.17), which wafer's own solve already
+# tried in the browser.
+_NO_RENDER_CHALLENGE_TYPES = TERMINAL_CHALLENGE_TYPES | {"akamai_denied"}
 
-def describe_challenge(challenge_type: str | None) -> str:
-    """Caller-facing text for a challenge wafer could not get past."""
+
+def describe_challenge(challenge_type: str | None, *, caller_page: bool = False) -> str:
+    """Caller-facing text for a challenge wafer could not get past.
+
+    *caller_page* says the request already named a page (``Referer`` or
+    ``Origin``), so the hint to pass one is left out.
+    """
     label = challenge_type or "unknown"
     if label in TERMINAL_CHALLENGE_TYPES:
-        return (
+        message = (
             f"Blocked by a {label} rule (HTTP 403). This is a firewall rule denying the "
             f"request outright, not a challenge to solve — retrying, waiting, or a different "
             f"identity all return the same answer. Check whether the URL is right (a parked "
             f"or misspelled domain often blocks everything) and try the site's API or a "
             f"different host if one exists."
         )
+        if not caller_page:
+            # Some Cloudflare zones refuse their API until one of their own
+            # pages has run Turnstile; wafer clears that on the page the
+            # request names as its Referer, and on nothing else.
+            message += (
+                " If one of the site's own pages loads this URL (an API call, say), pass"
+                " that page as the Referer header: some sites refuse such calls until the"
+                " page has run its Turnstile check, which wafer can then run there."
+            )
+        return message
     return (
         f"Protected by {label} bot detection and could not be bypassed. "
         f"Try again — this sometimes resolves on retry."
@@ -2675,8 +2695,10 @@ async def _fetch_url_impl(
             resp = await _fetch_hop(current_url, remaining)
             location = resp.headers.get("location", "")
             if resp.status_code in _REDIRECT_STATUSES and location:
-                next_url = urljoin(current_url, location)
                 try:
+                    # urljoin parses the Location too, so an unclosed "[" host
+                    # raises here, not only in urlparse.
+                    next_url = urljoin(current_url, location)
                     next_parsed = urlparse(next_url)
                     if next_parsed.scheme not in ("http", "https"):
                         return {"error": (f"Redirect to unsupported protocol: {next_parsed.scheme}.")}
@@ -2807,15 +2829,28 @@ async def _fetch_url_impl(
         # article. Returning the error without trying render meant fetchaller
         # reported "could not be bypassed" for a page wafer could already
         # fetch.
-        rendered = await _render_after_challenge(
-            session,
-            current_url,
-            method=current_method,
-            browser_solver=browser_solver,
-            deadline=fetch_deadline,
-        )
+        #
+        # A block is wafer's final answer, not an interstitial: it has already
+        # tried whatever clears one (a Cloudflare block, through the Referer
+        # page's Turnstile; Akamai's denial page, in the browser). A render
+        # only lands on the same page, so it is skipped: measured 2026-11-24,
+        # it cost a browser launch and one more request to the site that had
+        # just refused us.
+        if isinstance(e, wafer.RequestBlocked) or e.challenge_type in _NO_RENDER_CHALLENGE_TYPES:
+            rendered = None
+        else:
+            rendered = await _render_after_challenge(
+                session,
+                current_url,
+                method=current_method,
+                browser_solver=browser_solver,
+                deadline=fetch_deadline,
+            )
         if rendered is None:
-            message = describe_challenge(e.challenge_type)
+            caller_page = any(
+                name.lower() in ("referer", "origin") and value for name, value in current_headers.items()
+            )
+            message = describe_challenge(e.challenge_type, caller_page=caller_page)
             if browser_solver is not None and fetch_deadline - time.monotonic() <= _RENDER_MIN_SECONDS:
                 # wafer clamps a browser solve to the caller's budget, so a
                 # challenge raised with the budget spent may only have run out
