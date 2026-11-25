@@ -1,13 +1,13 @@
 [project]
 name = "fetchaller-mcp"
-version = "3.8.17"
+version = "3.8.18"
 description = "MCP server that fetches any URL and returns clean markdown - no domain restrictions. Uses wafer for TLS fingerprint impersonation to bypass bot protection."
 license = "MIT"
 requires-python = ">=3.12"
 keywords = ["mcp", "claude", "fetch", "web", "markdown", "wafer"]
 dependencies = [
     "mcp>=1.30.0,<2",
-    "wafer-py[browser]==0.7.18",
+    "wafer-py[browser]==0.7.19",
     "fastapi>=0.136.1",
     "uvicorn>=0.46.0",
     "pydantic>=2.13.4",

@@ -2,7 +2,7 @@
 
 ## Home Depot gateway recovery
 
-Fetchaller 3.8.17 pins published wafer 0.7.18. Omit `--wafer-path` to test
+Fetchaller 3.8.18 pins published wafer 0.7.19. Omit `--wafer-path` to test
 the installed release; the override below is only for wafer development.
 
 ```bash

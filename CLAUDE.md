@@ -45,9 +45,11 @@ Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.17 pins published
-wafer 0.7.18 (`browser_outcome` on a challenge says how its browser attempt
-ended, and `fetch` skips the render only when it was `refused`; the audited
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.18 pins published
+wafer 0.7.19 (a generic solve that lands on a `cf-mitigated: challenge`
+page waits for Cloudflare's clearance; 0.7.18 `browser_outcome` on a
+challenge says how its browser attempt ended, and `fetch` skips the render
+only when it was `refused`; the audited
 solver wrapper must name `report` or wafer never passes it; a URL the browser
 clears but whose cookies the site refuses is read in the browser; a site-wide
 CSP alone no longer counts as Turnstile; 0.7.17 Chrome 158, which the image's

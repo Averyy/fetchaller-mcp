@@ -391,7 +391,7 @@ wheels = [
 
 [[package]]
 name = "fetchaller-mcp"
-version = "3.8.17"
+version = "3.8.18"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -431,7 +431,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "uvicorn", specifier = ">=0.46.0" },
-    { name = "wafer-py", extras = ["browser"], specifier = "==0.7.18" },
+    { name = "wafer-py", extras = ["browser"], specifier = "==0.7.19" },
 ]
 provides-extras = ["dev"]
 
@@ -1656,15 +1656,15 @@ wheels = [
 
 [[package]]
 name = "wafer-py"
-version = "0.7.18"
+version = "0.7.19"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "wreq" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0c/5e/59ba5ec258fc52f8ce7864676cafd5b582a647fae053a06ed430be4726e7/wafer_py-0.7.18.tar.gz", hash = "sha256:53bdfc3a3c1bcd502dbdd255ee99af49b84811adf733048cc1ab3eb58051ba6e", size = 1995330, upload-time = "2026-11-25T17:06:59.527Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/89/078de42973686b65a6b8033fbc7f6e3d2c4a7dab2e2626652049fcfed2dc/wafer_py-0.7.19.tar.gz", hash = "sha256:fa4e08069ba9ea170e7898fb05b6531d3f7cffcd2d169d966e3f25fd97589cfb", size = 1998476, upload-time = "2026-11-25T19:48:27.536Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/ef/546d4cd350b31bd1d0b18e43e642cb6f59011e11a26f37a0228e7ab7be3b/wafer_py-0.7.18-py3-none-any.whl", hash = "sha256:adad9bab7fc43396077ddd8733a3a205a70f93a80a28c0d7d0703e7df25ad05b", size = 700051, upload-time = "2026-11-25T17:06:57.895Z" },
+    { url = "https://files.pythonhosted.org/packages/20/da/4bcd672e4de0335e96c3f20eebf0cac1afb95302a66aefe88cbf79c9f9e9/wafer_py-0.7.19-py3-none-any.whl", hash = "sha256:7cc5839ab9b05fd734080e7f0c93d3c8c84b5afdfa332a38422b06ff2add2c21", size = 700696, upload-time = "2026-11-25T19:48:25.707Z" },
 ]
 
 [package.optional-dependencies]

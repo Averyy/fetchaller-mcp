@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.8.18 (2026-11-25)
+
+Pins wafer 0.7.19.
+
+- A generic browser solve that lands on a Cloudflare interstitial (the page
+  carries `cf-mitigated: challenge`) now waits for Cloudflare's clearance
+  instead of returning as soon as the network goes quiet, which could hand
+  back the page's cookies mid-challenge with no clearance.
+
 ## 3.8.17 (2026-11-25)
 
 Pins wafer 0.7.18.
