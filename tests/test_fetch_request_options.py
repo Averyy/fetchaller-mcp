@@ -816,29 +816,52 @@ class TestPostRedirectsAreStillSsrfChecked:
         assert "cloudflare_block" in result["error"]
         assert "as the Referer header" in result["error"]
 
-    async def test_an_akamai_denial_never_reaches_the_browser_twice(self, monkeypatch):
-        """wafer's own solve already took Akamai's denial page through the
-        browser; a render would be one more request to a site whose budget is
-        tight, landing on the same denial."""
+    @pytest.mark.parametrize("challenge", ["akamai", "akamai_denied"])
+    async def test_a_failed_akamai_solve_never_reaches_the_browser_twice(self, monkeypatch, challenge):
+        """wafer's own solve already took the URL through the browser with the
+        same Akamai handler a render runs; in the image on 2026-11-24 the
+        render after a failed eBay solve was refused 5 of 5 times, ~20 s each."""
         from unittest.mock import AsyncMock
 
         import wafer
 
         from fetchaller.tools.fetch import _fetch_url_impl
 
-        async def _denied(self, target, **kwargs):
-            raise wafer.ChallengeDetected("akamai_denied", target, 403)
+        async def _refused(self, target, **kwargs):
+            raise wafer.ChallengeDetected(challenge, target, 403)
 
         render = AsyncMock(return_value=None)
-        monkeypatch.setattr("wafer.AsyncSession.get", _denied)
+        monkeypatch.setattr("wafer.AsyncSession.get", _refused)
         monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
         monkeypatch.setattr("fetchaller.tools.fetch._render_after_challenge", render)
 
         result = await _fetch_url_impl("https://denied.example/p/1", timeout=10, browser_solver=object())
 
         render.assert_not_awaited()
-        assert "akamai_denied" in result["error"]
+        assert f"Protected by {challenge} bot detection" in result["error"]
         assert "Referer" not in result["error"]
+
+    async def test_an_akamai_api_refusal_still_tries_the_render(self, monkeypatch):
+        """wafer solves Akamai's 206 API refusal on the caller's page when the
+        request names one, so a render of the URL can be a different attempt."""
+        from unittest.mock import AsyncMock
+
+        import wafer
+
+        from fetchaller.tools.fetch import _fetch_url_impl
+
+        async def _refused(self, target, **kwargs):
+            raise wafer.ChallengeDetected("akamai", target, 206)
+
+        render = AsyncMock(return_value=None)
+        monkeypatch.setattr("wafer.AsyncSession.get", _refused)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+        monkeypatch.setattr("fetchaller.tools.fetch._render_after_challenge", render)
+
+        result = await _fetch_url_impl("https://denied.example/api/x", timeout=10, browser_solver=object())
+
+        render.assert_awaited_once()
+        assert "Protected by akamai bot detection" in result["error"]
 
     async def test_a_block_with_a_referer_drops_the_hint(self, monkeypatch):
         import wafer
@@ -879,6 +902,64 @@ class TestPostRedirectsAreStillSsrfChecked:
 
         render.assert_awaited_once()
         assert "imperva" in result["error"]
+
+    @pytest.mark.parametrize(
+        ("challenge", "status", "outcome", "renders"),
+        [
+            # wafer's browser loaded the URL and the site refused it: a render
+            # repeats that, whatever the WAF.
+            ("imperva", 403, "refused", False),
+            ("akamai", 206, "refused", False),
+            # Anything else leaves the render a different attempt, Akamai too.
+            ("akamai", 403, "cleared", True),
+            ("akamai", 403, "other_page", True),
+            ("akamai", 403, "failed", True),
+            ("imperva", 403, "failed", True),
+        ],
+    )
+    async def test_the_browser_outcome_decides_the_render(self, monkeypatch, challenge, status, outcome, renders):
+        """wafer >= 0.7.18 reports how its browser attempt at the URL ended."""
+        from unittest.mock import AsyncMock
+
+        import wafer
+
+        from fetchaller.tools.fetch import _fetch_url_impl
+
+        async def _challenged(self, target, **kwargs):
+            exc = wafer.ChallengeDetected(challenge, target, status)
+            exc.browser_outcome = outcome
+            raise exc
+
+        render = AsyncMock(return_value=None)
+        monkeypatch.setattr("wafer.AsyncSession.get", _challenged)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+        monkeypatch.setattr("fetchaller.tools.fetch._render_after_challenge", render)
+
+        result = await _fetch_url_impl("https://challenged.example/p", timeout=10, browser_solver=object())
+
+        assert render.await_count == (1 if renders else 0)
+        assert f"Protected by {challenge} bot detection" in result["error"]
+
+    async def test_a_block_never_renders_whatever_the_outcome(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        import wafer
+
+        from fetchaller.tools.fetch import _fetch_url_impl
+
+        async def _blocked(self, target, **kwargs):
+            exc = wafer.RequestBlocked("cloudflare_block", target, 403)
+            exc.browser_outcome = "failed"
+            raise exc
+
+        render = AsyncMock(return_value=None)
+        monkeypatch.setattr("wafer.AsyncSession.get", _blocked)
+        monkeypatch.setattr("fetchaller.tools.fetch.check_host", _allow_host)
+        monkeypatch.setattr("fetchaller.tools.fetch._render_after_challenge", render)
+
+        await _fetch_url_impl("https://blocked.example/api/x", timeout=10, browser_solver=object())
+
+        render.assert_not_awaited()
 
 
 class TestSharedCacheIsolation:

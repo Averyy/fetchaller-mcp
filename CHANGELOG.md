@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.8.17 (2026-11-25)
+
+Pins wafer 0.7.18.
+
+- When the site refused wafer's browser at the URL, `fetch` reports it at once
+  instead of rendering the URL in the browser, which repeated the same refused
+  visit (about 20 s for Akamai). Other outcomes still get the render.
+- A page the browser gets through, but whose cookies the site refuses to
+  plain requests, is now read in the browser instead of failing.
+- A site-wide CSP alone no longer sends a Cloudflare block's `Referer` page to
+  the browser; the page itself must run Turnstile.
+- A DuckDuckGo block answer (HTTP 202, 403 or 429) logs one diagnostic line
+  (status, size, bot-check markers, title and a few headers) with the query
+  redacted, so the next one can be told apart from a plain homepage.
+- Upgrades the 16 locked dependencies with published vulnerabilities, among
+  them starlette 1.3.1, PyJWT 2.15.0, mcp 1.30.0, python-multipart 0.0.32,
+  Pillow 13.0.0, cryptography 50.0.0 and soupsieve 4.0.1. The `mcp` and
+  `pyjwt` floors rise to match.
+
 ## 3.8.16 (2026-11-24)
 
 Pins wafer 0.7.17. The image's browser moves to Chrome for Testing

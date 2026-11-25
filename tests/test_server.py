@@ -1177,6 +1177,39 @@ class TestAuditedBrowserSolverCountsEveryNavigation:
         await wrapped.asolve("https://example.com/")
         assert audit == {"total": 2, "reddit": 1}
 
+    async def test_the_solve_report_reaches_the_solver(self):
+        """wafer >= 0.7.18 sends its report dict only to a solver whose own
+        signature names it, and reads the browser outcome from it."""
+        import inspect
+
+        from fetchaller.server import _AuditedBrowserSolver
+
+        seen = []
+
+        class ReportingSolver:
+            def solve(self, url, *a, report=None, **k):
+                seen.append(("solve", report))
+
+            async def asolve(self, url, *a, report=None, **k):
+                seen.append(("asolve", report))
+
+        wrapped = _AuditedBrowserSolver(ReportingSolver(), {"total": 0, "reddit": 0})
+        for method in (wrapped.solve, wrapped.asolve):
+            parameter = inspect.signature(method).parameters.get("report")
+            assert parameter is not None and parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        sync_report, async_report = {}, {}
+        wrapped.solve("https://example.com/", "akamai", report=sync_report)
+        await wrapped.asolve("https://example.com/", "akamai", report=async_report)
+        assert seen[0][1] is sync_report and seen[1][1] is async_report
+
+    async def test_no_report_is_forwarded_when_wafer_sends_none(self):
+        """A solver that predates the keyword must not be handed it."""
+        inner, _, wrapped = self._wrap()
+        captured = []
+        inner.solve = lambda url, *a, **k: captured.append(k)
+        wrapped.solve("https://example.com/", "akamai")
+        assert captured == [{}]
+
     def test_every_url_taking_solver_method_is_audited(self):
         """Guards against a future wafer navigation method slipping through.
 

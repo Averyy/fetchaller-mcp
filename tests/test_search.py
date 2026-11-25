@@ -3,9 +3,11 @@
 import asyncio
 import base64
 import json
+from html import escape
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -122,6 +124,124 @@ class TestDDGExtraction:
 # ---------------------------------------------------------------------------
 # Dedup and merge
 # ---------------------------------------------------------------------------
+
+
+class TestDDGBlockDiagnostics:
+    # Reduced from a published DDG page capture (no live DDG request):
+    # https://github.com/danilo-aguiar-br/duckduckgo-search-cli/blob/b89f513958a6db9ec558940b8b594c86d4be0457/tests/fixtures/interstitial_cloudflare_anomaly_2026.html
+    # Despite the fixture's filename, these are DDG's own anomaly-page markers.
+
+    @pytest.mark.parametrize("encoding", ["plain", "html", "percent", "plus", "upper", "whitespace"])
+    async def test_anomaly_logs_markers_and_redacts_query(self, encoding, capsys):
+        query = "private & query café"
+        echoed = {
+            "plain": query,
+            "html": escape(query),
+            "percent": quote(query, safe=""),
+            "plus": quote_plus(query),
+            "upper": query.upper(),
+            "whitespace": query.replace(" ", "\n  "),
+        }[encoding]
+        body = (
+            f"<html><title>{echoed} at DuckDuckGo / {echoed}</title>"
+            '<form id="challenge-form" action="//duckduckgo.com/anomaly.js?sv=html&amp;cc=botnet">'
+            '<div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>'
+            f'<input name="q" value="{escape(query)}"><input value="body-only-secret"></form></html>'
+        )
+        session = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(status_code=202, headers={}, text=body)))
+        results, error = await ddg_search(session, query)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        warning, diagnostic = captured.err.splitlines()
+        assert "WARNING ddg HTTP 202; backing off 300s" in warning
+        assert f"ddg block status=202 body_chars={len(body)}" in diagnostic
+        assert "markers=anomaly-modal,challenge-form,anomaly.js,bots use duckduckgo too,cc=botnet" in diagnostic
+        assert "title='[query] at DuckDuckGo / [query]' headers={}" in diagnostic
+        assert all(value not in captured.err for value in (query, echoed, "body-only-secret", "<form", "<input"))
+        assert results == []
+        assert error == (
+            "HTTP 202 (DuckDuckGo served its homepage instead of results); "
+            "DuckDuckGo rate-limit/block backoff (300s)"
+        )
+        session.get.assert_awaited_once()
+
+    @pytest.mark.parametrize(("status", "delay"), [(202, 300), (403, 300), (429, 60)])
+    @pytest.mark.parametrize("body", ["<html><title>DuckDuckGo</title><form action='/html/'></form></html>", ""])
+    async def test_homepage_logs_no_markers_and_preserves_backoff(self, status, delay, body, provider_clock, capsys):
+        clock, _ = provider_clock
+        response = SimpleNamespace(status_code=status, headers={}, text=body)
+        session = SimpleNamespace(get=AsyncMock(return_value=response))
+        pace = AsyncMock()
+        rows, error = await ddg_search(session, "private query", pace=pace)
+        diagnostic = capsys.readouterr().err.splitlines()[1]
+        title = "DuckDuckGo" if body else ""
+        assert f"ddg block status={status} body_chars={len(body)} markers=none title={title!r} headers={{}}" in diagnostic
+        detail = " (DuckDuckGo served its homepage instead of results)" if status == 202 else ""
+        assert (rows, error) == ([], f"HTTP {status}{detail}; DuckDuckGo rate-limit/block backoff ({delay}s)")
+        clock[0] += delay - 1
+        assert await ddg_search(session, "queued query", pace=pace) == (
+            [], "DuckDuckGo rate-limit/block backoff (1s remaining)"
+        )
+        assert capsys.readouterr().err == ""
+        session.get.assert_awaited_once()
+        pace.assert_awaited_once()
+
+    async def test_header_allowlist_excludes_cookies_and_redacts_echoes(self, capsys):
+        query = "private query"
+        headers = {
+            "Set-Cookie": "cookie-secret",
+            "Cookie": "request-cookie-secret",
+            "X-Set-Cookie": "x-cookie-secret",
+            "x-CooKie-Debug": "cookie-debug-secret",
+            "Authorization": "auth-secret",
+            "ETag": "etag-secret",
+            "Content-Type": "text/html",
+            "Content-Length": "123",
+            "Server": "nginx",
+            "Cache-Control": "no-cache",
+            "Location": f"/html/?q={quote_plus(query)}",
+            "X-DuckDuckGo": query,
+            "x-secret": "token=secret-value",
+        }
+        response = SimpleNamespace(status_code=202, headers=headers, text="<title>DuckDuckGo</title>")
+        await ddg_search(SimpleNamespace(get=AsyncMock(return_value=response)), query)
+        log = capsys.readouterr().err
+        assert "ddg block status=202" in log
+        for field in (
+            "content-type='text/html'", "content-length='123'", "server='nginx'", "cache-control='no-cache'",
+            "location='/html/?q=[query]'", "x-duckduckgo='[query]'", "x-secret=[redacted]",
+        ):
+            assert field in log
+        assert "cookie" not in log.lower()
+        assert all(value not in log for value in (query, quote_plus(query), "auth-secret", "etag-secret", "secret-value"))
+
+    async def test_a_truncated_echo_of_the_query_is_redacted_word_by_word(self, capsys):
+        query = "private secretword extra"
+        body = "<title>private secretword at DuckDuckGo</title>"
+        headers = {"Location": "/html/?q=private+secretw"}
+        response = SimpleNamespace(status_code=202, headers=headers, text=body)
+        await ddg_search(SimpleNamespace(get=AsyncMock(return_value=response)), query)
+        log = capsys.readouterr().err
+        assert "title='[query] [query] at DuckDuckGo'" in log
+        assert "private" not in log
+        assert "secretword" not in log
+
+    async def test_diagnostic_is_bounded_and_single_line(self, capsys):
+        query = "private query that must be redacted before truncation"
+        body = f"<TITLE>{'t' * 90}{query}\n{'t' * 1000}</TITLE><p>body-only-secret</p>"
+        response = SimpleNamespace(
+            status_code=202, text=body,
+            headers={"X-Long": "v" * 70 + query + "\r\n" + "v" * 2000, **{f"x-{i}": "v" * 100 for i in range(30)}},
+        )
+        await ddg_search(SimpleNamespace(get=AsyncMock(return_value=response)), query)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        warning, diagnostic = captured.err.splitlines()
+        assert "backing off 300s" in warning
+        assert f"ddg block status=202 body_chars={len(body)} markers=none title='" in diagnostic
+        assert "[query]" in diagnostic and "headers={x-long=" in diagnostic
+        assert len(diagnostic.split("] ", 1)[1]) <= 500
+        assert all(value not in captured.err for value in ("private", "body-only-secret", "\r", "\x1b"))
 
 
 class TestDDGPaging:

@@ -1,12 +1,14 @@
 """DuckDuckGo HTML search endpoint scraper."""
 
 import asyncio
+import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from urllib.parse import unquote
+from html import unescape
+from urllib.parse import quote, quote_plus, unquote
 
 from bs4 import BeautifulSoup
 
@@ -32,6 +34,9 @@ _PAGE_STATE_TTL = 300.0
 _PAGE_STATE_MAX = 64
 _NEXT_FORM_FIELDS = {"q", "s", "dc", "vqd"}
 _ENDPOINT = "https://html.duckduckgo.com/html/"
+_BLOCK_HEADERS = {"content-type", "content-length", "server", "cache-control", "location"}
+# DDG anomaly markup: see the captured-page source in TestDDGBlockDiagnostics.
+_BLOCK_MARKERS = ("anomaly-modal", "challenge-form", "anomaly.js", "bots use duckduckgo too", "cc=botnet")
 
 Pace = Callable[[], Awaitable[None]]
 
@@ -56,6 +61,48 @@ def _log(msg: str) -> None:
     )
     safe = sanitize_for_log(redact_secrets_for_log(bounded), max_length=500)
     print(f"[{datetime.now(UTC).isoformat()}] {safe}", file=sys.stderr)
+
+
+def _log_block_response(response, query: str) -> None:
+    """Log page evidence without body text, cookies or an echoed search query."""
+    html = response.text
+
+    def normalize(value: str) -> str:
+        value = " ".join(value.split())
+        return sanitize_for_log(value, max_length=len(value))
+
+    # The whole query and each of its words: a page that echoes the query cut
+    # short (a truncated title or redirect) still names its words. Longest
+    # first, so a whole echo becomes one placeholder.
+    words = {word for word in query.split() if len(word) >= 3}
+    variants = {
+        normalize(value)
+        for text in (query, *words)
+        for value in (text, unescape(text), quote(text, safe=""), quote_plus(text))
+    } - {""}
+    query_pattern = re.compile("|".join(re.escape(value) for value in sorted(variants, key=len, reverse=True)), re.I)
+
+    def safe(value: str, limit: int) -> str:
+        value = normalize(unescape(value))
+        if variants:
+            value = query_pattern.sub("[query]", value)
+        # Redact before either the field or the existing logger truncates it.
+        return sanitize_for_log(redact_secrets_for_log(value), max_length=limit)
+
+    title = re.search(r"<title\b[^>]*>(.*?)</title\s*>", html, re.I | re.S)
+    body_lower = html.lower()
+    markers = ",".join(marker for marker in _BLOCK_MARKERS if marker in body_lower) or "none"
+    headers = []
+    for name, value in response.headers.items():
+        name = name.lower()
+        if "cookie" in name or not (name in _BLOCK_HEADERS or name.startswith("x-")):
+            continue
+        headers.append(f"{safe(name, 64)}={safe(value, 80)!r}")
+    # Put page evidence first so large headers cannot crowd it out of _log's cap.
+    _log(
+        f"ddg block status={response.status_code} body_chars={len(html)} markers={markers} "
+        f"title={safe(title.group(1) if title else '', 100)!r} headers={{{', '.join(headers)}}}"
+    )
 
 
 def _error_detail(error: Exception) -> str:
@@ -210,6 +257,7 @@ async def _fetch_page(
             )
             _backoff_until = time.monotonic() + duration
             _log(f"WARNING ddg HTTP {response.status_code}; backing off {duration:.0f}s")
+            _log_block_response(response, query)
             detail = " (DuckDuckGo served its homepage instead of results)" if response.status_code == 202 else ""
             return (
                 [],

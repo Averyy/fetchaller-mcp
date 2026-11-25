@@ -60,6 +60,15 @@ Imperva-specific. Constraints, each load-bearing:
 - **Falls through to the original challenge error** when render does not help,
   so a genuinely unsolvable site still reports the challenge rather than a
   second, less useful error.
+- **Skipped where wafer's browser has already answered** (`_render_cannot_help`):
+  a block (`RequestBlocked`), and any challenge whose `browser_outcome` (wafer
+  >= 0.7.18) is `"refused"`, meaning wafer's browser loaded the URL and the
+  site refused it, so a render would repeat that visit. `"cleared"`,
+  `"other_page"` and `"failed"` still render. With no outcome reported, the
+  challenge type decides: `cloudflare_block`, `akamai` and `akamai_denied`
+  skip, except an Akamai API refusal (HTTP 206), which wafer may have solved on
+  the caller's page. `_AuditedBrowserSolver` names wafer's `report` keyword, or
+  wafer would report no outcome through it.
 - **The rendered document carries the session's `add_cookie()` cookies**
   (wafer >= 0.7.11), so a display preference the session sends
   (`shopping_locale.py`: a shop's currency) holds in the rendered page. Up to

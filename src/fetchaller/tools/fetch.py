@@ -258,11 +258,37 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 # predate the constant instead of needing a floor bump to say something true.
 TERMINAL_CHALLENGE_TYPES = frozenset({"cloudflare_block"})
 
-# Challenges wafer has already taken as far as a browser can, so the render
-# fallback would only land on the same page: the terminal blocks, and Akamai's
-# explicit denial page (wafer >= 0.7.17), which wafer's own solve already
-# tried in the browser.
-_NO_RENDER_CHALLENGE_TYPES = TERMINAL_CHALLENGE_TYPES | {"akamai_denied"}
+# wafer (>= 0.7.18) says on the exception how its browser attempt at the URL
+# ended (``browser_outcome``). "refused" means the browser loaded this URL and
+# the site refused it: a render navigates the same URL in the same browser and
+# repeats that. Measured 2026-11-24 in the image: 5 of 5 renders after a refused
+# Akamai solve were refused again, each adding ~20 s and a second browser visit
+# before the same error. "cleared" (the browser got through but wafer could not
+# read the page), "other_page" (solved on another page) and "failed" (no
+# verdict) leave the render a different attempt.
+_BROWSER_REFUSED = "refused"
+
+# With no outcome (an older wafer, or no attempt reported), the challenge type
+# decides: the terminal blocks, and Akamai, which wafer raises only after its
+# own browser solve of the URL (its denial page, wafer >= 0.7.17, the same).
+_NO_RENDER_CHALLENGE_TYPES = TERMINAL_CHALLENGE_TYPES | {"akamai", "akamai_denied"}
+
+# Akamai's refusal of an API call, which wafer solves on the caller's page
+# (its Referer or Origin) when there is one, so a render of the URL can be a
+# different attempt.
+_AKAMAI_API_REFUSAL_STATUS = 206
+
+
+def _render_cannot_help(e: wafer.ChallengeDetected) -> bool:
+    """Whether wafer's browser has already given the answer a render would get."""
+    if isinstance(e, wafer.RequestBlocked):
+        return True
+    outcome = getattr(e, "browser_outcome", None)
+    if outcome is not None:
+        return outcome == _BROWSER_REFUSED
+    if e.challenge_type == "akamai" and e.status_code == _AKAMAI_API_REFUSAL_STATUS:
+        return False
+    return e.challenge_type in _NO_RENDER_CHALLENGE_TYPES
 
 
 def describe_challenge(challenge_type: str | None, *, caller_page: bool = False) -> str:
@@ -2832,11 +2858,11 @@ async def _fetch_url_impl(
         #
         # A block is wafer's final answer, not an interstitial: it has already
         # tried whatever clears one (a Cloudflare block, through the Referer
-        # page's Turnstile; Akamai's denial page, in the browser). A render
-        # only lands on the same page, so it is skipped: measured 2026-11-24,
-        # it cost a browser launch and one more request to the site that had
-        # just refused us.
-        if isinstance(e, wafer.RequestBlocked) or e.challenge_type in _NO_RENDER_CHALLENGE_TYPES:
+        # page's Turnstile; Akamai's challenge and denial page, in the
+        # browser). A render only lands on the same page, so it is skipped:
+        # measured 2026-11-24, it cost a browser launch and one more request
+        # to the site that had just refused us (see _NO_RENDER_CHALLENGE_TYPES).
+        if _render_cannot_help(e):
             rendered = None
         else:
             rendered = await _render_after_challenge(

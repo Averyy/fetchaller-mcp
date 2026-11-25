@@ -45,10 +45,15 @@ Brave receives the
 server's existing guarded, audited BrowserSolver (default solve budget 120s);
 its wafer request is bounded to 150s including solving, with a 180s provider
 budget for queueing, pacing and parsing. Google and DDG remain browser-free.
-Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.16 pins published
-wafer 0.7.17 (Chrome 158, which the image's Chrome-for-Testing pin matches;
-Akamai's explicit denial page as `akamai_denied`; malformed caller URLs no
-longer fail requests; sessions with a launched browser rotate again; 0.7.16
+Only wafer handles Brave PoW/blind tokens. Fetchaller 3.8.17 pins published
+wafer 0.7.18 (`browser_outcome` on a challenge says how its browser attempt
+ended, and `fetch` skips the render only when it was `refused`; the audited
+solver wrapper must name `report` or wafer never passes it; a URL the browser
+clears but whose cookies the site refuses is read in the browser; a site-wide
+CSP alone no longer counts as Turnstile; 0.7.17 Chrome 158, which the image's
+Chrome-for-Testing pin matches, Akamai's explicit denial page as
+`akamai_denied`, malformed caller URLs no longer fail requests, and sessions
+with a launched browser rotate again; 0.7.16
 told Cloudflare block pages and origin 403s apart from JS challenges, and
 cleared them through a same-site page named as `Referer` that runs
 Turnstile, within the session's pins; 0.7.15 routed TMD reCAPTCHA punishments

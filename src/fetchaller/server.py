@@ -103,16 +103,25 @@ class _AuditedBrowserSolver:
             if hostname == "reddit.com" or hostname.endswith(".reddit.com"):
                 self._audit["reddit"] += 1
 
-    def solve(self, url: str, *args, **kwargs):
+    # ``report`` is named, not left in ``**kwargs``: wafer (>= 0.7.18) hands a
+    # solver its report dict only when the solver's own signature names it, and
+    # fills it with why a solve came back empty. Through a bare ``**kwargs``
+    # wrapper every challenge would raise with ``browser_outcome=None``. It is
+    # forwarded only when wafer sends one, so an older solver never sees it.
+    def solve(self, url: str, *args, report: dict | None = None, **kwargs):
         self._record(url)
         args, kwargs = self._bound_brave_solve(args, kwargs)
+        if report is not None:
+            kwargs["report"] = report
         result = self._solver.solve(url, *args, **kwargs)
         self._log_brave_result(args, kwargs, result)
         return result
 
-    async def asolve(self, url: str, *args, **kwargs):
+    async def asolve(self, url: str, *args, report: dict | None = None, **kwargs):
         self._record(url)
         args, kwargs = self._bound_brave_solve(args, kwargs)
+        if report is not None:
+            kwargs["report"] = report
         result = await self._solver.asolve(url, *args, **kwargs)
         self._log_brave_result(args, kwargs, result)
         return result
